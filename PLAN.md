@@ -6,7 +6,7 @@ This repo (currently `python-zipline-decode`) is empty: LICENSE, a one-line
 README, one commit. Its purpose is to be the glue between **network protocol
 decoding** and the **Zipline Payload Format**:
 
-- **packeteer** (`/Users/adam/projs/packeteer`, v0.7.0) reads captures and parses
+- **packeteer** (`/Users/adam/projs/packeteer`, v0.8.0) reads captures and parses
   packets. Pure stdlib, no runtime dependencies.
 - **python-zipline** (`/Users/adam/projs/python-zipline`) reads and writes `.zpf`
   files against **spec v0.16**. Distribution and import name are both **`zpf`**
@@ -53,39 +53,65 @@ so gaps found here get fixed *there*, not papered over here.
 [#63](https://github.com/adamkjonsson/packeteer/issues/63),
 [#64](https://github.com/adamkjonsson/packeteer/issues/64),
 [#65](https://github.com/adamkjonsson/packeteer/issues/65),
-[#66](https://github.com/adamkjonsson/packeteer/issues/66)
+[#66](https://github.com/adamkjonsson/packeteer/issues/66).
+**All six are implemented in packeteer 0.8.0**, which is not yet tagged — that
+repo closes issues at release, not at merge, so they still read OPEN.
 
 1. **[#61] Payload silently destroyed on well-known ports.** `_try_parse_dns` /
-   `_try_parse_dhcp` / `_try_parse_http`
-   ([parse/core.py:382-384](/Users/adam/projs/packeteer/src/packeteer/parse/core.py))
-   run unconditionally and return `b""` on success, so `ParsedPacket.payload` is
-   empty for every packet on 80/8080/53/5353/67/68 with no opt-out. Information
-   loss with no way to decline it. Ask: `decode_app: bool = True` on
-   `parse_packet`/`parse_pcap_packet`. **This is the one blocking gap** — see
-   `capture.py` below.
-2. **[#62] No streaming pcap iterator.** `read_pcap` materialises a `list`; the
-   private machinery already streams (`max_packets` via `_ChainedReader`). Ask:
-   public `iter_pcap()` yielding records **plus each record's byte offset in the
-   file** — the offset is what capture-scoped provenance needs.
-3. **[#63] TCP options never parsed.** `parse/tcp.py` skips them; `TCPHeader.options`
-   is always `None` from a parse, losing SACK, timestamps and window scale.
-4. **[#64] pcapng timestamp resolution collapsed to a bool.** `if_tsresol` becomes
-   `nanoseconds: bool`, so any resolution that is not 1e9 is treated as
-   microseconds and silently misread.
-5. **[#65] No IP defragmentation** — the missing counterpart to the existing
-   `fragment_ipv4` / `fragment_ipv6`.
-6. **[#66] IP length not exposed.** Parsed `IPHeader` carries no `total_length` (nor
-   IPv6 payload length), so callers cannot trim Ethernet padding without
-   re-reading raw bytes.
+   `_try_parse_dhcp` / `_try_parse_http` ran unconditionally and returned `b""`
+   on success, so `ParsedPacket.payload` was empty for every packet on
+   80/8080/53/5353/67/68 with no opt-out. Was **the one blocking gap**.
+   *Landed:* `parse_packet(data, *, link_type=…, decode_app=True)` and the same
+   keyword on `parse_pcap_packet` / `parse_pcap_file`. Propagates through
+   tunnels; tunnel decoders still run.
+2. **[#62] No streaming pcap iterator.** `read_pcap` materialised a `list`.
+   *Landed:* `packeteer.pcap.open_pcap(path=…|file_object=…)` → `PcapReader`, a
+   context-managed iterator of `PcapRecord(data, ts_sec, ts_frac, offset,
+   data_offset, orig_len)`. `data_offset` is what capture-scoped provenance
+   needs; `orig_len` reveals snaplen truncation.
+3. **[#63] TCP options never parsed.** *Landed:* `parse/tcp.py` decodes MSS,
+   window scale, SACK permitted, SACK blocks and timestamps into the existing
+   `TCPOptions`, plus a new `unknown` list of `(kind, value)` pairs.
+4. **[#64] pcapng timestamp resolution collapsed to a bool.** *Landed:*
+   `PcapFileHeader.tick_hz` carries the real rate, `nanoseconds` becomes a
+   derived view, and `ts_frac` is now expressed in `tick_hz` units.
+   `TimestampResolutionWarning` fires when a spec cannot express the source.
+5. **[#65] No IP defragmentation.** *Landed:* `packeteer.parse.defragment` /
+   `defragment_ipv4` / `defragment_ipv6`, frames in and frames out, over the
+   stateful `Defragmenter` (`feed`, `flush`, `incomplete`). Also fixed a real
+   defect: non-first fragments used to be parsed as though they carried a
+   transport header, fabricating ports out of user data — they now have
+   `transport = None`.
+6. **[#66] IP length not exposed.** *Landed:* `IPHeader.total_length` and
+   `IPv6Header.payload_length`, and the parser now trims Ethernet padding out
+   of `payload` itself.
 
-*python-zipline* — [#47](https://github.com/adamkjonsson/python-zipline/issues/47), [#48](https://github.com/adamkjonsson/python-zipline/issues/48), [#49](https://github.com/adamkjonsson/python-zipline/issues/49)
+**Filed after reviewing 0.8.0** — both are needed by phase 5, and both are
+consequences of the above landing rather than defects in it:
+
+- **[#71] `ParsedPacket` carries no payload offset.** `open_pcap` gives a byte
+  offset for the *record*; turning that into an offset for the *payload* needs
+  the payload's position within the frame, which the walk computes and discards.
+  `len(frame) - len(payload)` is not a substitute — #66's padding trim makes the
+  payload a non-suffix on padded frames, so the arithmetic is silently short.
+- **[#72] `Defragmenter` reports nothing about which fragments composed a
+  datagram.** The failure path has `IncompleteDatagram`; the success path
+  returns bare frames, so a reassembled datagram cannot be traced back to the
+  records — and therefore to the file offsets — it came from.
+
+*python-zipline* — [#47](https://github.com/adamkjonsson/python-zipline/issues/47), [#48](https://github.com/adamkjonsson/python-zipline/issues/48), [#49](https://github.com/adamkjonsson/python-zipline/issues/49). All three still open; 0.8.0 was packeteer-only.
 
 1. **[#47] `ts_first` unreachable from the ergonomic writer.** `SessionWriter.record()`
-   has no `ts_first=` keyword; it needs `write_block(zpf.Record(...))`.
+   has no `ts_first=` keyword. **Not a blocker:** the predicted workaround —
+   `FileWriter.write_block(zpf.Record(session_id=…, sender_pid=…, source_id=…,
+   ts_first=…))` — is confirmed to write and read back with `diagnostics == []`.
+   An ergonomics gap, not a capability gap.
 2. **[#48] Stale spec URL.** `pyproject.toml` `[project.urls] Specification` points at
    v0.12 while the code implements 0.16.
 3. **[#49] `DECODER_API.md` checklist item 6** (causal output ordering + conditional
-   `sequenced=`) is unimplemented — directly relevant to phase 6 below.
+   `sequenced=`) is unimplemented. **Not a blocker for phase 6 either:** the
+   primitives that phase reuses, `zpf.causal_merge` and `zpf.verify_sequenced`,
+   both exist today. #49 is about the library's own decoder helpers.
 
 ## What the spec demands of this writer
 
@@ -181,30 +207,48 @@ tests/
   captures/       fixtures copied from packeteer/testcases/
 ```
 
-### `capture.py` — the one place a shim is unavoidable
+### `capture.py` — the packeteer seam
 
-The obvious call is `packeteer.parse.parse_pcap_packet`, and packeteer issue 1
-above makes it unusable: payload is destroyed on exactly the ports a payload
-format exists to serve. The real fix is upstream (`decode_app=False`).
+Originally the one place a shim was unavoidable: `parse_pcap_packet` destroyed
+the payload on exactly the ports a payload format exists to serve, so this
+module walked the layers itself with packeteer's per-layer parsers
+(`packet_parser(data) -> (header_size, next_layer_id, header)`), slicing by the
+reported header sizes and reading the IP length from raw bytes to strip padding.
 
-**Interim, until that lands:** walk the layers here using packeteer's per-layer
-parsers, which all share one signature —
-`packet_parser(data) -> (header_size, next_layer_id, header)` — and give exact
-header sizes: `ethernet` → `vlan`\* → `ip` → `tcp` | `udp`, slicing by
-`header_size` at each step. This reuses packeteer's actual parsing rather than
-duplicating it; only the dispatch is ours. It is ~40 lines, carries a comment
-linking the issue, and collapses to a single `parse_packet(..., decode_app=False)`
-call when the fix ships.
+**packeteer 0.8.0 retires that shim.** `parse_packet(data, link_type=…,
+decode_app=False)` was checked against the hand-walk across every fixture —
+946 payload-bearing packets, byte-for-byte identical results, zero differences.
+The rewrite deletes the dispatch, the raw-bytes IP-length read (#66 trims
+padding upstream now) and `tick_hz_for` (#64 supplies `header.tick_hz`, and
+`ts_frac` already arrives in those units, so `_frac_scale` goes too).
 
-Two details this layer owns for now, both with upstream issues filed (6 and 3):
+Three things the rewrite must keep or gain:
 
-- **Trim to the IP length**, read from raw bytes, or Ethernet padding on short
-  frames gets reassembled as payload.
-- **TCP options are unavailable**, so no SACK-aware loss inference. `data_offset`
-  is honoured, so payload slicing is correct.
+- **The fragment check stays.** #65 fixed *non-first* fragments to report
+  `transport = None`, but a *first* fragment still parses a transport header
+  with only that fragment's payload behind it. On `fragmentation.pcap` that is
+  59 packets which `parse_packet` will happily hand over truncated. Either
+  defragment ahead of the parse (phase 7) or keep skipping on
+  `ip.flags & MF` / non-zero `fragment_offset` (IPv4) and `ip.fragment` (IPv6).
+- **Link types broaden for free.** The hand-walk understood Ethernet and RAW
+  only. `parse_packet` adds SLL/SLL2, ARP, MPLS, PPPoE and the tunnel stack
+  (VXLAN, GENEVE, GTP-U, GRE, EtherIP, IP-in-IP, AH, ESP) — traffic that
+  currently lands in the `unsupported-linktype` and `non-ip` skip tallies.
+  Decide deliberately whether a tunnelled flow keys on the inner or outer
+  addresses; the plan's answer is inner, since that is the stream that has a
+  payload.
+- **Header offsets are lost.** The hand-walk knew where the payload sat in the
+  frame; `parse_packet` does not report it (#71). Phase 5 needs it, so either
+  that issue lands first or `capture.py` keeps a reduced walk for offsets alone.
+
+Streaming replaces the whole-file read: `open_pcap` yields one `PcapRecord` at
+a time, so `CaptureReader` stops materialising `capture.packets` and carries
+`offset` / `data_offset` / `orig_len` through to the `PacketView`.
 
 Output is a frozen `PacketView`: `ts_ticks`, `src`/`dst`, `proto`, `src_port`,
-`dst_port`, `seq`, `ack`, `tcp_flags`, `payload: bytes`, `packet_num`.
+`dst_port`, `seq`, `ack`, `tcp_flags`, `payload: bytes`, `packet_num` — plus,
+after the rewrite, the record's byte offsets and the parsed `TCPOptions` (#63)
+that SACK-aware loss inference needs.
 
 ### `flow.py`
 
@@ -290,11 +334,18 @@ upstream-first rule; `.github/workflows/ci.yml` modelled on packeteer's (ruff jo
 - [x] **3.** `tcp.py` — the reassembler.
 - [x] **4.** CLI + filtering (`__main__.py`, `filter.py`, `survey.py`).
 - [x] **8.** README.
+- [ ] **4b.** Adopt packeteer 0.8.0: rewrite `capture.py` onto
+  `parse_packet(decode_app=False)` + `open_pcap`, drop `tick_hz_for` and the
+  raw-bytes length read, carry byte offsets and `TCPOptions` on `PacketView`.
+  Prerequisite for 5 and 7, and the point at which the shim comment goes.
 - [ ] **5.** Capture-scoped provenance: overlap-discard `Undecoded` markers,
-  handshake SYN records, `ts_first`. Gated on packeteer#62 (byte offsets) and
-  python-zipline#47.
-- [ ] **6.** Sequenced TCP sessions (below).
-- [ ] **7.** IP reassembly (below).
+  handshake SYN records, `ts_first`. Byte offsets now exist (packeteer#62);
+  `FileWriter.undecoded(source, session_id, pid, off_start, off_end, …)` is the
+  vehicle and is already in `zpf`. Remaining gap is locating the payload within
+  the frame — packeteer#71, or a reduced local walk.
+- [ ] **6.** Sequenced TCP sessions (below). **Never blocked** — `causal_merge`
+  and `verify_sequenced` ship in `zpf` today.
+- [ ] **7.** IP reassembly (below). **Unblocked by packeteer#65.**
 
 **Built so far** — `src/zpfwire/`: `capture.py`, `flow.py`, `tcp.py`, `udp.py`,
 `convert.py`, `options.py`, `stats.py`, `filter.py`, `survey.py`, `__main__.py`.
@@ -325,11 +376,35 @@ Relates to python-zipline issue 3.
 
 ### Phase 7 — IP reassembly
 
-Defragmentation belongs upstream (packeteer issue 5), as the counterpart to the
-existing `fragment_ipv4`/`fragment_ipv6`. Until it lands, `zpfwire` counts and
-skips fragmented packets and reports them in `ConversionStats` — visible, not
-silent. When it lands, `capture.py` consumes it and the skip counter goes to
-zero.
+Defragmentation belonged upstream (packeteer#65), as the counterpart to the
+existing `fragment_ipv4`/`fragment_ipv6`, and **it landed in 0.8.0**. `zpfwire`
+currently counts and skips fragmented packets, reporting them in
+`ConversionStats` — visible, not silent — and that skip counter now goes to zero.
+
+Measured on `tests/captures/fragmentation.pcap`: 287 frames in, 148 passed
+through untouched and 59 reassembled, 0 incomplete, against the 139 packets
+`zpfwire` skips as `ip-fragment` today.
+
+`Defragmenter` is the primitive to use rather than the `defragment()` wrapper,
+because `feed(frame, ts)` is what composes with a streaming reader — feed each
+`PcapRecord`, parse whatever comes back. A returned frame that is the fed frame
+itself is a passthrough; anything else is a reassembled datagram, whose
+timestamp is the completing fragment's, which is exactly the spec's
+last-contributing-packet rule.
+
+Two things to settle when building it:
+
+- **Provenance is unavailable** for reassembled datagrams (packeteer#72): the
+  contributing records, and therefore their file offsets, are not recoverable.
+  Until that lands, phase 5 markers cover unfragmented traffic only, and a
+  reassembled datagram's `packet_num` is the completing fragment's.
+- **`Defragmenter.incomplete`** carries `IncompleteDatagram` records with a
+  `reason` of `timeout` / `overlap` / `too_large` / `evicted`. Fold those into
+  `ConversionStats` so dropped datagrams stay as visible as skipped ones are
+  now, and surface the buffer caps (`max_datagram_bytes`, `max_buffered_bytes`)
+  and `timeout_s` through `ReassemblyOptions` into `params_digest`, since they
+  decide what gets thrown away — the same argument that made the TCP gap policy
+  a user-visible knob.
 
 ## Verification
 
@@ -375,10 +450,27 @@ sibling's CLI.
 
 Each has an upstream issue above; none is worked around permanently here.
 
-- Whole-file read until `iter_pcap()` exists — not memory-bounded on huge
-  captures, awkward for a format whose selling point is streaming.
-- No overlap-discard provenance until byte offsets are available.
-- `ts_first` omitted until the writer keyword exists.
-- pcapng resolutions other than µs/ns misread; add a `--tick-hz` override and
-  document it.
-- No SACK-aware loss inference while TCP options go unparsed.
+**Resolved by packeteer 0.8.0** — struck once phase 4b adopts it:
+
+- ~~Whole-file read until a streaming iterator exists~~ — `open_pcap` (#62).
+- ~~No overlap-discard provenance until byte offsets are available~~ —
+  `PcapRecord.data_offset` (#62). Locating the payload within the frame is the
+  one piece still missing (#71).
+- ~~pcapng resolutions other than µs/ns misread~~ — `tick_hz` (#64). Keep
+  `--tick-hz` as an override, not a necessity.
+- ~~No SACK-aware loss inference while TCP options go unparsed~~ — `TCPOptions`
+  is populated on the parse path (#63).
+- ~~Fragmented packets skipped~~ — `Defragmenter` (#65), phase 7.
+
+**Still open:**
+
+- `ts_first` reaches the file only through `write_block(zpf.Record(…))` until
+  python-zipline#47 lands. Confirmed working, just not ergonomic.
+- No capture-scoped provenance for reassembled datagrams (packeteer#72), so
+  phase 5 markers cover unfragmented traffic only.
+- Payload byte offsets need packeteer#71 or a reduced local layer walk.
+
+**Housekeeping:** the venv has been rebuilt against packeteer 0.8.0.dev0, and
+all 138 tests still pass unchanged — 0.8.0 is backwards-compatible with the
+current `capture.py`, because the hand-walk drives the per-layer parsers rather
+than `parse_packet`. Phase 4b is therefore a deliberate migration, not a repair.
