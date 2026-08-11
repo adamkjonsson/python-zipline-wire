@@ -1,0 +1,59 @@
+line-length = 100
+indent-width = 4
+
+[format]
+indent-style = "space"
+docstring-code-format = true
+docstring-code-line-length = 30
+
+[lint]
+select = [
+    "B",      # bugprone code patterns
+    "C4",     # flake8-comprehensions
+    "D",      # pydocstyle
+    "E",      # pycodestyle error
+    "F",      # pyflake
+    "I",      # isort imports
+    "W",      # pycodestyle warnings
+    "ANN",    # flake8-annotations
+    "BLE001", # blind-except
+    "NPY2",   # numpy2 deprecations
+    "PLE",    # pylint errors
+    "PLR",    # pylint refactor
+    "PLW",    # pylint warnings
+    "SIM",    # flake8 simplify
+    "SLF001", # private-member-access
+    "RET5",   # flake8-return
+]
+
+ignore = [
+    "ANN401",  # dynamically typed expressions (typing.Any) are disallowed
+    "D100",    # missing docstring in public module
+    "D104",    # missing docstring in public package
+    "D105",    # missing docstring in magic function (__eq__, __hash__)
+    "D107",    # missing docstring in __init__
+    "PLR0914", # too many locals
+    "PLR0916", # too many boolean expressions
+    "PLR2004", # magic value comparison
+]
+
+[lint.per-file-ignores]
+# In unit tests:
+# - don't require docstrings
+# - don't require return type annotations
+# - allow private member access
+"*_test.py" = ["D1", "ANN201", "SLF001"]
+"test_*.py" = ["D1", "ANN201", "SLF001"]
+
+[lint.flake8-annotations]
+mypy-init-return = true # don't require return type annotation for __init__
+suppress-dummy-args = true
+
+[lint.pylint]
+# arguments to category PLW (PyLint warnings)
+max-args = 18
+max-branches = 20
+max-nested-blocks = 7
+max-public-methods = 30
+max-returns = 12
+max-statements = 200
