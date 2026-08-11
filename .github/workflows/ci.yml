@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# The two siblings are not published to PyPI, so every job checks them out
+# next to this repo and installs them from source — the same layout as local
+# development (see requirements.txt).
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: python-zipline-wire
+      - uses: actions/checkout@v6
+        with:
+          repository: adamkjonsson/packeteer
+          path: packeteer
+      - uses: actions/checkout@v6
+        with:
+          repository: adamkjonsson/python-zipline
+          path: python-zipline
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        working-directory: python-zipline-wire
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . -r requirements.txt
+      - name: Lint with ruff
+        working-directory: python-zipline-wire
+        run: ruff check src/ tests/
+
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: python-zipline-wire
+      - uses: actions/checkout@v6
+        with:
+          repository: adamkjonsson/packeteer
+          path: packeteer
+      - uses: actions/checkout@v6
+        with:
+          repository: adamkjonsson/python-zipline
+          path: python-zipline
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        working-directory: python-zipline-wire
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . -r requirements.txt
+      - name: Run tests
+        working-directory: python-zipline-wire
+        run: pytest

@@ -1,0 +1,18 @@
+# Development environment; install with:
+#   .venv/bin/pip install -e . -r requirements.txt
+#
+# The two siblings are not on PyPI, so they are installed from the local
+# checkouts next to this one.
+-e ../packeteer
+-e ../python-zipline
+
+# Testing
+pytest
+
+# Code standard
+ruff
+
+# Build / packaging
+build
+setuptools>=68
+wheel
