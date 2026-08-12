@@ -86,32 +86,54 @@ repo closes issues at release, not at merge, so they still read OPEN.
    `IPv6Header.payload_length`, and the parser now trims Ethernet padding out
    of `payload` itself.
 
-**Filed after reviewing 0.8.0** — both are needed by phase 5, and both are
-consequences of the above landing rather than defects in it:
+**Filed after reviewing 0.8.0** — both were needed by phase 5, and both are
+**implemented on `main`**, along with a third packeteer raised in response:
 
-- **[#71] `ParsedPacket` carries no payload offset.** `open_pcap` gives a byte
-  offset for the *record*; turning that into an offset for the *payload* needs
-  the payload's position within the frame, which the walk computes and discards.
-  `len(frame) - len(payload)` is not a substitute — #66's padding trim makes the
-  payload a non-suffix on padded frames, so the arithmetic is silently short.
+- **[#71] `ParsedPacket` carries no payload offset.** *Landed:*
+  `ParsedPacket.payload_offset`, the index of `payload[0]` within the frame.
+  `record.data_offset + payload_offset` cites the payload's bytes in the file —
+  verified against raw file content. (`len(frame) - len(payload)` was never a
+  substitute: #66's padding trim makes the payload a non-suffix on padded
+  frames, so the arithmetic is silently short.) Per-layer offsets were deferred
+  to #74, which we do not need.
 - **[#72] `Defragmenter` reports nothing about which fragments composed a
-  datagram.** The failure path has `IncompleteDatagram`; the success path
-  returns bare frames, so a reassembled datagram cannot be traced back to the
-  records — and therefore to the file offsets — it came from.
+  datagram.** *Landed:* `feed(frame, ts, token=…)` returns `AssembledFrame`
+  with `frame`, `tokens` and `fragment_count`; `fragment_count == 1` is the
+  documented passthrough test. `IncompleteDatagram` gained `tokens` too, so
+  lost fragments can be named as precisely as completed ones.
+- **[#73] `iter_packets`** — packeteer's own response: one call that opens,
+  reassembles and parses, with `defragment=True` by default and
+  `ParsedPacket.source_records` naming the capture records behind each packet.
+  Verified to reproduce our hand-walk byte-for-byte across all 13 fixtures.
+
+**Filed after reviewing that** — the reason we nonetheless do *not* build on
+`iter_packets`:
+
+- **[#76] `iter_packets` exposes neither the file header nor what
+  defragmentation dropped.** It is a bare generator, so `tick_hz` and
+  `link_type` are unreachable — and without `tick_hz` a `ts_frac` has no
+  stated unit, which is the misreading #64 existed to end. Incomplete datagrams
+  are dropped with no tally. We need all three, so `capture.py` composes
+  `open_pcap` + `Defragmenter` + `parse_packet` itself. Revisit when #76 lands.
 
 *python-zipline* — [#47](https://github.com/adamkjonsson/python-zipline/issues/47), [#48](https://github.com/adamkjonsson/python-zipline/issues/48), [#49](https://github.com/adamkjonsson/python-zipline/issues/49). All three still open; 0.8.0 was packeteer-only.
 
-1. **[#47] `ts_first` unreachable from the ergonomic writer.** `SessionWriter.record()`
-   has no `ts_first=` keyword. **Not a blocker:** the predicted workaround —
-   `FileWriter.write_block(zpf.Record(session_id=…, sender_pid=…, source_id=…,
-   ts_first=…))` — is confirmed to write and read back with `diagnostics == []`.
-   An ergonomics gap, not a capability gap.
-2. **[#48] Stale spec URL.** `pyproject.toml` `[project.urls] Specification` points at
-   v0.12 while the code implements 0.16.
-3. **[#49] `DECODER_API.md` checklist item 6** (causal output ordering + conditional
-   `sequenced=`) is unimplemented. **Not a blocker for phase 6 either:** the
-   primitives that phase reuses, `zpf.causal_merge` and `zpf.verify_sequenced`,
-   both exist today. #49 is about the library's own decoder helpers.
+All three are answered in python-zipline **0.2.0.dev0**; #47 and #48 are closed.
+
+1. **[#47] `ts_first` unreachable from the ergonomic writer.** *Landed:*
+   `ts_first=` is now a keyword on `SessionWriter.record()`, so a coalesced
+   record can state when it started without dropping to `write_block` and
+   hand-managing ids. That matters here specifically: spans must reference a
+   `zpf-input` Source, and a capture converter has none, so `ts_first` is the
+   **only** way our files can carry a record's start time.
+2. **[#48] Stale spec URL.** *Landed:* held to `SPEC_VERSION` by a test.
+3. **[#49] Causal output ordering.** *Landed, and it reshapes phase 6.* Both
+   questions we raised were answered in code: there **is** a writer-side helper
+   — `begin_session(linearize=True)` buffers a session and emits it in causal
+   order at `end()` — and a hint-ful TCP session genuinely needs **no**
+   `sequenced_basis`. A write-time causal-order guard (`verify_order=True`,
+   on by default) now checks the promise as records arrive. The decode-stage
+   remainder split out as **[#50]**, which v1 does not reach.
 
 ## What the spec demands of this writer
 
@@ -222,14 +244,25 @@ The rewrite deletes the dispatch, the raw-bytes IP-length read (#66 trims
 padding upstream now) and `tick_hz_for` (#64 supplies `header.tick_hz`, and
 `ts_frac` already arrives in those units, so `_frac_scale` goes too).
 
-Three things the rewrite must keep or gain:
+**The shape it takes.** `iter_packets` (#73) is the obvious call and is the
+wrong one here — it hides `tick_hz`, `link_type` and the incomplete-datagram
+tally, all three of which we need (#76). So `CaptureReader` composes the three
+pieces itself, which is a short loop now that they exist:
 
-- **The fragment check stays.** #65 fixed *non-first* fragments to report
-  `transport = None`, but a *first* fragment still parses a transport header
-  with only that fragment's payload behind it. On `fragmentation.pcap` that is
-  59 packets which `parse_packet` will happily hand over truncated. Either
-  defragment ahead of the parse (phase 7) or keep skipping on
-  `ip.flags & MF` / non-zero `fragment_offset` (IPv4) and `ip.fragment` (IPv6).
+```python
+with open_pcap(path=path) as reader:          # header first: tick_hz, link_type
+    for record in reader:                     # streams; no whole-file read
+        for assembled in defrag.feed(record.data, ts, token=record):
+            packet = parse_packet(assembled.frame, link_type=…, decode_app=False)
+```
+
+Three consequences for the rewrite:
+
+- **The fragment check goes.** It was needed because a *first* fragment parses
+  a transport header over a truncated payload — 59 of them on
+  `fragmentation.pcap`. Defragmenting ahead of the parse removes the hazard at
+  the source: with reassembly on, no packet reaches `parse_packet` still
+  flagged More-Fragments. This is phase 7 and phase 4b becoming one change.
 - **Link types broaden for free.** The hand-walk understood Ethernet and RAW
   only. `parse_packet` adds SLL/SLL2, ARP, MPLS, PPPoE and the tunnel stack
   (VXLAN, GENEVE, GTP-U, GRE, EtherIP, IP-in-IP, AH, ESP) — traffic that
@@ -237,9 +270,14 @@ Three things the rewrite must keep or gain:
   Decide deliberately whether a tunnelled flow keys on the inner or outer
   addresses; the plan's answer is inner, since that is the stream that has a
   payload.
-- **Header offsets are lost.** The hand-walk knew where the payload sat in the
-  frame; `parse_packet` does not report it (#71). Phase 5 needs it, so either
-  that issue lands first or `capture.py` keeps a reduced walk for offsets alone.
+- **Byte offsets arrive intact.** `record.data_offset + packet.payload_offset`
+  (#62 + #71) is the payload's offset in the file, confirmed against raw bytes.
+  Passing the `PcapRecord` as the `Defragmenter` token (#72) carries that
+  through reassembly, so `AssembledFrame.tokens` names every contributing
+  record. **Caveat:** `payload_offset` is relative to the *reassembled* frame,
+  so for `fragment_count > 1` the naive sum is wrong — a reassembled payload
+  occupies several discontiguous ranges, and phase 5 must either compute them
+  per fragment or decline provenance for that traffic.
 
 Streaming replaces the whole-file read: `open_pcap` yields one `PcapRecord` at
 a time, so `CaptureReader` stops materialising `capture.packets` and carries
@@ -334,18 +372,23 @@ upstream-first rule; `.github/workflows/ci.yml` modelled on packeteer's (ruff jo
 - [x] **3.** `tcp.py` — the reassembler.
 - [x] **4.** CLI + filtering (`__main__.py`, `filter.py`, `survey.py`).
 - [x] **8.** README.
-- [ ] **4b.** Adopt packeteer 0.8.0: rewrite `capture.py` onto
-  `parse_packet(decode_app=False)` + `open_pcap`, drop `tick_hz_for` and the
-  raw-bytes length read, carry byte offsets and `TCPOptions` on `PacketView`.
-  Prerequisite for 5 and 7, and the point at which the shim comment goes.
+
+**Nothing below is blocked.** Every upstream gate has been lifted; what remains
+is our own work. Phase 7 is gone as a separate step — see below.
+
+- [ ] **4b.** Rewrite `capture.py` onto `open_pcap` + `Defragmenter` +
+  `parse_packet(decode_app=False)`. Deletes the layer walk, the raw-bytes
+  length read, `tick_hz_for` and `_frac_scale`; carries byte offsets and
+  `TCPOptions` onto `PacketView`; drops the fragment check. **Absorbs phase 7**
+  — defragmenting is one argument on the same loop. Prerequisite for 5.
 - [ ] **5.** Capture-scoped provenance: overlap-discard `Undecoded` markers,
-  handshake SYN records, `ts_first`. Byte offsets now exist (packeteer#62);
-  `FileWriter.undecoded(source, session_id, pid, off_start, off_end, …)` is the
-  vehicle and is already in `zpf`. Remaining gap is locating the payload within
-  the frame — packeteer#71, or a reduced local walk.
-- [ ] **6.** Sequenced TCP sessions (below). **Never blocked** — `causal_merge`
-  and `verify_sequenced` ship in `zpf` today.
-- [ ] **7.** IP reassembly (below). **Unblocked by packeteer#65.**
+  handshake SYN records, `ts_first`. All three pieces exist —
+  `FileWriter.undecoded(source, session_id, pid, off_start, off_end, …)`,
+  `record(ts_first=…)`, and `data_offset + payload_offset` for the ranges.
+  Only reassembled datagrams need care (discontiguous ranges).
+- [ ] **6.** Sequenced TCP sessions (below). Now largely a library call.
+- ~~**7.** IP reassembly~~ — **folded into 4b**, since `Defragmenter` sits in
+  the same loop rather than being a separate stage.
 
 **Built so far** — `src/zpfwire/`: `capture.py`, `flow.py`, `tcp.py`, `udp.py`,
 `convert.py`, `options.py`, `stats.py`, `filter.py`, `survey.py`, `__main__.py`.
@@ -363,48 +406,66 @@ Two design points settled during implementation, both worth keeping:
 
 ### Phase 6 — sequenced sessions
 
-A TCP session is *hint-ful*, so `SEQUENCED` needs no `sequenced_basis`;
-correctness comes entirely from storing records in a valid causal linearization
-rather than capture order. Reuse `zpf.causal_merge` and `zpf.verify_sequenced`
-(`order.py`) — do not reimplement RFC 1982 arithmetic or the merge.
+A TCP session is *hint-ful*, so `SEQUENCED` needs no `sequenced_basis` —
+confirmed by python-zipline#49 rather than assumed. Correctness comes entirely
+from storing records in a valid causal linearization rather than capture order.
 
-The real tension is with streaming: a causal order needs both directions
-available, so a sequenced writer buffers a session until its end. Make it opt-in
-(`--sequenced`), bound the per-session buffer, and document the trade-off.
-Verify against the spec's skewed two-file worked example and `verify_sequenced`.
-Relates to python-zipline issue 3.
+**python-zipline 0.2.0 does the hard part.** The plan used to scope this as
+"buffer the session ourselves and drive `causal_merge`"; `begin_session(
+sequenced=True, linearize=True)` now buffers and linearizes on `end()`, and
+`verify_order=True` checks the promise as records arrive. So the reassembler
+emits each direction **in its own order** — which is what it naturally produces
+— and the library computes the interleaving. Smoke-tested: two directions
+supplied out of capture order came back causally interleaved, `sequenced=True`,
+basis absent, `diagnostics == []`.
 
-### Phase 7 — IP reassembly
+What stays ours:
+
+- `--sequenced` to opt in, since the trade-off is real: `linearize` holds a
+  session in memory for its lifetime, which is unbounded, and the whole point
+  of the format is streaming. Default off.
+- `discontinuity()` is refused while `linearize` is on — a positional block
+  cannot survive reordering. We emit none at the transport layer anyway (a TCP
+  hole is visible by `seq_start` arithmetic), so this costs nothing, but it
+  should be asserted rather than discovered.
+- Verification against the spec's skewed two-file worked example.
+
+### Phase 7 — IP reassembly, folded into 4b
 
 Defragmentation belonged upstream (packeteer#65), as the counterpart to the
 existing `fragment_ipv4`/`fragment_ipv6`, and **it landed in 0.8.0**. `zpfwire`
-currently counts and skips fragmented packets, reporting them in
-`ConversionStats` — visible, not silent — and that skip counter now goes to zero.
+counts and skips fragmented packets today, reporting them in `ConversionStats` —
+visible, not silent — and that skip counter goes to zero.
 
-Measured on `tests/captures/fragmentation.pcap`: 287 frames in, 148 passed
-through untouched and 59 reassembled, 0 incomplete, against the 139 packets
-`zpfwire` skips as `ip-fragment` today.
+This stops being a separate phase because `Defragmenter.feed` sits inside the
+same loop that 4b already rewrites; splitting them would mean writing the loop
+twice. Measured on `tests/captures/fragmentation.pcap`: 287 frames in, 148
+passed through untouched and 59 reassembled, 0 incomplete, against the 139
+packets skipped as `ip-fragment` today — and 57 more payload-bearing packets
+reaching the reassembler as a result.
 
-`Defragmenter` is the primitive to use rather than the `defragment()` wrapper,
-because `feed(frame, ts)` is what composes with a streaming reader — feed each
-`PcapRecord`, parse whatever comes back. A returned frame that is the fed frame
-itself is a passthrough; anything else is a reassembled datagram, whose
-timestamp is the completing fragment's, which is exactly the spec's
-last-contributing-packet rule.
+Use `Defragmenter` rather than the `defragment()` wrapper, which yields bare
+frames: `feed(frame, ts, token=record)` returns `AssembledFrame`, and the token
+is how a `PcapRecord` — and therefore its byte offsets — survives reassembly.
+`fragment_count == 1` is the documented passthrough test. A reassembled
+datagram's timestamp is the completing fragment's, which is exactly the spec's
+last-contributing-packet rule; `source_records[0]` holds the first fragment's
+time if `ts_first` wants it.
 
 Two things to settle when building it:
 
-- **Provenance is unavailable** for reassembled datagrams (packeteer#72): the
-  contributing records, and therefore their file offsets, are not recoverable.
-  Until that lands, phase 5 markers cover unfragmented traffic only, and a
-  reassembled datagram's `packet_num` is the completing fragment's.
+- **Provenance for reassembled datagrams is discontiguous.** `tokens` (#72)
+  names every contributing record, but `payload_offset` is relative to the
+  reassembled frame, so phase 5 must walk the fragments to derive real file
+  ranges, or decline provenance for that traffic and say so.
 - **`Defragmenter.incomplete`** carries `IncompleteDatagram` records with a
-  `reason` of `timeout` / `overlap` / `too_large` / `evicted`. Fold those into
-  `ConversionStats` so dropped datagrams stay as visible as skipped ones are
-  now, and surface the buffer caps (`max_datagram_bytes`, `max_buffered_bytes`)
-  and `timeout_s` through `ReassemblyOptions` into `params_digest`, since they
-  decide what gets thrown away — the same argument that made the TCP gap policy
-  a user-visible knob.
+  `reason` of `timeout` / `overlap` / `too_large` / `evicted`, and now `tokens`
+  for the fragments that did arrive. Fold those into `ConversionStats` so
+  dropped datagrams stay as visible as skipped ones are now, and surface the
+  buffer caps (`max_datagram_bytes`, `max_buffered_bytes`) and `timeout_s`
+  through `ReassemblyOptions` into `params_digest`, since they decide what gets
+  thrown away — the same argument that made the TCP gap policy a user-visible
+  knob.
 
 ## Verification
 
@@ -462,15 +523,24 @@ Each has an upstream issue above; none is worked around permanently here.
   is populated on the parse path (#63).
 - ~~Fragmented packets skipped~~ — `Defragmenter` (#65), phase 7.
 
-**Still open:**
+**Also resolved**, by the follow-up round and by python-zipline 0.2.0:
 
-- `ts_first` reaches the file only through `write_block(zpf.Record(…))` until
-  python-zipline#47 lands. Confirmed working, just not ergonomic.
-- No capture-scoped provenance for reassembled datagrams (packeteer#72), so
-  phase 5 markers cover unfragmented traffic only.
-- Payload byte offsets need packeteer#71 or a reduced local layer walk.
+- ~~Payload byte offsets~~ — `payload_offset` (#71).
+- ~~No provenance for reassembled datagrams~~ — `AssembledFrame.tokens` (#72),
+  with the discontiguous-range caveat above.
+- ~~`ts_first` only through `write_block`~~ — `record(ts_first=…)` (#47).
+- ~~Phase 6 must buffer and linearize by hand~~ — `linearize=True` (#49).
 
-**Housekeeping:** the venv has been rebuilt against packeteer 0.8.0.dev0, and
-all 138 tests still pass unchanged — 0.8.0 is backwards-compatible with the
-current `capture.py`, because the hand-walk drives the per-layer parsers rather
-than `parse_packet`. Phase 4b is therefore a deliberate migration, not a repair.
+**Still open — none blocking:**
+
+- `iter_packets` cannot be used until packeteer#76 lands, so `capture.py` keeps
+  composing the three pieces itself. Costs a dozen lines, not a capability.
+- Reassembled-datagram byte ranges must be derived per fragment.
+
+**Housekeeping:** the venv is rebuilt against packeteer 0.8.0.dev0 and
+python-zipline 0.2.0.dev0, and all 138 tests pass unchanged — neither release
+breaks the current `capture.py`, because the hand-walk drives the per-layer
+parsers rather than `parse_packet`. Phase 4b is a deliberate migration, not a
+repair. (`zpf`'s installed metadata still reads 0.1.0 against `pyproject`'s
+0.2.0.dev0; harmless, since `zpfwire --version` reports `SPEC_VERSION`, but
+`pip install -e ../python-zipline` tidies it.)
