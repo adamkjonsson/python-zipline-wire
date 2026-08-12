@@ -106,15 +106,24 @@ repo closes issues at release, not at merge, so they still read OPEN.
   `ParsedPacket.source_records` naming the capture records behind each packet.
   Verified to reproduce our hand-walk byte-for-byte across all 13 fixtures.
 
-**Filed after reviewing that** — the reason we nonetheless do *not* build on
-`iter_packets`:
+**Filed after reviewing that**, and **landed**:
 
-- **[#76] `iter_packets` exposes neither the file header nor what
-  defragmentation dropped.** It is a bare generator, so `tick_hz` and
-  `link_type` are unreachable — and without `tick_hz` a `ts_frac` has no
-  stated unit, which is the misreading #64 existed to end. Incomplete datagrams
-  are dropped with no tally. We need all three, so `capture.py` composes
-  `open_pcap` + `Defragmenter` + `parse_packet` itself. Revisit when #76 lands.
+- **[#76] `iter_packets` exposed neither the file header nor what
+  defragmentation dropped.** It was a bare generator, so `tick_hz` and
+  `link_type` were unreachable — and without `tick_hz` a `ts_frac` has no
+  stated unit, which is the misreading #64 existed to end. *Landed:*
+  `iter_packets` returns a **`PacketReader`** with `header` (populated before
+  the first packet), `incomplete`, `close()` and the context-manager protocol,
+  matching `PcapReader`. Iteration is unchanged.
+
+  It also went further than asked: **the unit now travels with the timestamp**.
+  `PcapRecord` gains `tick_hz`, `timestamp`, `timestamp_ns` and `datetime()`,
+  and `ParsedPacket` gains `tick_hz` and `timestamp`. For pcapng that rate is
+  *the record's interface* resolution, which need not match the file header's —
+  see the mixed-resolution note under `capture.py`.
+
+With that, **every upstream gap this project opened is closed**, and
+`capture.py` becomes one call rather than a composition.
 
 *python-zipline* — [#47](https://github.com/adamkjonsson/python-zipline/issues/47), [#48](https://github.com/adamkjonsson/python-zipline/issues/48), [#49](https://github.com/adamkjonsson/python-zipline/issues/49). All three still open; 0.8.0 was packeteer-only.
 
@@ -244,19 +253,24 @@ The rewrite deletes the dispatch, the raw-bytes IP-length read (#66 trims
 padding upstream now) and `tick_hz_for` (#64 supplies `header.tick_hz`, and
 `ts_frac` already arrives in those units, so `_frac_scale` goes too).
 
-**The shape it takes.** `iter_packets` (#73) is the obvious call and is the
-wrong one here — it hides `tick_hz`, `link_type` and the incomplete-datagram
-tally, all three of which we need (#76). So `CaptureReader` composes the three
-pieces itself, which is a short loop now that they exist:
+**The shape it takes.** After #76, `iter_packets` (#73) supplies everything at
+once, so `CaptureReader` wraps one call rather than composing three pieces:
 
 ```python
-with open_pcap(path=path) as reader:          # header first: tick_hz, link_type
-    for record in reader:                     # streams; no whole-file read
-        for assembled in defrag.feed(record.data, ts, token=record):
-            packet = parse_packet(assembled.frame, link_type=…, decode_app=False)
+with iter_packets(path=path, decode_app=False) as reader:
+    tick_hz, link_type = reader.header.tick_hz, reader.header.link_type
+    for packet in reader:                     # streams; reassembly already done
+        ...                                   # payload_offset, source_records, tick_hz
+    dropped = reader.incomplete               # complete once iteration ends
 ```
 
-Three consequences for the rewrite:
+`reader.header` is populated before the first packet, so the `.zpf` File Header
+and Source block can be written before any record is read — which is the order
+the writer wants anyway. Verified across all 13 fixtures: identical results to
+the current hand-walk, plus 57 payload-bearing packets on `fragmentation.pcap`
+that were being skipped, and nothing lost.
+
+Four consequences for the rewrite:
 
 - **The fragment check goes.** It was needed because a *first* fragment parses
   a transport header over a truncated payload — 59 of them on
@@ -270,18 +284,28 @@ Three consequences for the rewrite:
   Decide deliberately whether a tunnelled flow keys on the inner or outer
   addresses; the plan's answer is inner, since that is the stream that has a
   payload.
-- **Byte offsets arrive intact.** `record.data_offset + packet.payload_offset`
-  (#62 + #71) is the payload's offset in the file, confirmed against raw bytes.
-  Passing the `PcapRecord` as the `Defragmenter` token (#72) carries that
-  through reassembly, so `AssembledFrame.tokens` names every contributing
-  record. **Caveat:** `payload_offset` is relative to the *reassembled* frame,
-  so for `fragment_count > 1` the naive sum is wrong — a reassembled payload
-  occupies several discontiguous ranges, and phase 5 must either compute them
-  per fragment or decline provenance for that traffic.
+- **Byte offsets arrive intact.** `packet.source_records[0].data_offset +
+  packet.payload_offset` (#62 + #71) is the payload's offset in the file,
+  confirmed against raw bytes. `source_records` (#73, built on the #72 tokens)
+  names every contributing record, so provenance survives reassembly.
+  **Caveat:** `payload_offset` is relative to the *reassembled* frame, so for a
+  multi-record packet the naive sum is wrong — verified, it returns the wrong
+  bytes. A reassembled payload occupies several discontiguous ranges, and
+  phase 5 must either compute them per fragment or decline provenance there and
+  say so.
+- **A capture may state more than one tick rate.** `ParsedPacket.tick_hz` is
+  *the record's interface* resolution on pcapng, which need not equal
+  `header.tick_hz` in a multi-interface file. A `.zpf` File Header carries
+  exactly one `tick_hz`, so `CaptureReader` cannot pass mixed rates through: it
+  must pick a file-level rate — the header's, or `--tick-hz`, or the finest
+  observed — and rescale each packet into it, rather than assuming one rate and
+  silently misplacing packets from the other interfaces. Every current fixture
+  is single-rate (checked: each packet reports the header's), so nothing is
+  broken today; this is a case to handle deliberately rather than discover.
 
-Streaming replaces the whole-file read: `open_pcap` yields one `PcapRecord` at
-a time, so `CaptureReader` stops materialising `capture.packets` and carries
-`offset` / `data_offset` / `orig_len` through to the `PacketView`.
+Streaming replaces the whole-file read: packets arrive one at a time, so
+`CaptureReader` stops materialising `capture.packets` and carries the record
+offsets through to the `PacketView`.
 
 Output is a frozen `PacketView`: `ts_ticks`, `src`/`dst`, `proto`, `src_port`,
 `dst_port`, `seq`, `ack`, `tcp_flags`, `payload: bytes`, `packet_num` — plus,
@@ -376,11 +400,12 @@ upstream-first rule; `.github/workflows/ci.yml` modelled on packeteer's (ruff jo
 **Nothing below is blocked.** Every upstream gate has been lifted; what remains
 is our own work. Phase 7 is gone as a separate step — see below.
 
-- [ ] **4b.** Rewrite `capture.py` onto `open_pcap` + `Defragmenter` +
-  `parse_packet(decode_app=False)`. Deletes the layer walk, the raw-bytes
-  length read, `tick_hz_for` and `_frac_scale`; carries byte offsets and
-  `TCPOptions` onto `PacketView`; drops the fragment check. **Absorbs phase 7**
-  — defragmenting is one argument on the same loop. Prerequisite for 5.
+- [ ] **4b.** Rewrite `capture.py` onto `iter_packets(decode_app=False)`.
+  Deletes the layer walk, the raw-bytes length read, `tick_hz_for` and
+  `_frac_scale`; carries byte offsets and `TCPOptions` onto `PacketView`; drops
+  the fragment check; folds `reader.incomplete` into `ConversionStats`; settles
+  the mixed-tick-rate question above. **Absorbs phase 7** — reassembly is on by
+  default in the same call. Prerequisite for 5.
 - [ ] **5.** Capture-scoped provenance: overlap-discard `Undecoded` markers,
   handshake SYN records, `ts_first`. All three pieces exist —
   `FileWriter.undecoded(source, session_id, pid, off_start, off_end, …)`,
@@ -437,35 +462,39 @@ existing `fragment_ipv4`/`fragment_ipv6`, and **it landed in 0.8.0**. `zpfwire`
 counts and skips fragmented packets today, reporting them in `ConversionStats` —
 visible, not silent — and that skip counter goes to zero.
 
-This stops being a separate phase because `Defragmenter.feed` sits inside the
-same loop that 4b already rewrites; splitting them would mean writing the loop
-twice. Measured on `tests/captures/fragmentation.pcap`: 287 frames in, 148
-passed through untouched and 59 reassembled, 0 incomplete, against the 139
-packets skipped as `ip-fragment` today — and 57 more payload-bearing packets
-reaching the reassembler as a result.
+This stops being a separate phase because `iter_packets` reassembles by
+default; after 4b there is no separate stage left to build. Measured on
+`tests/captures/fragmentation.pcap`: 287 frames in, 148 passed through
+untouched and 59 reassembled, 0 incomplete, against the 139 packets skipped as
+`ip-fragment` today — and 57 more payload-bearing packets reaching the
+reassembler as a result.
 
-Use `Defragmenter` rather than the `defragment()` wrapper, which yields bare
-frames: `feed(frame, ts, token=record)` returns `AssembledFrame`, and the token
-is how a `PcapRecord` — and therefore its byte offsets — survives reassembly.
-`fragment_count == 1` is the documented passthrough test. A reassembled
-datagram's timestamp is the completing fragment's, which is exactly the spec's
-last-contributing-packet rule; `source_records[0]` holds the first fragment's
-time if `ts_first` wants it.
+`ParsedPacket.source_records` is the provenance handle: one record for an
+ordinary packet, every contributing fragment for a reassembled datagram, so
+`len(source_records) > 1` identifies one. A reassembled datagram's timestamp is
+the completing fragment's, which is exactly the spec's last-contributing-packet
+rule; `source_records[0]` holds the first fragment's time if `ts_first` wants
+it. (Reach for `Defragmenter` directly only if reassembly ever needs different
+policy than the default — `iter_packets` does not expose `timeout_s` or the
+buffer caps.)
 
 Two things to settle when building it:
 
-- **Provenance for reassembled datagrams is discontiguous.** `tokens` (#72)
-  names every contributing record, but `payload_offset` is relative to the
-  reassembled frame, so phase 5 must walk the fragments to derive real file
-  ranges, or decline provenance for that traffic and say so.
-- **`Defragmenter.incomplete`** carries `IncompleteDatagram` records with a
-  `reason` of `timeout` / `overlap` / `too_large` / `evicted`, and now `tokens`
-  for the fragments that did arrive. Fold those into `ConversionStats` so
-  dropped datagrams stay as visible as skipped ones are now, and surface the
-  buffer caps (`max_datagram_bytes`, `max_buffered_bytes`) and `timeout_s`
-  through `ReassemblyOptions` into `params_digest`, since they decide what gets
-  thrown away — the same argument that made the TCP gap policy a user-visible
-  knob.
+- **Provenance for reassembled datagrams is discontiguous.**
+  `source_records` names every contributing record, but `payload_offset` is
+  relative to the reassembled frame, so phase 5 must walk the fragments to
+  derive real file ranges, or decline provenance for that traffic and say so.
+- **`reader.incomplete`** carries `IncompleteDatagram` records with a `reason`
+  of `timeout` / `overlap` / `too_large` / `evicted`, and `tokens` for the
+  fragments that did arrive. Fold those into `ConversionStats` so dropped
+  datagrams stay as visible as skipped ones are now. Confirmed working:
+  removing one fragment from `fragmentation.pcap` yields one incomplete
+  datagram, `reason="timeout"`, `bytes_seen=610` of `expected_bytes=1162`, two
+  tokens. If the buffer caps or `timeout_s` ever need to move off their
+  defaults they belong in `ReassemblyOptions` and `params_digest` — they decide
+  what gets thrown away, the same argument that made the TCP gap policy a
+  user-visible knob — but that means dropping to `Defragmenter`, which
+  `iter_packets` does not parameterise.
 
 ## Verification
 
@@ -515,8 +544,8 @@ Each has an upstream issue above; none is worked around permanently here.
 
 - ~~Whole-file read until a streaming iterator exists~~ — `open_pcap` (#62).
 - ~~No overlap-discard provenance until byte offsets are available~~ —
-  `PcapRecord.data_offset` (#62). Locating the payload within the frame is the
-  one piece still missing (#71).
+  `PcapRecord.data_offset` (#62), with `payload_offset` (#71) locating the
+  payload within the frame.
 - ~~pcapng resolutions other than µs/ns misread~~ — `tick_hz` (#64). Keep
   `--tick-hz` as an override, not a necessity.
 - ~~No SACK-aware loss inference while TCP options go unparsed~~ — `TCPOptions`
@@ -527,15 +556,19 @@ Each has an upstream issue above; none is worked around permanently here.
 
 - ~~Payload byte offsets~~ — `payload_offset` (#71).
 - ~~No provenance for reassembled datagrams~~ — `AssembledFrame.tokens` (#72),
-  with the discontiguous-range caveat above.
+  surfaced as `source_records`, with the discontiguous-range caveat above.
 - ~~`ts_first` only through `write_block`~~ — `record(ts_first=…)` (#47).
 - ~~Phase 6 must buffer and linearize by hand~~ — `linearize=True` (#49).
+- ~~`iter_packets` hides the header and the dropped datagrams~~ —
+  `PacketReader` (#76). **No upstream issue this project raised is still open.**
 
-**Still open — none blocking:**
+**Still open — ours, not upstream:**
 
-- `iter_packets` cannot be used until packeteer#76 lands, so `capture.py` keeps
-  composing the three pieces itself. Costs a dozen lines, not a capability.
-- Reassembled-datagram byte ranges must be derived per fragment.
+- Reassembled-datagram byte ranges must be derived per fragment (phase 5).
+- A pcapng may state per-interface tick rates that differ from the file
+  header's; a `.zpf` carries one, so 4b must pick and rescale.
+- `iter_packets` does not parameterise reassembly, so non-default `timeout_s`
+  or buffer caps would mean dropping to `Defragmenter`. No reason to yet.
 
 **Housekeeping:** the venv is rebuilt against packeteer 0.8.0.dev0 and
 python-zipline 0.2.0.dev0, and all 138 tests pass unchanged — neither release
@@ -544,3 +577,12 @@ parsers rather than `parse_packet`. Phase 4b is a deliberate migration, not a
 repair. (`zpf`'s installed metadata still reads 0.1.0 against `pyproject`'s
 0.2.0.dev0; harmless, since `zpfwire --version` reports `SPEC_VERSION`, but
 `pip install -e ../python-zipline` tidies it.)
+
+Neither sibling is tagged yet — packeteer sits at `0.8.0.dev0` and
+python-zipline at `0.2.0.dev0`, both on `main`. `requirements.txt` installs
+them editable from the checkouts, so that is what 4b builds against.
+`pyproject.toml` names both dependencies with **no version constraint at all**,
+which is honest while neither is on PyPI but stops being so the moment they
+are: 4b relies on APIs that exist only in these unreleased versions, and
+python-zipline 0.2.0 is a declared break in both directions. Add floors when
+the two are released.
