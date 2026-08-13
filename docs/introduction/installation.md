@@ -63,5 +63,5 @@ ruff check src/ tests/ docs/                        # lint, must be silent
 .venv/bin/sphinx-build -W docs docs/_build/html     # docs, warnings are errors
 ```
 
-All three are release-blocking; the docs build treats warnings as errors so a
-broken cross-reference cannot ship.
+All three are release-blocking.  See {doc}`../internals/contributing` for what
+each is guarding.

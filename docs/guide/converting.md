@@ -70,7 +70,8 @@ stats = zpfwire.capture_to_zpf(
 
 Both are escape hatches.  The link type is read from the file header, and the
 tick rate from the header and each packet's own interface, so neither is
-normally needed.
+normally needed — see {doc}`../internals/capture-seam` for what the reader
+does with them.
 
 ## Reading the result
 

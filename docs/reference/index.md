@@ -8,6 +8,7 @@ public API, and the limits worth knowing before you rely on the output.
 |---------|--------------------|
 | {doc}`Specification mapping <zpf-mapping>` | Which `.zpf` block each of zpfwire's objects becomes, and every field it sets — including the fields it deliberately leaves out, with the rule that forbids them. |
 | {doc}`API Reference <../api/index>` | Full Python API: conversion entry points, the capture reader, reassembly options, statistics, and the flow layer. |
+| {doc}`Internals <../internals/index>` | How the library works under the hood — for contributors, and for users extending the conversion beyond the public API. |
 | {doc}`Limits <limits>` | What the output does not carry, what is not yet implemented, and which of those are permanent. |
 
 If you are writing code against zpfwire, start with the API Reference.  If you
@@ -19,5 +20,6 @@ the way it is — or is absent — start with the specification mapping.
 
 zpf-mapping
 ../api/index
+../internals/index
 limits
 ```

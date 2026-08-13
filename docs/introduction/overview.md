@@ -85,3 +85,4 @@ in the format can express that.  See {doc}`../guide/provenance`.
 | Convert a capture from the command line | {doc}`../cli/index` |
 | Drive it from Python | {doc}`../guide/index` |
 | Know which spec construct something becomes | {doc}`../reference/zpf-mapping` |
+| Work on zpfwire itself | {doc}`../internals/index` |
