@@ -91,12 +91,28 @@ carry the extent of what is missing — `seq_start` is the absolute wire
 sequence number, so a gap is visible as arithmetic:
 
 ```python
-records = session.by(pid)
-for before, after in zip(records, records[1:]):
-    expected = before.seq_start + len(before.payload)
+sent = [r for r in session.records()
+        if r.sender_pid == pid
+        and r.seq_start is not None
+        and not r.flags & zpf.RecordFlags.SYN]
+
+for before, after in zip(sent, sent[1:]):
+    expected = (before.seq_start + len(before.payload)) % (1 << 32)
     if after.seq_start != expected:
-        print(f"gap of {after.seq_start - expected} bytes")
+        print(f"gap of {(after.seq_start - expected) % (1 << 32)} bytes")
 ```
+
+Two details in that snippet are load-bearing.
+
+**Skip the SYN record.**  A SYN consumes a sequence number while carrying no
+payload, so a walk that includes it reports a phantom one-byte gap after every
+handshake.
+
+**Take the modulo.**  Sequence numbers wrap at 32 bits, and a long-lived
+stream will wrap.
+
+Done that way, the count matches what the conversion reported — six gaps on
+`packet_loss.pcap`, from both directions, exactly `stats.gaps`.
 
 Declaring it again would be a second account of the same missing bytes with no
 rule for which to believe.  So `Undecoded` covers the opposite case — bytes
