@@ -38,6 +38,7 @@ def capture_to_zpf(
     link_type: int | None = None,
     packet_filter: Callable[[PacketView], bool] | None = None,
     face: Literal["binary", "jsonl"] = "binary",
+    sequenced: bool = False,
 ) -> ConversionStats:
     """Convert a capture file into a `.zpf` file.
 
@@ -52,6 +53,8 @@ def capture_to_zpf(
         packet_filter: Called per packet; return ``False`` to exclude it.
         face: ``"binary"`` for a `.zpf`, ``"jsonl"`` for the JSON-Lines
             projection.
+        sequenced: Store each TCP session's records in a causal order and
+            mark it ``SEQUENCED``.  Costs memory — see :func:`convert`.
 
     Returns:
         What the conversion did, including everything it could not convert.
@@ -81,6 +84,7 @@ def capture_to_zpf(
         uri=uri,
         packet_filter=packet_filter,
         face=face,
+        sequenced=sequenced,
     )
 
 
@@ -94,6 +98,7 @@ def convert(
     uri: str | None = None,
     packet_filter: Callable[[PacketView], bool] | None = None,
     face: Literal["binary", "jsonl"] = "binary",
+    sequenced: bool = False,
 ) -> ConversionStats:
     """Write the packets of an already-open capture as a `.zpf` file.
 
@@ -109,6 +114,13 @@ def convert(
         uri: Where the capture lives, for the Source Descriptor.
         packet_filter: Called per packet; return ``False`` to exclude it.
         face: Output encoding.
+        sequenced: Store each TCP session's records in a valid causal order
+            and mark it ``SEQUENCED``.  A causal order needs both directions
+            of a session in hand, so the session is buffered until it ends —
+            unbounded for its lifetime, which is why this is off by default in
+            a format whose point is streaming.  Only TCP sessions are marked:
+            a TCP session is *hint-ful*, so its order follows from seq and ack
+            and needs no ``sequenced_basis``, which a UDP session would.
 
     Returns:
         What the conversion did.
@@ -167,7 +179,8 @@ def convert(
                 tracker = None
             if tracker is None:
                 tracker = _begin(writer, key, decoder=decoder, options=options,
-                                 stats=stats, tick_hz=reader.tick_hz, source=source)
+                                 stats=stats, tick_hz=reader.tick_hz, source=source,
+                                 sequenced=sequenced)
                 flows[key] = tracker
                 stats.sessions += 1
 
@@ -195,8 +208,27 @@ def _begin(
     stats: ConversionStats,
     tick_hz: int,
     source: zpf.SourceHandle | None = None,
+    sequenced: bool = False,
 ) -> FlowTracker:
-    session = writer.begin_session(proto=key.protocol, key=key.text)
+    # A TCP session is hint-ful, so its causal order follows from seq/ack
+    # alone. `linearize` buffers the session and emits it in that order at
+    # end(), which is what lets the reassembler go on producing each direction
+    # in its own order — the only order it has.
+    causal = sequenced and key.protocol == "tcp"
+    session = writer.begin_session(
+        proto=key.protocol,
+        key=key.text,
+        sequenced=causal,
+        linearize=causal,
+        # A hint-ful session needs no basis, but whether this one *is* hint-ful
+        # depends on records that do not exist yet: a TCP conversation of pure
+        # acks produces none, and a session with no records is hint-less by
+        # default. The specification's answer is to record what the producer
+        # relies on rather than what turns out to apply, and SINGLE_CLOCK —
+        # which this file sets, one capture being one tap — is exactly the
+        # basis that covers those sessions.
+        sequenced_basis="clock" if causal else None,
+    )
     tracker_type = _TRACKERS[key.protocol]
     return tracker_type(
         key,

@@ -46,6 +46,9 @@ zpfwire convert capture.pcap -o capture.jsonl --jsonl
 
 # Just one subnet's HTTPS traffic
 zpfwire convert capture.pcap -o https.zpf --dst-port 443 --src 10.0.0.0/24
+
+# Store each TCP session in causal order rather than capture order
+zpfwire convert capture.pcap -o capture.zpf --sequenced
 ```
 
 ```python
@@ -114,18 +117,41 @@ A TCP hole needs no marker in the file: `seq_start` is the absolute wire
 sequence number, so a gap is visible as arithmetic. (`Discontinuity` blocks are
 for decoded layers, not this one.)
 
+Bytes that *do* exist in the capture and reach no record are a different
+matter, and nothing else in the format can express them — so a discarded
+retransmit is written as an `Undecoded` block naming its byte range in the
+capture file:
+
+```
+overlap      8875 bytes (discarded)
+undecoded    12 region(s) cited
+```
+
+## Causal order
+
+By default records are stored in capture order, which is not the same thing as
+the order events happened: two packets recorded a microsecond apart may have
+crossed on the wire.
+
+`--sequenced` stores each TCP session in a valid causal linearization instead
+and marks it `SEQUENCED`, so a reader may act on the order. A TCP session is
+*hint-ful* — the order follows from `seq` and `ack` — so this needs no guesswork.
+
+The cost is memory: a causal order needs both directions in hand, so a session
+is buffered until it ends. That is unbounded for the session's lifetime, which
+is why it is opt-in in a format whose point is streaming.
+
 ## Not yet
 
 - **Application decoding.** Deliberately out of scope for now. It is a
   *second* file, produced from this one with `zpf.decode_stage(...)`, and the
   clean transport-layer output here is what makes that possible.
-- **Sequenced sessions.** Records go out in capture order and the session is
-  not marked `SEQUENCED`. Committing to a causal linearization is planned.
-- **IP defragmentation.** Fragments are counted and skipped, not reassembled.
-- **Bounded memory.** The capture is read whole; there is no streaming reader
-  yet.
+- **Sequenced UDP sessions.** A UDP session carries no `seq`/`ack`, so its
+  order rests on something else and claiming it is a separate judgement.
+- **SACK-aware loss inference.** TCP options are parsed and carried on each
+  packet, but the reassembler does not yet use them.
 
-`PLAN.md` tracks these with the upstream issues they depend on.
+`PLAN.md` tracks these.
 
 ## Development
 

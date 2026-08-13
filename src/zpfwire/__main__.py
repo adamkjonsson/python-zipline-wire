@@ -107,6 +107,7 @@ def _cmd_convert(args: argparse.Namespace) -> None:
         uri=uri,
         packet_filter=matcher(_build_packet_filter(args)),
         face="jsonl" if args.jsonl else "binary",
+        sequenced=args.sequenced,
     )
 
     if not args.quiet:
@@ -185,6 +186,11 @@ def main() -> None:
                                 help="write the JSON-Lines projection instead of the container")
     convert_parser.add_argument("--no-tcp", action="store_true", help="skip TCP conversations")
     convert_parser.add_argument("--no-udp", action="store_true", help="skip UDP conversations")
+    convert_parser.add_argument(
+        "--sequenced", action="store_true",
+        help="store TCP sessions in causal order and mark them SEQUENCED "
+             "(buffers each session until it ends)",
+    )
     convert_parser.add_argument("-q", "--quiet", action="store_true",
                                 help="do not print the summary")
 

@@ -397,23 +397,20 @@ upstream-first rule; `.github/workflows/ci.yml` modelled on packeteer's (ruff jo
 - [x] **4.** CLI + filtering (`__main__.py`, `filter.py`, `survey.py`).
 - [x] **8.** README.
 
-**Nothing below is blocked.** Every upstream gate has been lifted; what remains
-is our own work. Phase 7 is gone as a separate step — see below.
+**The plan is complete.** Every upstream gate was lifted and every phase below
+has landed. Phase 7 disappeared as a separate step — see below.
 
-- [ ] **4b.** Rewrite `capture.py` onto `iter_packets(decode_app=False)`.
-  Deletes the layer walk, the raw-bytes length read, `tick_hz_for` and
-  `_frac_scale`; carries byte offsets and `TCPOptions` onto `PacketView`; drops
-  the fragment check; folds `reader.incomplete` into `ConversionStats`; settles
-  the mixed-tick-rate question above. **Absorbs phase 7** — reassembly is on by
-  default in the same call. Prerequisite for 5.
-- [ ] **5.** Capture-scoped provenance: overlap-discard `Undecoded` markers,
-  handshake SYN records, `ts_first`. All three pieces exist —
-  `FileWriter.undecoded(source, session_id, pid, off_start, off_end, …)`,
-  `record(ts_first=…)`, and `data_offset + payload_offset` for the ranges.
-  Only reassembled datagrams need care (discontiguous ranges).
-- [ ] **6.** Sequenced TCP sessions (below). Now largely a library call.
-- ~~**7.** IP reassembly~~ — **folded into 4b**, since `Defragmenter` sits in
-  the same loop rather than being a separate stage.
+- [x] **4b.** `capture.py` rewritten onto `iter_packets(decode_app=False)`.
+  Deleted the layer walk, the raw-bytes length read, `tick_hz_for` and
+  `_frac_scale`; carries byte offsets and `TCPOptions` on `PacketView`; dropped
+  the fragment check; folds `reader.incomplete` into `ConversionStats`;
+  rescales timestamps per packet. **Absorbed phase 7.**
+- [x] **5.** Capture-scoped provenance: `Undecoded` blocks for discarded
+  retransmits and late arrivals, `ts_first` on coalesced records, and the
+  handshake written as an empty `SYN` record per direction.
+- [x] **6.** Sequenced TCP sessions, via `--sequenced` (below).
+- ~~**7.** IP reassembly~~ — **folded into 4b**, since reassembly is one
+  argument on the call `capture.py` already makes.
 
 **Built so far** — `src/zpfwire/`: `capture.py`, `flow.py`, `tcp.py`, `udp.py`,
 `convert.py`, `options.py`, `stats.py`, `filter.py`, `survey.py`, `__main__.py`.
@@ -444,16 +441,25 @@ emits each direction **in its own order** — which is what it naturally produce
 supplied out of capture order came back causally interleaved, `sequenced=True`,
 basis absent, `diagnostics == []`.
 
-What stays ours:
+What stayed ours, and how it came out:
 
 - `--sequenced` to opt in, since the trade-off is real: `linearize` holds a
   session in memory for its lifetime, which is unbounded, and the whole point
   of the format is streaming. Default off.
-- `discontinuity()` is refused while `linearize` is on — a positional block
-  cannot survive reordering. We emit none at the transport layer anyway (a TCP
-  hole is visible by `seq_start` arithmetic), so this costs nothing, but it
-  should be asserted rather than discovered.
-- Verification against the spec's skewed two-file worked example.
+- **UDP sessions are not marked.** A datagram carries no `seq`/`ack`, so a UDP
+  session is hint-less and its order would rest on something the flag does not
+  by itself establish. Left as a separate judgement.
+- **`sequenced_basis="clock"` is declared anyway**, which the first draft did
+  not do — and `http_example.pcapng` broke on it. A TCP conversation of pure
+  acks produces *no records*, and a session with no records carries no
+  `seq`/`ack`, so it is hint-less however TCP it is. `SEQUENCED` is written on
+  the Session Descriptor, before any record exists, so a producer cannot know
+  which it will be. The spec's answer is to record what you *rely on* rather
+  than what turns out to apply, and `SINGLE_CLOCK` — which this file sets, one
+  capture being one tap — supplies exactly that basis for the hint-less ones.
+- `discontinuity()` is refused while `linearize` is on. We emit none at the
+  transport layer anyway (a TCP hole is visible by `seq_start` arithmetic), so
+  this costs nothing.
 
 ### Phase 7 — IP reassembly, folded into 4b
 

@@ -225,6 +225,8 @@ class SessionSnapshot:
     participants: tuple[object, ...]
     records: list[object]
     end_reason: str | None
+    sequenced: bool = False
+    sequenced_basis: str | None = None
 
     def by(self, pid: int) -> list[object]:
         """Return the records sent by participant *pid*, in stored order."""
@@ -259,7 +261,9 @@ def to_zpf(source: io.BytesIO | pathlib.Path | str, tmp_path: pathlib.Path,
         The stats and the read-back sessions.
 
     """
-    out = pathlib.Path(tmp_path) / "out.zpf"
+    directory = pathlib.Path(tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    out = directory / "out.zpf"
     stats = capture_to_zpf(source, out, **kwargs)  # type: ignore[arg-type]
 
     snapshots: list[SessionSnapshot] = []
@@ -271,6 +275,8 @@ def to_zpf(source: io.BytesIO | pathlib.Path | str, tmp_path: pathlib.Path,
                 participants=tuple(session.participants),
                 records=list(session.records()),
                 end_reason=session.end.reason if session.end else None,
+                sequenced=bool(session.sequenced),
+                sequenced_basis=getattr(session, "sequenced_basis", None),
             ))
         undecoded = list(reader.undecoded)
         diagnostics = list(reader.diagnostics)
