@@ -43,6 +43,7 @@ __all__ = [
     "Seg",
     "SessionSnapshot",
     "capture_of",
+    "fragmented_frames",
     "tcp_packet",
     "tcp_segments",
     "to_zpf",
@@ -91,6 +92,30 @@ def udp_packet(
     if payload:
         builder = builder.payload(data=payload)
     return builder.build()
+
+
+def fragmented_frames(
+    *,
+    payload: bytes = b"fragmented-payload" * 80,
+    mtu: int = 600,
+) -> list[bytes]:
+    """Build one UDP datagram split across several IPv4 fragments.
+
+    Returns:
+        The fragments in wire order; every one is needed to reassemble the
+        datagram, so dropping any of them makes it incomplete.
+
+    """
+    frames = (
+        PacketBuilder()
+        .ethernet(src_mac="00:00:00:00:00:01", dst_mac="00:00:00:00:00:02")
+        .ip(src=CLIENT_IP, dst=SERVER_IP)
+        .udp(src_port=CLIENT_PORT, dst_port=53)
+        .payload(data=payload)
+        .fragment(mtu)
+    )
+    assert len(frames) > 1, "the payload must be large enough to fragment"
+    return frames
 
 
 def capture_of(

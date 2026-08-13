@@ -23,7 +23,6 @@ from zpfwire.capture import (
     PacketView,
     SkipReason,
     format_endpoint,
-    tick_hz_for,
 )
 from zpfwire.convert import capture_to_zpf, convert, describe_source
 from zpfwire.filter import matcher, spec_of
@@ -59,6 +58,5 @@ __all__ = [
     "matcher",
     "spec_of",
     "survey",
-    "tick_hz_for",
     "tool_version",
 ]

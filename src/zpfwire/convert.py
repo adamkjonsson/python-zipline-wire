@@ -151,7 +151,6 @@ def convert(
 
         flows: dict[FlowKey, FlowTracker] = {}
         for pkt in reader:
-            stats.packets += 1
             if pkt.protocol not in wanted:
                 stats.skipped[f"{pkt.protocol}-not-requested"] += 1
                 continue
@@ -178,6 +177,9 @@ def convert(
             _close(tracker, flows, key)
 
         # Whatever the reader could not turn into a packet is counted, not lost.
+        # Both figures come from the reader rather than the loop above, which
+        # only ever sees the packets that survived it.
+        stats.packets = reader.packet_count
         stats.skipped.update(reader.skipped)
 
     return stats

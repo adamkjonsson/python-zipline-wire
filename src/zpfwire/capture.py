@@ -4,48 +4,41 @@ This is the seam against packeteer.  Everything that knows about link layers,
 IP headers, or pcap framing lives here; the rest of :mod:`zpfwire` sees only
 :class:`PacketView` objects.
 
-Why the layer walk is done by hand
-----------------------------------
+The module used to walk the layers itself, driving packeteer's per-layer
+parsers and slicing by the header sizes they reported, because
+``parse_pcap_packet`` destroyed the payload on exactly the ports a payload
+format exists to serve.  packeteer 0.8.0 closed that gap and the four others
+the walk was compensating for, so the walk is gone:
 
-The obvious entry point is :func:`packeteer.parse.parse_pcap_packet`, and it
-cannot be used: ``_try_parse_dns`` / ``_try_parse_dhcp`` / ``_try_parse_http``
-run unconditionally after the transport header and return ``b""`` on success,
-so ``ParsedPacket.payload`` is empty for every packet on ports 80/8080,
-53/5353 and 67/68.  Those are exactly the payloads a payload format exists to
-carry, and there is no flag to decline the behaviour.
+- ``decode_app=False`` keeps the payload (packeteer#61);
+- the parser trims Ethernet padding itself (packeteer#66);
+- fragments are reassembled before parsing, so no packet arrives with a
+  transport header over a truncated payload (packeteer#65);
+- ``payload_offset`` says where the payload sits in the frame, which
+  ``len(frame) - len(payload)`` cannot answer once padding is trimmed
+  (packeteer#71);
+- and :func:`~packeteer.parse.iter_packets` carries the capture header and the
+  datagrams reassembly gave up on alongside the packets (packeteer#76).
 
-So the walk below drives packeteer's *per-layer* parsers directly — they all
-share the signature ``packet_parser(data) -> (header_size, next_layer, header)``
-— and slices by the header sizes they report.  The parsing is still
-packeteer's; only the dispatch is local.
-
-This whole module collapses to a single ``parse_packet(..., decode_app=False)``
-call once packeteer#61 lands.  Two smaller pieces of hand-work here have their
-own upstream issues: reading the IP length from raw bytes (packeteer#66) and
-the absence of decoded TCP options (packeteer#63).
-
-- https://github.com/adamkjonsson/packeteer/issues/61
-- https://github.com/adamkjonsson/packeteer/issues/66
-- https://github.com/adamkjonsson/packeteer/issues/63
+What remains here is the mapping from packeteer's model to ours: deciding what
+counts as a convertible packet, tallying what does not, and putting timestamps
+on one clock.
 """
 
 from __future__ import annotations
 
 import os
 import socket
-import struct
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import IO
 
-from packeteer.generate.ethernet import ETHERTYPE_IPV4, ETHERTYPE_IPV6
-from packeteer.generate.ip import IPHeader
-from packeteer.parse.ethernet import packet_parser as _ethernet_parser
-from packeteer.parse.ip import packet_parser as _ip_parser
-from packeteer.parse.tcp import packet_parser as _tcp_parser
-from packeteer.parse.udp import packet_parser as _udp_parser
-from packeteer.pcap import LINKTYPE_ETHERNET, LINKTYPE_RAW, PcapFileHeader, read_pcap
+from packeteer.generate import ETHERTYPE_IPV4, ETHERTYPE_IPV6, IPv6Header
+from packeteer.generate.tcp import TCPHeader, TCPOptions
+from packeteer.generate.udp import UDPHeader
+from packeteer.parse import PacketReader, ParsedPacket, iter_packets
+from packeteer.pcap import PcapFileHeader
 
 __all__ = [
     "TICK_HZ_NS",
@@ -53,7 +46,7 @@ __all__ = [
     "CaptureReader",
     "PacketView",
     "SkipReason",
-    "tick_hz_for",
+    "format_endpoint",
 ]
 
 TICK_HZ_US: int = 1_000_000
@@ -62,8 +55,8 @@ TICK_HZ_US: int = 1_000_000
 TICK_HZ_NS: int = 1_000_000_000
 """Ticks per second for a nanosecond-resolution capture."""
 
-_IPV4_MORE_FRAGMENTS = 0b001
-_IPV6_FRAGMENT_HEADER = 44
+_IP_ETHERTYPES = (ETHERTYPE_IPV4, ETHERTYPE_IPV6)
+_STREAM_PROTOCOLS = (socket.IPPROTO_TCP, socket.IPPROTO_UDP)
 
 
 class SkipReason:
@@ -72,15 +65,27 @@ class SkipReason:
     These are the keys of :attr:`CaptureReader.skipped`.  They are plain
     strings rather than an enum so that a caller can print a tally without
     translating anything.
+
+    Attributes:
+        UNSUPPORTED_LINKTYPE: No link-layer header was recognised, so nothing
+            below it could be reached.
+        NON_IP: The link layer carried something other than IP — ARP, for
+            instance.
+        MALFORMED_IP: The link layer announced IP, but no IP header parsed.
+        NOT_TCP_UDP: An IP datagram carrying neither TCP nor UDP.
+        MALFORMED_TRANSPORT: The IP header announced TCP or UDP, but no
+            transport header parsed.
+        INCOMPLETE_DATAGRAM: A fragmented datagram whose fragments never all
+            arrived, counted once per datagram rather than per fragment.
+
     """
 
     UNSUPPORTED_LINKTYPE = "unsupported-linktype"
-    MALFORMED_LINK = "malformed-link-header"
     NON_IP = "non-ip"
     MALFORMED_IP = "malformed-ip-header"
-    FRAGMENT = "ip-fragment"
     NOT_TCP_UDP = "not-tcp-or-udp"
     MALFORMED_TRANSPORT = "malformed-transport-header"
+    INCOMPLETE_DATAGRAM = "incomplete-datagram"
 
 
 @dataclass(frozen=True)
@@ -88,18 +93,28 @@ class PacketView:
     """One TCP segment or UDP datagram, reduced to what reassembly needs.
 
     Attributes:
-        packet_num: 1-based index of the packet within the capture.
-        ts_ticks: Capture timestamp in ``tick_hz`` ticks since the Unix epoch.
+        packet_num: 1-based index of the packet within the capture, counting
+            packets that were skipped.  A datagram reassembled from several
+            fragments counts once.
+        ts_ticks: Capture timestamp in :attr:`CaptureReader.tick_hz` ticks
+            since the Unix epoch.
         protocol: ``"tcp"`` or ``"udp"``.
         src: Source IP address, as text.
         dst: Destination IP address, as text.
         src_port: Source port.
         dst_port: Destination port.
-        payload: Transport payload, trimmed to the IP length so that any
-            link-layer padding is excluded.
+        payload: Transport payload, exactly as captured.
         seq: TCP sequence number; ``0`` for UDP.
         ack: TCP acknowledgement number; ``0`` for UDP.
         tcp_flags: Raw 8-bit TCP flags bitmask; ``0`` for UDP.
+        tcp_options: Parsed TCP options, or ``None`` when the segment carried
+            none.  SACK blocks and timestamps live here.
+        payload_offset: Byte offset of :attr:`payload`'s first byte within the
+            capture file, or ``None`` when there is no payload or the packet
+            was reassembled — a reassembled payload occupies several
+            discontiguous ranges, which one offset cannot express.
+        fragment_count: How many capture records the packet came from; ``1``
+            unless it was reassembled.
 
     """
 
@@ -114,6 +129,9 @@ class PacketView:
     seq: int = 0
     ack: int = 0
     tcp_flags: int = 0
+    tcp_options: TCPOptions | None = None
+    payload_offset: int | None = None
+    fragment_count: int = 1
 
     @property
     def src_endpoint(self) -> str:
@@ -144,40 +162,26 @@ def format_endpoint(ip: str, port: int) -> str:
     return f"{ip}:{port}"
 
 
-def tick_hz_for(header: PcapFileHeader) -> int:
-    """Return the tick rate matching a capture's timestamp resolution.
-
-    packeteer reduces pcapng's ``if_tsresol`` option to a single boolean, so
-    only microsecond and nanosecond resolutions survive the read; anything
-    else is reported as microseconds and would be misread here in exactly the
-    same way (packeteer#64).  Callers who know better can override the value.
-
-    Args:
-        header: The capture's file header.
-
-    Returns:
-        Ticks per second — :data:`TICK_HZ_NS` or :data:`TICK_HZ_US`.
-
-    """
-    return TICK_HZ_NS if header.nanoseconds else TICK_HZ_US
-
-
 class CaptureReader:
     """Iterates a capture file as :class:`PacketView` objects.
 
-    Packets that carry no TCP or UDP payload stream — anything that is not
-    IP, is fragmented, or uses another transport — are not yielded; they are
+    Packets that carry no TCP or UDP payload stream are not yielded; they are
     tallied in :attr:`skipped` so a caller can report them rather than lose
-    them silently.
+    them silently.  Fragmented datagrams are reassembled before parsing, so a
+    fragment is never mistaken for a whole packet; a datagram whose fragments
+    never all arrived is counted in :attr:`skipped` too.
 
-    The whole capture is read into memory on construction, because
-    :func:`packeteer.pcap.read_pcap` has no streaming counterpart
-    (packeteer#62).
+    The capture is read one packet at a time, so a file larger than memory is
+    fine.  Iterating twice re-reads the file and resets the tallies.
 
     Attributes:
         header: The capture's file header.
-        tick_hz: Ticks per second for every :attr:`PacketView.ts_ticks`.
-        packet_count: Number of packets in the capture, including skipped ones.
+        tick_hz: Ticks per second for every :attr:`PacketView.ts_ticks`.  Taken
+            from the header unless overridden; per-packet timestamps are
+            rescaled into it, so a pcapng whose interfaces disagree still lands
+            on one clock.
+        packet_count: Packets seen during the most recent iteration, including
+            skipped ones.  Zero before the first.
         skipped: Tally of skip reasons; keys come from :class:`SkipReason`.
 
     Example:
@@ -195,7 +199,7 @@ class CaptureReader:
         link_type: int | None = None,
         tick_hz: int | None = None,
     ) -> None:
-        """Read a capture.
+        """Open a capture and read its header.
 
         Args:
             path: Path to a pcap or pcapng file.  Mutually exclusive with
@@ -205,21 +209,21 @@ class CaptureReader:
             tick_hz: Override the tick rate derived from the file header.
 
         Raises:
-            ValueError: If neither or both of *path* and *file_object* are given.
+            ValueError: If neither or both of *path* and *file_object* are
+                given, or if the capture cannot be read at all.
 
         """
         if (path is None) == (file_object is None):
             raise ValueError("exactly one of 'path' or 'file_object' is required")
 
-        capture = read_pcap(path=path, file_object=file_object, link_type=link_type)
-        self.header: PcapFileHeader = capture.header
-        self.tick_hz: int = tick_hz if tick_hz is not None else tick_hz_for(capture.header)
-        self.packet_count: int = len(capture.packets)
+        self._path = path
+        self._file_object = file_object
+        self._link_type = link_type
+        with self._open() as reader:
+            self.header: PcapFileHeader = reader.header
+        self.tick_hz: int = tick_hz if tick_hz is not None else self.header.tick_hz
+        self.packet_count: int = 0
         self.skipped: Counter[str] = Counter()
-        self._records = capture.packets
-        self._frac_scale = self.tick_hz // (
-            TICK_HZ_NS if capture.header.nanoseconds else TICK_HZ_US
-        )
 
     @property
     def link_type(self) -> int:
@@ -229,166 +233,105 @@ class CaptureReader:
     def __iter__(self) -> Iterator[PacketView]:
         """Yield a :class:`PacketView` for every TCP segment and UDP datagram."""
         self.skipped.clear()
-        for index, (data, ts_sec, ts_frac) in enumerate(self._records, start=1):
-            result = _walk(data, self.header.link_type)
-            if isinstance(result, str):
-                self.skipped[result] += 1
-                continue
-            yield _view(result, index, self._ticks(ts_sec, ts_frac))
+        self.packet_count = 0
+        with self._open() as reader:
+            for index, packet in enumerate(reader, start=1):
+                self.packet_count = index
+                view = self._view(packet, index)
+                if view is None:
+                    continue
+                yield view
+            # Datagrams that never completed are dropped by the reassembler.
+            # Counting them here is what keeps that from being silent.  They
+            # are counted per datagram, not per fragment, and they never
+            # became packets, so they are not in `packet_count`.
+            if reader.incomplete:
+                self.skipped[SkipReason.INCOMPLETE_DATAGRAM] += len(reader.incomplete)
 
-    def _ticks(self, ts_sec: int, ts_frac: int) -> int:
-        return ts_sec * self.tick_hz + ts_frac * self._frac_scale
+    def _open(self) -> PacketReader:
+        if self._file_object is not None:
+            self._file_object.seek(0)
+        return iter_packets(
+            path=self._path,
+            file_object=self._file_object,
+            link_type=self._link_type,
+            decode_app=False,
+        )
+
+    def _view(self, packet: ParsedPacket, index: int) -> PacketView | None:
+        reason = _unconvertible(packet)
+        if reason is not None:
+            self.skipped[reason] += 1
+            return None
+
+        transport = packet.transport
+        tcp = transport if isinstance(transport, TCPHeader) else None
+        return PacketView(
+            packet_num=index,
+            ts_ticks=self._ticks(packet),
+            protocol="tcp" if tcp is not None else "udp",
+            src=packet.ip.src,
+            dst=packet.ip.dst,
+            src_port=transport.src_port,
+            dst_port=transport.dst_port,
+            payload=packet.payload,
+            seq=tcp.seq if tcp is not None else 0,
+            ack=tcp.ack if tcp is not None else 0,
+            tcp_flags=tcp.flags if tcp is not None else 0,
+            tcp_options=tcp.options if tcp is not None else None,
+            payload_offset=_payload_offset(packet),
+            fragment_count=len(packet.source_records) or 1,
+        )
+
+    def _ticks(self, packet: ParsedPacket) -> int:
+        """Put one packet's timestamp on this reader's clock.
+
+        A pcapng states its resolution per interface, so two packets in one
+        file can be counted in different units.  A `.zpf` file header carries
+        exactly one tick rate, so each packet is rescaled into ours rather
+        than assumed to share it.
+        """
+        source_hz = packet.tick_hz or self.tick_hz
+        if source_hz == self.tick_hz:
+            return packet.ts_sec * self.tick_hz + packet.ts_frac
+        return packet.ts_sec * self.tick_hz + (packet.ts_frac * self.tick_hz) // source_hz
 
 
-@dataclass(frozen=True)
-class _Transport:
-    """The result of a successful layer walk, before timestamping."""
+def _unconvertible(packet: ParsedPacket) -> str | None:
+    """Return why a packet carries no stream, or ``None`` when it does."""
+    if packet.ip is None:
+        if packet.ethernet is None and packet.sll is None:
+            return SkipReason.UNSUPPORTED_LINKTYPE
+        ethertype = packet.ethernet.ethertype if packet.ethernet is not None else None
+        if ethertype in _IP_ETHERTYPES:
+            return SkipReason.MALFORMED_IP
+        return SkipReason.NON_IP
 
-    protocol: str
-    src: str
-    dst: str
-    src_port: int
-    dst_port: int
-    payload: bytes
-    seq: int
-    ack: int
-    tcp_flags: int
-
-
-def _view(t: _Transport, packet_num: int, ts_ticks: int) -> PacketView:
-    return PacketView(
-        packet_num=packet_num,
-        ts_ticks=ts_ticks,
-        protocol=t.protocol,
-        src=t.src,
-        dst=t.dst,
-        src_port=t.src_port,
-        dst_port=t.dst_port,
-        payload=t.payload,
-        seq=t.seq,
-        ack=t.ack,
-        tcp_flags=t.tcp_flags,
-    )
-
-
-def _walk(data: bytes, link_type: int) -> _Transport | str:
-    """Walk one frame down to its transport payload.
-
-    Returns:
-        A :class:`_Transport` on success, or a :class:`SkipReason` string.
-
-    """
-    remaining = _strip_link_layer(data, link_type)
-    if isinstance(remaining, str):
-        return remaining
-
-    ip_size, ip_proto, ip_hdr = _ip_parser(remaining)
-    if ip_size == 0 or ip_hdr is None:
-        return SkipReason.MALFORMED_IP
-
-    if _is_fragment(ip_hdr, ip_proto):
-        return SkipReason.FRAGMENT
-
-    ip_payload = _ip_payload(remaining, ip_size)
-    if ip_payload is None:
-        return SkipReason.MALFORMED_IP
-
-    if ip_proto == socket.IPPROTO_TCP:
-        return _tcp(ip_hdr.src, ip_hdr.dst, ip_payload)
-    if ip_proto == socket.IPPROTO_UDP:
-        return _udp(ip_hdr.src, ip_hdr.dst, ip_payload)
+    if isinstance(packet.transport, (TCPHeader, UDPHeader)):
+        return None
+    # The IP header names the transport, so a missing header for a protocol we
+    # would have converted is a parse failure rather than a protocol we skip.
+    if _ip_protocol(packet) in _STREAM_PROTOCOLS:
+        return SkipReason.MALFORMED_TRANSPORT
     return SkipReason.NOT_TCP_UDP
 
 
-def _strip_link_layer(data: bytes, link_type: int) -> bytes | str:
-    """Remove the link-layer header, leaving the IP header first.
+def _ip_protocol(packet: ParsedPacket) -> int | None:
+    """Return the transport protocol number the IP header declares, if any."""
+    if isinstance(packet.ip, IPv6Header):
+        return packet.ip.next_header
+    return packet.ip.protocol if packet.ip is not None else None
 
-    ``packeteer.parse.ethernet`` consumes 802.1Q and QinQ tags itself and
-    reports the innermost EtherType, so VLANs need no handling here.
+
+def _payload_offset(packet: ParsedPacket) -> int | None:
+    """Where the payload's first byte sits in the capture file.
+
+    ``payload_offset`` is relative to the frame handed to the parser, so it
+    composes with the record's own offset — but only while the frame *is* a
+    capture record.  A reassembled datagram's payload spans several
+    discontiguous ranges, and one offset cannot express that (packeteer#72
+    gives the contributing records, should a caller want to walk them).
     """
-    if link_type == LINKTYPE_RAW:
-        return data
-    if link_type != LINKTYPE_ETHERNET:
-        return SkipReason.UNSUPPORTED_LINKTYPE
-
-    size, ethertype, _ = _ethernet_parser(data)
-    if size == 0:
-        return SkipReason.MALFORMED_LINK
-    if ethertype not in (ETHERTYPE_IPV4, ETHERTYPE_IPV6):
-        return SkipReason.NON_IP
-    return data[size:]
-
-
-def _is_fragment(ip_hdr: object, ip_proto: int | None) -> bool:
-    """Report whether this packet is a fragment of a larger datagram.
-
-    Fragments are skipped rather than reassembled; defragmentation belongs
-    upstream in packeteer (packeteer#65).
-    """
-    if isinstance(ip_hdr, IPHeader):
-        return bool(ip_hdr.flags & _IPV4_MORE_FRAGMENTS) or ip_hdr.fragment_offset != 0
-    return ip_proto == _IPV6_FRAGMENT_HEADER
-
-
-def _ip_payload(data: bytes, ip_size: int) -> bytes | None:
-    """Slice the IP payload, trimming any link-layer padding.
-
-    A frame shorter than the Ethernet minimum is padded, and that padding sits
-    after the IP datagram.  The parsed header does not carry the IP length
-    (packeteer#66), so it is read from the raw bytes here — without this, every
-    small packet's payload would gain trailing zeroes.
-    """
-    version = data[0] >> 4
-    if version == 4:
-        total_length = struct.unpack("!H", data[2:4])[0]
-        # A zero total length means segmentation offload wrote the frame
-        # before the NIC filled the field in; the capture holds the whole
-        # datagram, so fall back to everything present.
-        end = len(data) if total_length == 0 else total_length
-    else:
-        payload_length = struct.unpack("!H", data[4:6])[0]
-        # IPv6 counts extension headers in payload_length, and ip_size already
-        # includes any Hop-by-Hop header the parser consumed.
-        end = 40 + payload_length
-
-    if end < ip_size:
+    if packet.payload_offset is None or len(packet.source_records) != 1:
         return None
-    return data[ip_size:min(end, len(data))]
-
-
-def _tcp(src: str, dst: str, ip_payload: bytes) -> _Transport | str:
-    size, _, hdr = _tcp_parser(ip_payload)
-    if size == 0 or hdr is None:
-        return SkipReason.MALFORMED_TRANSPORT
-    return _Transport(
-        protocol="tcp",
-        src=src,
-        dst=dst,
-        src_port=hdr.src_port,
-        dst_port=hdr.dst_port,
-        payload=ip_payload[size:],
-        seq=hdr.seq,
-        ack=hdr.ack,
-        tcp_flags=hdr.flags,
-    )
-
-
-def _udp(src: str, dst: str, ip_payload: bytes) -> _Transport | str:
-    size, _, hdr = _udp_parser(ip_payload)
-    if size == 0 or hdr is None:
-        return SkipReason.MALFORMED_TRANSPORT
-    # The UDP length field covers header plus data and may be shorter than
-    # what the IP length allows; trust the narrower of the two.
-    udp_length = struct.unpack("!H", ip_payload[4:6])[0]
-    end = len(ip_payload) if udp_length < size else min(udp_length, len(ip_payload))
-    return _Transport(
-        protocol="udp",
-        src=src,
-        dst=dst,
-        src_port=hdr.src_port,
-        dst_port=hdr.dst_port,
-        payload=ip_payload[size:end],
-        seq=0,
-        ack=0,
-        tcp_flags=0,
-    )
+    return packet.source_records[0].data_offset + packet.payload_offset
