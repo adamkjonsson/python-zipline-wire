@@ -1,0 +1,216 @@
+# Provenance
+
+A capture-sourced file can say three things about where its contents came from
+that a transport stream cannot say on its own: which bytes of the capture
+reached no record, when a coalesced record *began*, and when the connection
+opened.  All three exist because the alternative is losing something quietly.
+
+## The accounting rule
+
+Every byte a conversion reads is either written to a record or counted:
+
+```python
+stats.payload_bytes      # written
+stats.overlap_bytes      # discarded as an already-accepted retransmit
+stats.late_bytes         # arrived after its gap had been committed
+```
+
+Nothing else can happen to a stream byte.  The two loss counters are then
+*cited* wherever their position in the capture can be named:
+
+```python
+stats.undecoded_regions  # Undecoded blocks written
+stats.unlocatable_bytes  # discarded bytes whose capture range cannot be named
+```
+
+so that:
+
+```
+cited bytes + unlocatable_bytes == overlap_bytes + late_bytes
+```
+
+That identity is asserted by the test suite on every fixture.
+
+## Undecoded blocks
+
+An overlapping retransmit exists in the capture and reaches no record.
+Nothing in the format expresses that except an `Undecoded` block, which names
+a byte range of an input that the producing stage did not turn into a record:
+
+```python
+import zpf
+
+with zpf.open("capture.zpf") as reader:
+    for block in reader.undecoded:
+        print(block.reason, block.off_start, block.off_end)
+```
+
+```
+overlap-discarded 10711 10998
+overlap-discarded 13938 14330
+```
+
+Because the input is a capture rather than another `.zpf`, the offsets are
+**byte offsets into the capture file** and can be read directly:
+
+```python
+capture = open("capture.pcap", "rb").read()
+for block in reader.undecoded:
+    print(capture[block.off_start:block.off_end])
+```
+
+```
+b'There is a flower within...'
+```
+
+Those are the exact bytes the reassembler dropped.
+
+### The two reasons
+
+| Constant | `reason` | Meaning |
+|----------|----------|---------|
+| `REASON_OVERLAP` | `overlap-discarded` | A retransmit of a range already accepted |
+| `REASON_LATE` | `late-arrival` | Bytes that arrived after their gap had been committed |
+
+Both are `reason_class="bytes"` — the *bytes-exist* class, meaning a consumer
+may follow the reference and fetch them.  The distinction matters: an overlap
+discard lost nothing, because the same bytes are in a record already, while a
+late arrival is data the policy caused you to lose.
+
+```python
+from zpfwire import REASON_LATE
+
+lost = [b for b in reader.undecoded if b.reason == REASON_LATE]
+```
+
+### Why a gap gets no block
+
+A missing segment is a *hole*, and against a capture source the specification
+bars a hole-class block outright.  A transport stream's own offsets already
+carry the extent of what is missing — `seq_start` is the absolute wire
+sequence number, so a gap is visible as arithmetic:
+
+```python
+sent = [r for r in session.records()
+        if r.sender_pid == pid
+        and r.seq_start is not None
+        and not r.flags & zpf.RecordFlags.SYN]
+
+for before, after in zip(sent, sent[1:]):
+    expected = (before.seq_start + len(before.payload)) % (1 << 32)
+    if after.seq_start != expected:
+        print(f"gap of {(after.seq_start - expected) % (1 << 32)} bytes")
+```
+
+Two details in that snippet are load-bearing.
+
+**Skip the SYN record.**  A SYN consumes a sequence number while carrying no
+payload, so a walk that includes it reports a phantom one-byte gap after every
+handshake.
+
+**Take the modulo.**  Sequence numbers wrap at 32 bits, and a long-lived
+stream will wrap.
+
+Done that way, the count matches what the conversion reported — six gaps on
+`packet_loss.pcap`, from both directions, exactly `stats.gaps`.
+
+Declaring it again would be a second account of the same missing bytes with no
+rule for which to believe.  So `Undecoded` covers the opposite case — bytes
+that *are* in the capture and did not reach the output.
+
+### When a range cannot be named
+
+A datagram reassembled from several IP fragments occupies several
+discontiguous ranges of the capture, and one block names one range.  Rather
+than cite the first fragment's offset — which would name bytes that are partly
+IP headers — the conversion declines and counts:
+
+```python
+stats.unlocatable_bytes      # discarded, but not citable
+```
+
+This is a limit of a single-range block, not of the capture reader: the
+contributing records are known, and a future version could emit one block per
+fragment.
+
+## `ts_first`
+
+A coalesced record is stamped with the time of the **last** packet that
+contributed bytes — the moment the run became complete.  That leaves the time
+it *started* unrecoverable, so a record that coalesced more than one packet
+also carries `ts_first`:
+
+```python
+for record in session.records():
+    if record.ts_first is not None:
+        span = record.timestamp - record.ts_first
+        print(f"{len(record.payload)} bytes assembled over {span} ticks")
+```
+
+A single-segment record omits it, because it would only repeat `timestamp`.
+
+The usual way to express this would be `spans`, but a span must reference a
+`zpf-input` source and ours is a capture — so `ts_first` is the only place a
+capture-sourced file can record a run's beginning.
+
+## The handshake
+
+When the SYN is captured, each direction gets an empty record carrying the
+`SYN` flag at the initial sequence number:
+
+```python
+import zpf
+
+for record in session.records():
+    if record.flags & zpf.RecordFlags.SYN:
+        print(record.sender_pid, record.seq_start, record.timestamp)
+```
+
+`isn` on the participant says where a stream begins in sequence space, but not
+when; the first data record carries its own arrival time.  Without these
+records the moment the connection opened is nowhere in the file.
+
+Only the first SYN of a direction gets one.  A retransmitted SYN re-opens
+nothing, and a second record at the same `seq_start` would break the
+ascending-order rule.
+
+A capture that starts mid-connection has no handshake to report, so it gets no
+SYN records — and correctly no `isn` either.
+
+## The capture digest
+
+The Source Descriptor records what the file was derived from:
+
+```python
+with zpf.open("capture.zpf") as reader:
+    for source in reader.sources.values():
+        print(source.kind, source.uri, source.digest, source.link_type)
+```
+
+```
+capture capture.pcap sha256:9f2c… 1
+```
+
+The digest is the dependency edge: it is how a consumer confirms a `.zpf`
+still matches the capture it came from.  Compute it yourself with
+{func}`~zpfwire.convert.describe_source`:
+
+```python
+from zpfwire import describe_source
+
+digest, uri = describe_source("capture.pcap")
+```
+
+A conversion from an unnamed stream records a digest with no `uri`, which is
+honest for input that has no name.
+
+## What is deliberately absent
+
+**`content_type`** is forbidden at the transport layer — a byte run has no
+media type — and the writer raises if you try.
+
+**`spans`** cannot be used, because every span must reference a `zpf-input`
+source and ours is a capture.  This is why `ts_first` exists.
+
+**`Discontinuity`** blocks belong to decoded layers.  A transport stream
+expresses its gaps in its offsets, as above.

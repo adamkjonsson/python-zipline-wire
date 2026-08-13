@@ -1,0 +1,187 @@
+# Reassembly policy
+
+{class}`~zpfwire.options.ReassemblyOptions` decides how TCP segments become
+records.  It is not a set of tuning knobs: together these settings decide
+**which bytes reach the output and which are thrown away**.
+
+```python
+from zpfwire import ReassemblyOptions
+
+options = ReassemblyOptions(
+    overlap="favor-old",
+    reorder_window=262_144,
+    flush_timeout=5.0,
+    session_timeout=300.0,
+    coalesce=True,
+)
+stats = zpfwire.capture_to_zpf("capture.pcap", "out.zpf", options=options)
+```
+
+The defaults above are what you get by passing nothing.
+
+## Why the policy is visible at all
+
+The specification makes two rules that a reassembler cannot route around:
+
+1. **Records must be stored in ascending sequence order per participant**, so
+   a reader can merge both directions in one streaming pass without sorting.
+2. **Committing a gap is irreversible.** Once a record has been written past
+   missing bytes, those bytes may never be written — even if they arrive
+   later.
+
+Together these mean a reassembler cannot simply wait forever for a missing
+segment, and cannot go back once it stops waiting.  Something must decide when
+to give up, and that decision destroys data.  So it is a declared option
+rather than an implementation detail, and its digest is recorded on the file's
+decoder descriptor:
+
+```python
+options.params_digest()      # 'sha256:1f3a…'
+```
+
+Same capture digest, same decoder version, same params digest ⇒ same output.
+That is the reproducibility contract, and it is why every field here is
+hashed.
+
+## The settings
+
+### `reorder_window` — how much to hold
+
+Bytes a direction may hold out of order before the oldest gap is committed.
+
+```python
+ReassemblyOptions(reorder_window=0)          # never wait; commit every gap at once
+ReassemblyOptions(reorder_window=1 << 20)    # hold up to a megabyte
+```
+
+Out-of-order segments are buffered until the bytes before them arrive.  When
+the buffer exceeds this many bytes, the reassembler stops waiting for the
+missing range, writes what it has, and the gap becomes permanent.
+
+`0` disables buffering entirely: any segment that is not the next one commits
+a gap immediately.  That is occasionally what you want — it makes the
+conversion strictly streaming — but on a capture with ordinary reordering it
+throws away a great deal.
+
+### `flush_timeout` — how long to wait
+
+Seconds a gap may stay unfilled before it is committed, measured in **capture
+time**, not wall-clock.
+
+```python
+ReassemblyOptions(flush_timeout=30.0)        # patient
+```
+
+A retransmission typically arrives within a round-trip or two, so the default
+of five seconds recovers almost all real loss.  Raising it costs memory and
+recovers correspondingly less.
+
+Because the clock is the capture's own, this behaves identically whether you
+convert a capture live or five years later.
+
+### `overlap` — which copy wins
+
+When retransmitted bytes disagree with bytes already accepted, `"favor-old"`
+keeps what was seen first, as most receiving stacks do.  `"favor-new"` prefers
+the retransmission.
+
+```python
+ReassemblyOptions(overlap="favor-new")
+```
+
+Disagreeing retransmits are rare in healthy traffic and are a classic evasion
+technique in unhealthy traffic: a sender that knows a monitor prefers one copy
+can hide bytes in the other.  If you are analysing traffic adversarially, this
+setting is the one to think about, and the digest is what lets you prove which
+way you had it set.
+
+### `session_timeout` — when a conversation is over
+
+Seconds of silence after which a session is closed with reason `"timeout"`.  A
+later packet between the same endpoints opens a **new** session.
+
+```python
+ReassemblyOptions(session_timeout=60.0)
+```
+
+This is what stops a long capture from producing one enormous session per
+endpoint pair when a client reuses a port hours later.
+
+### `coalesce` — record granularity
+
+With `coalesce=True` (the default), contiguous bytes are joined into one
+record, flushed on PSH, on a gap, on FIN or RST, at a timeout, and at the end
+of the capture.  With `coalesce=False`, every segment becomes its own record.
+
+```python
+ReassemblyOptions(coalesce=False)            # one record per segment
+```
+
+Both are conformant — a record is a run of stream bytes either way — and the
+choice is about what you want to read afterwards.  Coalescing produces far
+fewer, larger records that line up with application message boundaries where
+the sender used PSH.  Not coalescing preserves the segmentation exactly as it
+was on the wire, which matters if the segmentation itself is what you are
+studying.
+
+Coalescing also affects timestamps: a coalesced record is stamped with its
+*last* contributing packet, and carries `ts_first` for its first.  See
+{doc}`provenance`.
+
+## Validation
+
+Invalid options raise `ValueError` at construction, not at conversion:
+
+```python
+ReassemblyOptions(overlap="favour-old")
+# ValueError: overlap must be one of favor-old, favor-new, got 'favour-old'
+
+ReassemblyOptions(flush_timeout=-1)
+# ValueError: flush_timeout must not be negative
+```
+
+The accepted overlap policies are in `OVERLAP_POLICIES`.
+
+## Reading what a policy cost
+
+Three counters report what the policy threw away:
+
+```python
+stats.gaps           # records written past bytes that never arrived
+stats.late_bytes     # bytes that arrived after their gap had closed
+stats.overlap_bytes  # retransmits discarded as already-accepted
+```
+
+`overlap_bytes` is normal — it is what reassembly is *for*, and those bytes
+did reach the output the first time they were seen.  `gaps` and `late_bytes`
+are the ones to watch: they mean the policy stopped waiting.
+
+```python
+if not stats.lossless:
+    print(f"{stats.gaps} gaps; raise reorder_window or flush_timeout")
+```
+
+A non-zero `late_bytes` is the specific signal that you were nearly patient
+enough: the bytes did arrive, just after the reassembler had given up.
+Raising `flush_timeout` will usually recover them.
+
+## Where the policy is recorded
+
+The decoder descriptor names the stage and its parameters:
+
+```python
+import zpf
+
+with zpf.open("capture.zpf") as reader:
+    for decoder in reader.decoders.values():
+        print(decoder.name, decoder.version, decoder.params_digest)
+```
+
+```
+tcp-reassembly 0.1.0 sha256:1f3a…
+```
+
+The name is `DECODER_NAME`.  Declaring it is a **should** in the
+specification, and zpfwire takes it because this is the only place the policy
+can be recorded — which is what makes a conversion reproducible, and what
+tells a later reader why bytes are missing.

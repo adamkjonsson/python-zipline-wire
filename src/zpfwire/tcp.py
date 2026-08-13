@@ -36,7 +36,7 @@ from zpfwire.flow import (
     FlowTracker,
 )
 
-__all__ = ["TcpFlow"]
+__all__ = ["END_FIN", "END_RST", "TcpFlow"]
 
 _SEQ_MOD = 1 << 32
 _SEQ_HALF = _SEQ_MOD >> 1

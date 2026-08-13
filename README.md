@@ -18,6 +18,9 @@ It is glue, and deliberately so:
 **Status: early.** The format itself is `0.x` and says it is not ready for
 production; this is a first implementation against `0.16`.
 
+Full documentation lives in `docs/` — build it with `cd docs && make html`.
+This README is the short version.
+
 ## Install
 
 The two dependencies are not on PyPI, so check them out next to this repo:
@@ -95,7 +98,7 @@ $ zpfwire convert lossy.pcap -o lossy.zpf
 packets      193
 converted    193
 sessions     1
-records      8
+records      10
 payload      71617 bytes
 gaps         6
 Note: some bytes never reached the output. Raise --reorder-window or
@@ -156,8 +159,9 @@ is why it is opt-in in a format whose point is streaming.
 ## Development
 
 ```bash
-.venv/bin/pytest        # tests
-ruff check src/ tests/  # lint, must be silent
+.venv/bin/pytest                                    # tests
+ruff check src/ tests/ docs/                        # lint, must be silent
+.venv/bin/sphinx-build -W docs docs/_build/html     # docs, warnings are errors
 ```
 
 Capture fixtures in `tests/captures/` are copied from packeteer's `testcases/`.
@@ -166,7 +170,7 @@ diagnostics — a file that does not is not a conversion.
 
 One purpose of this project is to pressure-test its two dependencies, so gaps
 found here are filed as issues against them rather than worked around here. See
-`CLAUDE.md`.
+`CLAUDE.md`, and `docs/internals/` for how the whole thing fits together.
 
 ## Licence
 

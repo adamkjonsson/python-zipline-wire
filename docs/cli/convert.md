@@ -1,0 +1,159 @@
+# `zpfwire convert`
+
+Convert a capture into a capture-sourced, transport-layer `.zpf` file.
+
+```bash
+zpfwire convert capture.pcap -o capture.zpf
+```
+
+```
+packets      219
+converted    219
+sessions     1
+records      32
+payload      78901 bytes
+overlap      8875 bytes (discarded)
+undecoded    12 region(s) cited
+```
+
+The output is one session per conversation, two participants per session, and
+one record per run of contiguous stream bytes.  What each of those means in
+specification terms is in {doc}`../reference/zpf-mapping`.
+
+## Output
+
+| Flag | What it does |
+|------|--------------|
+| `-o`, `--output PATH` | File to write. Required. |
+| `--jsonl` | Write the JSON-Lines projection instead of the binary container |
+| `-q`, `--quiet` | Do not print the summary |
+
+`--jsonl` writes the same content through the format's other face.  It is
+diffable and greppable, which makes it the better choice when you want to
+*look* at what was produced:
+
+```bash
+zpfwire convert capture.pcap -o capture.jsonl --jsonl
+```
+
+## Choosing what to convert
+
+| Flag | What it does |
+|------|--------------|
+| `--no-tcp` | Skip TCP conversations |
+| `--no-udp` | Skip UDP conversations |
+
+Passing both is an error — it would leave nothing to convert.  Packets
+excluded this way are counted under `tcp-not-requested` or
+`udp-not-requested`, so the summary still accounts for every packet.
+
+The filtering flags described in {doc}`index` apply here too, and compose with
+these: `--no-udp --dst-port 443` keeps only TCP traffic to port 443.
+
+## Reassembly policy
+
+These flags decide **which bytes reach the output**.  They are not performance
+tuning: the specification makes committing a gap irreversible, so once a record
+has been written past missing bytes, those bytes may never be written even if
+they turn up later.  These settings are what decide when that happens.
+
+| Flag | Default | What it decides |
+|------|---------|-----------------|
+| `--reorder-window BYTES` | `262144` | How much out-of-order data a direction may hold before the oldest gap is committed. `0` disables buffering entirely. |
+| `--flush-timeout SECONDS` | `5.0` | How long a gap may stay unfilled, measured in capture time, before it is committed |
+| `--overlap {favor-old,favor-new}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted |
+| `--session-timeout SECONDS` | `300.0` | Silence after which a conversation is closed and a later packet starts a new session |
+| `--no-coalesce` | off | Emit one record per segment instead of one per contiguous byte run |
+
+All five are hashed into the file's decoder descriptor as a `params_digest`,
+so a `.zpf` records the policy that produced it and a conversion can be
+reproduced.  {doc}`../guide/reassembly` works through what each one costs.
+
+## Causal order
+
+| Flag | What it does |
+|------|--------------|
+| `--sequenced` | Store each TCP session in a valid causal linearization and mark it `SEQUENCED` |
+
+By default records are stored in capture order, which is not the order events
+happened — two packets recorded a microsecond apart may have crossed on the
+wire.  `--sequenced` stores an order a reader may actually rely on.
+
+The cost is memory: a causal order needs both directions in hand, so each
+session is buffered until it ends.  That is unbounded for the session's
+lifetime, which is why it is opt-in.  UDP sessions are never marked; see
+{doc}`../guide/ordering`.
+
+## Reading the summary
+
+```
+packets      219        every packet the reader saw
+converted    219        packets that reached a conversation
+sessions     1          conversations written
+records      32         records written
+payload      78901 bytes  bytes that reached the output
+```
+
+Then, only when non-zero, the figures that account for what did **not** reach
+the output:
+
+| Line | Meaning |
+|------|---------|
+| `filtered` | Packets excluded by a filter — deliberate, not lost |
+| `skipped N (reason)` | Packets that carried no convertible stream, by reason |
+| `gaps` | Places where a record was written past bytes that never arrived |
+| `late bytes` | Bytes that arrived after their gap had been committed, so could not be written |
+| `overlap` | Retransmitted bytes discarded because that range was already accepted |
+| `undecoded` | Regions of the capture cited as reaching no record |
+| `uncited` | Discarded bytes whose place in the capture could not be named |
+
+The rule these enforce is that **every byte is either written or counted**.
+`overlap` and `late bytes` are then cited as `Undecoded` regions wherever
+their position in the capture file can be named — see {doc}`../guide/provenance`.
+
+When bytes were lost, a note goes to stderr and the exit status stays `0`:
+
+```
+$ zpfwire convert lossy.pcap -o lossy.zpf
+packets      193
+converted    193
+sessions     1
+records      10
+payload      71617 bytes
+gaps         6
+Note: some bytes never reached the output. Raise --reorder-window or
+--flush-timeout to wait longer.
+```
+
+That is a real outcome of the policy rather than a failure, which is why it is
+a note rather than an error.  If those bytes matter, raise the limits and
+convert again.
+
+## Verifying the result
+
+The `zpf` CLI reads what this writes:
+
+```bash
+zpf validate --strict capture.zpf     # conformance
+zpf cat capture.zpf                   # human-readable dump
+```
+
+`validate --strict` is the check worth wiring into a pipeline.  Every capture
+in the project's test suite is asserted to pass it.
+
+## From Python
+
+```python
+import zpfwire
+
+stats = zpfwire.capture_to_zpf(
+    "capture.pcap",
+    "capture.zpf",
+    options=zpfwire.ReassemblyOptions(reorder_window=0),
+    udp=False,
+    sequenced=True,
+)
+print(stats.summary())
+```
+
+See {doc}`../guide/converting`.
