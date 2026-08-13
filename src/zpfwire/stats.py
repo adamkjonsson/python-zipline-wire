@@ -32,6 +32,12 @@ class ConversionStats:
             so had to be dropped.
         overlap_bytes: Retransmitted bytes discarded because the same range
             had already been accepted.
+        undecoded_regions: Undecoded blocks written, each naming a range of
+            the capture that reached no record.
+        unlocatable_bytes: Discarded bytes that could not be given an Undecoded
+            block because their place in the capture cannot be named — a
+            datagram reassembled from several fragments occupies discontiguous
+            ranges.  Counted rather than quietly uncited.
 
     """
 
@@ -45,6 +51,8 @@ class ConversionStats:
     gaps: int = 0
     late_bytes: int = 0
     overlap_bytes: int = 0
+    undecoded_regions: int = 0
+    unlocatable_bytes: int = 0
 
     @property
     def lossless(self) -> bool:
@@ -76,4 +84,8 @@ class ConversionStats:
             lines.append(f"late bytes   {self.late_bytes} (dropped)")
         if self.overlap_bytes:
             lines.append(f"overlap      {self.overlap_bytes} bytes (discarded)")
+        if self.undecoded_regions:
+            lines.append(f"undecoded    {self.undecoded_regions} region(s) cited")
+        if self.unlocatable_bytes:
+            lines.append(f"uncited      {self.unlocatable_bytes} bytes (no capture range)")
         return "\n".join(lines)

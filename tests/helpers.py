@@ -12,7 +12,7 @@ from __future__ import annotations
 import io
 import pathlib
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import zpf
 from packeteer.generate import PacketBuilder
@@ -43,6 +43,7 @@ __all__ = [
     "Seg",
     "SessionSnapshot",
     "capture_of",
+    "fragmented_frames",
     "tcp_packet",
     "tcp_segments",
     "to_zpf",
@@ -91,6 +92,30 @@ def udp_packet(
     if payload:
         builder = builder.payload(data=payload)
     return builder.build()
+
+
+def fragmented_frames(
+    *,
+    payload: bytes = b"fragmented-payload" * 80,
+    mtu: int = 600,
+) -> list[bytes]:
+    """Build one UDP datagram split across several IPv4 fragments.
+
+    Returns:
+        The fragments in wire order; every one is needed to reassemble the
+        datagram, so dropping any of them makes it incomplete.
+
+    """
+    frames = (
+        PacketBuilder()
+        .ethernet(src_mac="00:00:00:00:00:01", dst_mac="00:00:00:00:00:02")
+        .ip(src=CLIENT_IP, dst=SERVER_IP)
+        .udp(src_port=CLIENT_PORT, dst_port=53)
+        .payload(data=payload)
+        .fragment(mtu)
+    )
+    assert len(frames) > 1, "the payload must be large enough to fragment"
+    return frames
 
 
 def capture_of(
@@ -182,6 +207,7 @@ class Converted:
     sessions: list[SessionSnapshot]
     diagnostics: list[object]
     path: pathlib.Path
+    undecoded: list[object] = field(default_factory=list)
 
     @property
     def only(self) -> SessionSnapshot:
@@ -199,6 +225,8 @@ class SessionSnapshot:
     participants: tuple[object, ...]
     records: list[object]
     end_reason: str | None
+    sequenced: bool = False
+    sequenced_basis: str | None = None
 
     def by(self, pid: int) -> list[object]:
         """Return the records sent by participant *pid*, in stored order."""
@@ -233,7 +261,9 @@ def to_zpf(source: io.BytesIO | pathlib.Path | str, tmp_path: pathlib.Path,
         The stats and the read-back sessions.
 
     """
-    out = pathlib.Path(tmp_path) / "out.zpf"
+    directory = pathlib.Path(tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    out = directory / "out.zpf"
     stats = capture_to_zpf(source, out, **kwargs)  # type: ignore[arg-type]
 
     snapshots: list[SessionSnapshot] = []
@@ -245,7 +275,11 @@ def to_zpf(source: io.BytesIO | pathlib.Path | str, tmp_path: pathlib.Path,
                 participants=tuple(session.participants),
                 records=list(session.records()),
                 end_reason=session.end.reason if session.end else None,
+                sequenced=bool(session.sequenced),
+                sequenced_basis=getattr(session, "sequenced_basis", None),
             ))
+        undecoded = list(reader.undecoded)
         diagnostics = list(reader.diagnostics)
 
-    return Converted(stats=stats, sessions=snapshots, diagnostics=diagnostics, path=out)
+    return Converted(stats=stats, sessions=snapshots, diagnostics=diagnostics, path=out,
+                     undecoded=undecoded)

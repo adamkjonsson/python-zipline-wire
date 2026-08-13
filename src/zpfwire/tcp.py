@@ -28,7 +28,13 @@ from packeteer.generate.tcp import TCP_ACK, TCP_FIN, TCP_PSH, TCP_RST, TCP_SYN, 
 from zpf import RecordFlags, TcpRole
 
 from zpfwire.capture import PacketView
-from zpfwire.flow import END_CAPTURE_END, END_TIMEOUT, FlowTracker
+from zpfwire.flow import (
+    END_CAPTURE_END,
+    END_TIMEOUT,
+    REASON_LATE,
+    REASON_OVERLAP,
+    FlowTracker,
+)
 
 __all__ = ["TcpFlow"]
 
@@ -72,6 +78,7 @@ class _Pending:
     flags: int
     ack: int
     ts: int
+    payload_offset: int | None = None
 
 
 @dataclass
@@ -84,6 +91,10 @@ class _Run:
     # packet that contributed bytes — the moment the unit became complete —
     # because an ack can never precede arrival of what it acknowledges.
     ts: int = 0
+    # When a run coalesces several segments, the time it *began* is otherwise
+    # unrecoverable: spans could carry it, but they must reference a zpf-input
+    # source and ours is a capture, so ts_first is the only place it fits.
+    ts_first: int = 0
     ack: int | None = None
     flags: int = 0
     retransmit: bool = False
@@ -98,6 +109,7 @@ class _Stream:
     role: TcpRole | None = None
     next_seq: int | None = None
     declared: bool = False
+    syn_written: bool = False
     fin: bool = False
     rst: bool = False
     pending: dict[int, _Pending] = field(default_factory=dict)
@@ -121,9 +133,12 @@ class TcpFlow(FlowTracker):
         self.last_ts = pkt.ts_ticks
         stream = self._stream(pkt.src_endpoint)
 
-        if pkt.tcp_flags & TCP_SYN:
+        syn = bool(pkt.tcp_flags & TCP_SYN)
+        if syn:
             self._handshake(stream, pkt)
         self._declare(stream)
+        if syn:
+            self._syn_record(stream, pkt)
 
         if pkt.payload:
             self._accept(stream, pkt.seq, pkt.payload, pkt)
@@ -182,6 +197,30 @@ class TcpFlow(FlowTracker):
         # The SYN itself consumes one sequence number; data starts after it.
         stream.next_seq = _advance(pkt.seq, 1)
 
+    def _syn_record(self, stream: _Stream, pkt: PacketView) -> None:
+        """Write the handshake itself as an empty record carrying ``SYN``.
+
+        The connection's opening is the one event whose *time* the file would
+        otherwise lose: ``isn`` says where the stream begins in sequence space
+        but not when, and the first data record is stamped with its own
+        arrival. Only the first SYN of a direction gets one — a retransmitted
+        SYN re-opens nothing, and a second record at the same ``seq_start``
+        would break the ascending-order rule.
+        """
+        if stream.syn_written or stream.isn is None or pkt.seq != stream.isn:
+            return
+        stream.syn_written = True
+        self.session.record(
+            self.participant(stream.endpoint),
+            ts=pkt.ts_ticks,
+            payload=b"",
+            seq_start=stream.isn,
+            ack=pkt.ack if pkt.tcp_flags & TCP_ACK else None,
+            flags=RecordFlags.SYN,
+            decoder=self._decoder,
+        )
+        self._stats.records += 1
+
     def _declare(self, stream: _Stream) -> None:
         if stream.declared:
             return
@@ -215,12 +254,14 @@ class TcpFlow(FlowTracker):
 
         end = _advance(seq, len(data))
         if _delta(end, stream.next_seq) <= 0:
-            self._count_repeat(stream, seq, end)
+            self._count_repeat(stream, seq, end, pkt.payload_offset)
             return
 
         if _delta(seq, stream.next_seq) < 0:
             overlap = _delta(stream.next_seq, seq)
-            self._count_repeat(stream, seq, stream.next_seq)
+            # Only ever a leading trim, so the discarded bytes start where the
+            # segment's payload starts.
+            self._count_repeat(stream, seq, stream.next_seq, pkt.payload_offset)
             data = data[overlap:]
             seq = stream.next_seq
             self._mark_retransmit(stream)
@@ -234,7 +275,7 @@ class TcpFlow(FlowTracker):
 
     def _append(self, stream: _Stream, seq: int, data: bytes, pkt: PacketView) -> None:
         if stream.run is None:
-            stream.run = _Run(seq_start=seq)
+            stream.run = _Run(seq_start=seq, ts_first=pkt.ts_ticks)
         stream.run.data.extend(data)
         stream.run.ts = pkt.ts_ticks
         stream.run.ack = pkt.ack
@@ -245,10 +286,11 @@ class TcpFlow(FlowTracker):
         if seq in stream.pending:
             # A duplicate of something already waiting.
             self._stats.overlap_bytes += len(data)
+            self.undecoded(pkt.payload_offset, len(data), reason=REASON_OVERLAP)
             self._mark_retransmit(stream)
             return
         stream.pending[seq] = _Pending(data=data, flags=pkt.tcp_flags, ack=pkt.ack,
-                                       ts=pkt.ts_ticks)
+                                       ts=pkt.ts_ticks, payload_offset=pkt.payload_offset)
         stream.pending_bytes += len(data)
         if stream.oldest_pending_ts is None:
             stream.oldest_pending_ts = pkt.ts_ticks
@@ -262,6 +304,7 @@ class TcpFlow(FlowTracker):
             if _delta(end, stream.next_seq) <= 0:
                 self._release(stream, seq)
                 self._stats.overlap_bytes += len(held.data)
+                self.undecoded(held.payload_offset, len(held.data), reason=REASON_OVERLAP)
                 continue
             if _delta(seq, stream.next_seq) > 0:
                 return
@@ -269,6 +312,7 @@ class TcpFlow(FlowTracker):
             self._release(stream, seq)
             if trim:
                 self._stats.overlap_bytes += trim
+                self.undecoded(held.payload_offset, trim, reason=REASON_OVERLAP)
                 self._mark_retransmit(stream)
             self._append(
                 stream,
@@ -335,7 +379,13 @@ class TcpFlow(FlowTracker):
                 ),
             )
 
-    def _count_repeat(self, stream: _Stream, seq: int, end: int) -> None:
+    def _count_repeat(
+        self,
+        stream: _Stream,
+        seq: int,
+        end: int,
+        payload_offset: int | None,
+    ) -> None:
         """Attribute already-seen bytes to overlap, or to a committed gap.
 
         Bytes that fall inside a gap this stream already gave up on are not
@@ -343,6 +393,10 @@ class TcpFlow(FlowTracker):
         specification forbids writing them now. They are counted separately so
         that a loss caused by our own timeouts is never mistaken for a
         harmless duplicate.
+
+        Both kinds exist in the capture and reach no record, so both are cited
+        as Undecoded regions; only the reason differs. The ranges are taken
+        relative to *seq*, which is where this segment's payload begins.
         """
         length = _delta(end, seq)
         if length <= 0:
@@ -353,10 +407,41 @@ class TcpFlow(FlowTracker):
             overlap_end = min(_delta(end, gap_start), _delta(gap_end, gap_start))
             if overlap_end > overlap_start:
                 late += overlap_end - overlap_start
+                self._cite(payload_offset, _delta(gap_start, seq) + overlap_start,
+                           overlap_end - overlap_start, REASON_LATE)
         self._stats.late_bytes += late
         self._stats.overlap_bytes += length - late
         if length - late:
+            self._cite_remainder(stream, seq, end, payload_offset)
             self._mark_retransmit(stream)
+
+    def _cite(self, payload_offset: int | None, skip: int, length: int, reason: str) -> None:
+        """Declare a sub-range of one segment's payload as undecoded."""
+        start = None if payload_offset is None else payload_offset + skip
+        self.undecoded(start, length, reason=reason)
+
+    def _cite_remainder(
+        self,
+        stream: _Stream,
+        seq: int,
+        end: int,
+        payload_offset: int | None,
+    ) -> None:
+        """Cite the parts of ``[seq, end)`` that no committed gap claimed."""
+        length = _delta(end, seq)
+        claimed = sorted(
+            (max(_delta(gap_start, seq), 0), min(_delta(gap_end, seq), length))
+            for gap_start, gap_end in stream.committed_gaps
+        )
+        cursor = 0
+        for start, stop in claimed:
+            if stop <= cursor or start >= length:
+                continue
+            if start > cursor:
+                self._cite(payload_offset, cursor, start - cursor, REASON_OVERLAP)
+            cursor = max(cursor, stop)
+        if cursor < length:
+            self._cite(payload_offset, cursor, length - cursor, REASON_OVERLAP)
 
     def _mark_retransmit(self, stream: _Stream) -> None:
         if stream.run is not None:
@@ -390,6 +475,9 @@ class TcpFlow(FlowTracker):
             ack=run.ack,
             flags=flags,
             decoder=self._decoder,
+            # Only worth stating when the run coalesced more than one packet;
+            # for a single segment it would repeat `ts`.
+            ts_first=run.ts_first if run.ts_first != run.ts else None,
         )
         self._stats.records += 1
         self._stats.payload_bytes += len(run.data)

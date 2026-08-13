@@ -11,6 +11,7 @@ from helpers import (
     SERVER_PORT,
     TCP_PSH,
     capture_of,
+    fragmented_frames,
     tcp_packet,
     udp_packet,
 )
@@ -96,6 +97,57 @@ def test_an_explicit_tick_hz_overrides_the_header():
     assert list(reader)[0].ts_ticks == 2_000_000_000
 
 
+def test_a_coarser_tick_hz_override_scales_down_rather_than_to_zero():
+    """Rescaling has to work in both directions.
+
+    Multiplying by ``tick_hz // source_hz`` would floor to zero here and
+    collapse every sub-second time to the whole second.
+    """
+    buf = capture_of([tcp_packet(payload=b"x")], start_us=2_500_000)
+    reader = CaptureReader(file_object=buf, tick_hz=1_000)
+
+    assert list(reader)[0].ts_ticks == 2_500
+
+
+# ── what the parser now supplies ────────────────────────────────────────
+
+
+def test_payload_offset_points_at_the_payload_in_the_file():
+    """The provenance handle phase 5 is built on (packeteer#62 + #71).
+
+    It cannot be derived as len(frame) - len(payload): the parser trims
+    Ethernet padding, so the payload is not always a suffix of the frame.
+    """
+    padded = tcp_packet(seq=1, payload=b"hi")           # 60-byte minimum, padded
+    unpadded = tcp_packet(seq=3, payload=b"x" * 40)
+    buf = capture_of([padded, unpadded])
+    raw = buf.getvalue()
+    _, pkts = views(buf)
+
+    for pkt in pkts:
+        assert pkt.payload_offset is not None
+        start = pkt.payload_offset
+        assert raw[start:start + len(pkt.payload)] == pkt.payload
+
+
+def test_a_reassembled_payload_declines_to_name_one_offset():
+    """Its bytes occupy several discontiguous ranges, which one offset cannot say."""
+    _, pkts = views(capture_of(fragmented_frames()))
+
+    assert len(pkts) == 1
+    assert pkts[0].fragment_count > 1
+    assert pkts[0].payload_offset is None
+
+
+def test_tcp_options_reach_the_view():
+    """SACK-aware loss inference needs these; they were unparsed before #63."""
+    reader = CaptureReader(path=CAPTURES / "http_example.pcapng")
+    with_options = [p for p in reader if p.tcp_options is not None]
+
+    assert with_options
+    assert any(p.tcp_options.timestamps is not None for p in with_options)
+
+
 # ── the details the hand-rolled walk exists for ─────────────────────────
 
 
@@ -116,11 +168,12 @@ def test_ethernet_padding_is_not_treated_as_payload():
     assert pkts[0].payload == b"hi"
 
 
-def test_http_payloads_survive_the_walk():
-    """The regression that motivated bypassing parse_packet (packeteer#61).
+def test_http_payloads_survive_the_read():
+    """The regression that motivated packeteer#61, now guarded by decode_app.
 
-    parse_pcap_packet consumes the payload into ParsedPacket.http on port 80,
-    leaving payload empty. A payload format cannot be built on that.
+    Left to its default, the parser consumes the payload into
+    ParsedPacket.http on port 80 and leaves payload empty. A payload format
+    cannot be built on that, so this asserts the opt-out is still in force.
     """
     reader = CaptureReader(path=CAPTURES / "http_example.pcapng")
     ours = sum(len(p.payload) for p in reader)
@@ -165,17 +218,45 @@ def test_non_tcp_udp_transports_are_skipped_and_counted():
     assert reader.skipped[SkipReason.NOT_TCP_UDP] == reader.packet_count
 
 
-def test_ip_fragments_are_skipped_and_counted():
-    """Defragmentation belongs upstream (packeteer#65); until then, count them."""
+def test_ip_fragments_are_reassembled_rather_than_skipped():
+    """Defragmentation belonged upstream, and landed as packeteer#65.
+
+    The fragments of one datagram used to be dropped — the non-first ones
+    because they carry no transport header, the first because its payload is
+    only the leading slice. They now arrive as one packet each.
+    """
     reader = CaptureReader(path=CAPTURES / "fragmentation.pcap")
     pkts = list(reader)
 
-    assert reader.skipped[SkipReason.FRAGMENT] > 0
-    assert len(pkts) + reader.skipped[SkipReason.FRAGMENT] == reader.packet_count
+    assert reader.skipped == {}
+    reassembled = [p for p in pkts if p.fragment_count > 1]
+    assert len(reassembled) == 59
+    # 287 records collapse to 207 packets: 148 unfragmented plus 59 datagrams.
+    assert reader.packet_count == 207
+
+
+def test_an_incomplete_datagram_is_counted_rather_than_dropped_silently():
+    """A datagram missing a fragment can never be reassembled, so it is lost.
+
+    Losing it is correct — a partial datagram is not a packet — but it must
+    be visible, which is what reader.incomplete is folded in for.
+    """
+    frames = fragmented_frames()
+    reader, pkts = views(capture_of(frames[:-1]))
+
+    assert reader.skipped == {SkipReason.INCOMPLETE_DATAGRAM: 1}
+    assert [p for p in pkts if p.fragment_count > 1] == []
+
+    whole, whole_pkts = views(capture_of(frames))
+    assert whole.skipped == {}
+    assert len(whole_pkts) == 1
+    assert whole_pkts[0].fragment_count == len(frames)
 
 
 def test_an_unsupported_link_type_skips_every_packet():
-    buf = capture_of([tcp_packet(payload=b"x")], link_type=113)
+    # 113 used to land here; packeteer now reads it as Linux cooked capture,
+    # so this needs a link type it genuinely does not know.
+    buf = capture_of([tcp_packet(payload=b"x")], link_type=999)
     reader, pkts = views(buf)
 
     assert pkts == []
@@ -188,6 +269,21 @@ def test_a_truncated_ip_header_is_skipped():
 
     assert pkts == []
     assert reader.skipped == {SkipReason.MALFORMED_IP: 1}
+
+
+def test_a_truncated_transport_header_is_told_apart_from_another_protocol():
+    """The IP header names the transport, so the two cases are distinguishable.
+
+    ``ParsedPacket`` reports only that ``transport`` is absent, but a datagram
+    declaring protocol 6 with no TCP header is a parse failure, not a protocol
+    we chose not to convert.
+    """
+    frame = tcp_packet(seq=1, payload=b"z")
+    truncated = frame[: 14 + 20 + 8]  # Ethernet + IPv4 + 8 of the 20 TCP bytes
+    reader, pkts = views(capture_of([truncated]))
+
+    assert pkts == []
+    assert reader.skipped == {SkipReason.MALFORMED_TRANSPORT: 1}
 
 
 # ── IPv6 ────────────────────────────────────────────────────────────────

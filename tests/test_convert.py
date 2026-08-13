@@ -19,6 +19,7 @@ from zpfwire import (
     DECODER_NAME,
     CaptureReader,
     ReassemblyOptions,
+    SkipReason,
     capture_to_zpf,
 )
 
@@ -210,8 +211,12 @@ def test_every_packet_is_converted_skipped_or_filtered(tmp_path: pathlib.Path, n
     out = to_zpf(CAPTURES / name, tmp_path)
     stats = out.stats
 
+    # The reader streams, so a packet count exists only once it has read the
+    # file; and an incomplete datagram is counted without ever being a packet,
+    # so it is the one skip that is not also a packet.
     reader = CaptureReader(path=CAPTURES / name)
-    total = reader.packet_count
+    list(reader)
+    total = reader.packet_count + reader.skipped[SkipReason.INCOMPLETE_DATAGRAM]
 
     assert stats.converted + sum(stats.skipped.values()) + stats.filtered == total
 
@@ -255,6 +260,20 @@ def test_skipped_packets_are_reported_by_reason(tmp_path: pathlib.Path):
 
     assert out.stats.skipped["not-tcp-or-udp"] > 0
     assert "not-tcp-or-udp" in out.stats.summary()
+
+
+def test_the_packet_count_includes_the_packets_that_were_skipped(
+    tmp_path: pathlib.Path,
+):
+    """A capture converting nothing still has to say how much it looked at.
+
+    Counting inside the conversion loop only ever saw the survivors, so a
+    capture of entirely unconvertible traffic reported zero packets.
+    """
+    out = to_zpf(CAPTURES / "sctp.pcap", tmp_path)
+
+    assert out.stats.converted == 0
+    assert out.stats.packets == out.stats.skipped["not-tcp-or-udp"] > 0
 
 
 # ── options validation ──────────────────────────────────────────────────
