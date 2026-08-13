@@ -18,6 +18,9 @@ It is glue, and deliberately so:
 **Status: early.** The format itself is `0.x` and says it is not ready for
 production; this is a first implementation against `0.16`.
 
+Full documentation lives in `docs/` — build it with `cd docs && make html`.
+This README is the short version.
+
 ## Install
 
 The two dependencies are not on PyPI, so check them out next to this repo:
