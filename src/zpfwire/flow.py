@@ -9,12 +9,28 @@ from typing import TYPE_CHECKING
 from zpfwire.capture import PacketView, format_endpoint
 
 if TYPE_CHECKING:  # pragma: no cover
-    from zpf import DecoderHandle, ParticipantHandle, SessionWriter
+    from zpf import DecoderHandle, FileWriter, ParticipantHandle, SessionWriter, SourceHandle
 
     from zpfwire.options import ReassemblyOptions
     from zpfwire.stats import ConversionStats
 
-__all__ = ["END_CAPTURE_END", "END_TIMEOUT", "FlowKey", "FlowTracker"]
+__all__ = [
+    "END_CAPTURE_END",
+    "END_TIMEOUT",
+    "REASON_LATE",
+    "REASON_OVERLAP",
+    "FlowKey",
+    "FlowTracker",
+]
+
+REASON_OVERLAP = "overlap-discarded"
+"""Undecoded reason for bytes dropped because that range was already accepted."""
+
+REASON_LATE = "late-arrival"
+"""Undecoded reason for bytes that arrived after their gap had been committed."""
+
+_BYTES_EXIST = "bytes"
+"""The only ``reason_class`` a capture-sourced Undecoded block may carry."""
 
 END_CAPTURE_END = "capture-end"
 """Session End reason for a flow still open when the capture ran out."""
@@ -115,6 +131,8 @@ class FlowTracker(ABC):
         options: ReassemblyOptions,
         stats: ConversionStats,
         tick_hz: int,
+        writer: FileWriter | None = None,
+        source: SourceHandle | None = None,
     ) -> None:
         self.key = key
         self.session = session
@@ -124,7 +142,47 @@ class FlowTracker(ABC):
         self._options = options
         self._stats = stats
         self._tick_hz = tick_hz
+        self._writer = writer
+        self._source = source
         self._participants: dict[str, ParticipantHandle] = {}
+
+    def undecoded(self, off_start: int | None, length: int, *, reason: str) -> None:
+        """Declare capture bytes that this stage did not turn into a record.
+
+        An overlapping retransmit exists in the capture and reaches no record,
+        and nothing else in a `.zpf` can say so — a transport stream's gaps are
+        already visible in its offsets, but bytes deliberately dropped are not.
+        Only the *bytes-exist* class may be declared against a capture source;
+        a hole must not be, so no caller here passes one.
+
+        Args:
+            off_start: Byte offset of the region in the capture file, or
+                ``None`` when it cannot be located — a datagram reassembled
+                from several fragments occupies discontiguous ranges, which one
+                block cannot name.
+            length: How many bytes the region covers.
+            reason: Why the region went undecoded; see :data:`REASON_OVERLAP`
+                and :data:`REASON_LATE`.
+
+        """
+        if length <= 0:
+            return
+        if off_start is None or self._writer is None or self._source is None:
+            self._stats.unlocatable_bytes += length
+            return
+        self._writer.undecoded(
+            self._source,
+            # Against a capture source there is no input .zpf, so there is no
+            # id namespace to name: the spec requires both written as 0.
+            session_id=0,
+            pid=0,
+            off_start=off_start,
+            off_end=off_start + length,
+            reason=reason,
+            reason_class=_BYTES_EXIST,
+            decoder=self._decoder,
+        )
+        self._stats.undecoded_regions += 1
 
     def expired(self, now_ticks: int) -> bool:
         """Report whether this flow has been silent for longer than allowed.

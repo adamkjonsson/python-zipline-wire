@@ -131,8 +131,9 @@ def convert(
         face=face,
     ) as writer:
         # This is the file's only source, so records may omit `source=` and
-        # zpf will attribute them to it.
-        writer.add_source(
+        # zpf will attribute them to it. The handle is kept because an
+        # Undecoded block has to name the input it is talking about.
+        source = writer.add_source(
             "capture",
             uri=uri,
             digest=digest,
@@ -166,7 +167,7 @@ def convert(
                 tracker = None
             if tracker is None:
                 tracker = _begin(writer, key, decoder=decoder, options=options,
-                                 stats=stats, tick_hz=reader.tick_hz)
+                                 stats=stats, tick_hz=reader.tick_hz, source=source)
                 flows[key] = tracker
                 stats.sessions += 1
 
@@ -193,6 +194,7 @@ def _begin(
     options: ReassemblyOptions,
     stats: ConversionStats,
     tick_hz: int,
+    source: zpf.SourceHandle | None = None,
 ) -> FlowTracker:
     session = writer.begin_session(proto=key.protocol, key=key.text)
     tracker_type = _TRACKERS[key.protocol]
@@ -203,6 +205,8 @@ def _begin(
         options=options,
         stats=stats,
         tick_hz=tick_hz,
+        writer=writer,
+        source=source,
     )
 
 

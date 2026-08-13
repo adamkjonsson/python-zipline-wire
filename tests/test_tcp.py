@@ -71,11 +71,20 @@ def test_the_handshake_fixes_isn_and_roles(tmp_path: pathlib.Path):
 
 
 def test_seq_start_is_the_absolute_wire_number(tmp_path: pathlib.Path):
-    """The first application byte is isn + 1, and seq_start is absolute."""
+    """The first application byte is isn + 1, and seq_start is absolute.
+
+    The handshake now writes an empty SYN record at the isn itself, so the
+    data record is the second one — and the pair demonstrates the point,
+    since the two seq_starts differ by exactly the sequence number the SYN
+    consumes.
+    """
     out = to_zpf(capture_of([*handshake(),
                              tcp_packet(seq=ISN + 1, flags=TCP_PSH, payload=b"abc")]), tmp_path)
 
-    record = out.only.by(0)[0]
+    syn, record = out.only.by(0)
+    assert syn.flags & zpf.RecordFlags.SYN
+    assert syn.seq_start == ISN
+    assert syn.payload == b""
     assert record.seq_start == ISN + 1
 
 

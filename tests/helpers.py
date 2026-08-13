@@ -12,7 +12,7 @@ from __future__ import annotations
 import io
 import pathlib
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import zpf
 from packeteer.generate import PacketBuilder
@@ -207,6 +207,7 @@ class Converted:
     sessions: list[SessionSnapshot]
     diagnostics: list[object]
     path: pathlib.Path
+    undecoded: list[object] = field(default_factory=list)
 
     @property
     def only(self) -> SessionSnapshot:
@@ -271,6 +272,8 @@ def to_zpf(source: io.BytesIO | pathlib.Path | str, tmp_path: pathlib.Path,
                 records=list(session.records()),
                 end_reason=session.end.reason if session.end else None,
             ))
+        undecoded = list(reader.undecoded)
         diagnostics = list(reader.diagnostics)
 
-    return Converted(stats=stats, sessions=snapshots, diagnostics=diagnostics, path=out)
+    return Converted(stats=stats, sessions=snapshots, diagnostics=diagnostics, path=out,
+                     undecoded=undecoded)
