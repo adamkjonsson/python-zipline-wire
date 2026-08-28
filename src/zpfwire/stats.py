@@ -34,6 +34,13 @@ class ConversionStats:
             had already been accepted.
         undecoded_regions: Undecoded blocks written, each naming a range of
             the capture that reached no record.
+        bad_checksum: Packets whose transport checksum did not verify.
+            Counted under either policy, so a conversion that kept them still
+            says how many there were.
+        checksum_dropped_bytes: Payload bytes discarded because of a failed
+            checksum, which is zero unless the policy is ``"drop"``. Like
+            :attr:`filtered` this is a deliberate exclusion rather than a
+            loss: the bytes reached no receiver either.
         unlocatable_bytes: Discarded bytes that could not be given an Undecoded
             block because their place in the capture cannot be named — a
             datagram reassembled from several fragments occupies discontiguous
@@ -51,6 +58,8 @@ class ConversionStats:
     gaps: int = 0
     late_bytes: int = 0
     overlap_bytes: int = 0
+    bad_checksum: int = 0
+    checksum_dropped_bytes: int = 0
     undecoded_regions: int = 0
     unlocatable_bytes: int = 0
 
@@ -84,6 +93,10 @@ class ConversionStats:
             lines.append(f"late bytes   {self.late_bytes} (dropped)")
         if self.overlap_bytes:
             lines.append(f"overlap      {self.overlap_bytes} bytes (discarded)")
+        if self.bad_checksum:
+            lines.append(f"bad cksum    {self.bad_checksum} packet(s)")
+        if self.checksum_dropped_bytes:
+            lines.append(f"dropped      {self.checksum_dropped_bytes} bytes (bad checksum)")
         if self.undecoded_regions:
             lines.append(f"undecoded    {self.undecoded_regions} region(s) cited")
         if self.unlocatable_bytes:

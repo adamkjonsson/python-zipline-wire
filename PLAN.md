@@ -6,7 +6,7 @@ This repo (currently `python-zipline-decode`) is empty: LICENSE, a one-line
 README, one commit. Its purpose is to be the glue between **network protocol
 decoding** and the **Zipline Payload Format**:
 
-- **packeteer** (`/Users/adam/projs/packeteer`, v0.8.0) reads captures and parses
+- **packeteer** (`/Users/adam/projs/packeteer`, v0.9.0) reads captures and parses
   packets. Pure stdlib, no runtime dependencies.
 - **python-zipline** (`/Users/adam/projs/python-zipline`) reads and writes `.zpf`
   files against **spec v0.16**. Distribution and import name are both **`zpf`**
@@ -584,8 +584,41 @@ repair. (`zpf`'s installed metadata still reads 0.1.0 against `pyproject`'s
 0.2.0.dev0; harmless, since `zpfwire --version` reports `SPEC_VERSION`, but
 `pip install -e ../python-zipline` tidies it.)
 
-Neither sibling is tagged yet — packeteer sits at `0.8.0.dev0` and
-python-zipline at `0.2.0.dev0`, both on `main`. `requirements.txt` installs
+**packeteer 0.9.0** (tagged 2026-08-28) brought one capability this project
+acts on, and nothing that breaks it — the 213 tests of the time passed
+unchanged against it.  `parse` now records `TCPHeader.checksum`,
+`UDPHeader.checksum` and `UDPHeader.length` only where a rebuild could not
+derive them (packeteer#68), so a value surviving the parse is one the bytes
+beside it do not produce: a checksum that was wrong on the wire.
+
+That exposed a fidelity bug here ([#7](https://github.com/adamkjonsson/python-zipline-wire/issues/7)).
+A corrupt segment is retransmitted cleanly and the damaged copy arrives first,
+so `favor-old` was keeping bytes no endpoint accepted and citing the good
+retransmission as an overlap discard — eleven times over in
+`payload_corruption.pcap`.  `ReassemblyOptions.checksum` (`--checksum drop`)
+discards such a packet whole, the way a receiver does.  It defaults to
+`"ignore"` because checksum offload makes a sending host's own capture report
+wrong checksums for correct traffic, and it lives on the options object rather
+than as a bare flag because it decides which bytes reach the output and so has
+to be inside `params_digest()`.
+
+One gap the work opened: packeteer keeps the checksum on a **truncated**
+packet too, because the value derived from the bytes a snaplen kept is not the
+one the sender computed — so a snaplen-limited capture reads as corruption
+throughout.  Filed as
+[packeteer#92](https://github.com/adamkjonsson/packeteer/issues/92); the
+`_truncated` guard in `capture.py` is the temporary shim and goes when it
+lands.
+
+Two things the release does *not* require action on: `TCPOptions.raw`
+(packeteer#87/#88) matters only when re-encoding, and we only read the decoded
+fields; and the `UDPHeader.length` override never reaches us, since
+defragmentation puts the whole datagram back before the length is compared.
+The generator-side work — impairments on `--payload http`, chunked responses,
+`--mss`, SYN options — is fixture material for later, not a dependency.
+
+Neither sibling was tagged when this plan was written — packeteer sat at
+`0.8.0.dev0` and python-zipline at `0.2.0.dev0`, both on `main`. `requirements.txt` installs
 them editable from the checkouts, so that is what 4b builds against.
 `pyproject.toml` names both dependencies with **no version constraint at all**,
 which is honest while neither is on PyPI but stops being so the moment they

@@ -29,12 +29,20 @@ from zpfwire.filter import matcher, spec_of
 from zpfwire.flow import (
     END_CAPTURE_END,
     END_TIMEOUT,
+    REASON_CHECKSUM,
     REASON_LATE,
     REASON_OVERLAP,
     FlowKey,
     FlowTracker,
+    cite_undecoded,
 )
-from zpfwire.options import DECODER_NAME, OVERLAP_POLICIES, ReassemblyOptions, tool_version
+from zpfwire.options import (
+    CHECKSUM_POLICIES,
+    DECODER_NAME,
+    OVERLAP_POLICIES,
+    ReassemblyOptions,
+    tool_version,
+)
 from zpfwire.stats import ConversionStats
 from zpfwire.survey import FlowSummary, survey
 from zpfwire.tcp import END_FIN, END_RST, TcpFlow
@@ -43,12 +51,14 @@ from zpfwire.udp import UdpFlow
 __version__ = tool_version()
 
 __all__ = [
+    "CHECKSUM_POLICIES",
     "DECODER_NAME",
     "END_CAPTURE_END",
     "END_FIN",
     "END_RST",
     "END_TIMEOUT",
     "OVERLAP_POLICIES",
+    "REASON_CHECKSUM",
     "REASON_LATE",
     "REASON_OVERLAP",
     "TICK_HZ_NS",
@@ -65,6 +75,7 @@ __all__ = [
     "UdpFlow",
     "__version__",
     "capture_to_zpf",
+    "cite_undecoded",
     "convert",
     "describe_source",
     "format_endpoint",

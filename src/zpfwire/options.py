@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from importlib.metadata import PackageNotFoundError, version
 
 __all__ = [
+    "CHECKSUM_POLICIES",
     "DECODER_NAME",
     "OVERLAP_POLICIES",
     "ReassemblyOptions",
@@ -19,6 +20,9 @@ DECODER_NAME = "tcp-reassembly"
 
 OVERLAP_POLICIES = ("favor-old", "favor-new")
 """How to resolve bytes that arrive twice with differing content."""
+
+CHECKSUM_POLICIES = ("ignore", "drop")
+"""What to do with a packet whose transport checksum does not verify."""
 
 
 def tool_version() -> str:
@@ -57,6 +61,13 @@ class ReassemblyOptions:
         coalesce: Join contiguous segments into one record, flushing on PSH
             and at every boundary. When ``False``, each segment becomes its
             own record.
+        checksum: What to do with a packet whose transport checksum does not
+            verify. A receiver discards it and takes the retransmission that
+            follows, which is what ``"drop"`` does; ``"ignore"`` converts it
+            anyway. The default is ``"ignore"`` because checksum offload makes
+            a capture taken on a sending host report wrong checksums for
+            traffic that was correct on the wire — dropping those by default
+            would gut such a capture.
 
     """
 
@@ -65,6 +76,7 @@ class ReassemblyOptions:
     flush_timeout: float = 5.0
     session_timeout: float = 300.0
     coalesce: bool = True
+    checksum: str = "ignore"
 
     def __post_init__(self) -> None:
         """Validate the policy.
@@ -83,6 +95,11 @@ class ReassemblyOptions:
             raise ValueError("flush_timeout must not be negative")
         if self.session_timeout < 0:
             raise ValueError("session_timeout must not be negative")
+        if self.checksum not in CHECKSUM_POLICIES:
+            raise ValueError(
+                f"checksum must be one of {', '.join(CHECKSUM_POLICIES)}, "
+                f"got {self.checksum!r}",
+            )
 
     def params_digest(self) -> str:
         """Return a stable ``sha256:`` digest of this policy.

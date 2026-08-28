@@ -65,17 +65,19 @@ b'There is a flower within...'
 
 Those are the exact bytes the reassembler dropped.
 
-### The two reasons
+### The reasons
 
 | Constant | `reason` | Meaning |
 |----------|----------|---------|
 | `REASON_OVERLAP` | `overlap-discarded` | A retransmit of a range already accepted |
 | `REASON_LATE` | `late-arrival` | Bytes that arrived after their gap had been committed |
+| `REASON_CHECKSUM` | `bad-checksum` | A packet discarded because its checksum did not verify, under `checksum="drop"` |
 
-Both are `reason_class="bytes"` — the *bytes-exist* class, meaning a consumer
+All are `reason_class="bytes"` — the *bytes-exist* class, meaning a consumer
 may follow the reference and fetch them.  The distinction matters: an overlap
-discard lost nothing, because the same bytes are in a record already, while a
-late arrival is data the policy caused you to lose.
+discard lost nothing, because the same bytes are in a record already, and a
+bad-checksum discard lost nothing the receiver had either, while a late
+arrival is data the policy caused you to lose.
 
 ```python
 from zpfwire import REASON_LATE

@@ -17,10 +17,12 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = [
     "END_CAPTURE_END",
     "END_TIMEOUT",
+    "REASON_CHECKSUM",
     "REASON_LATE",
     "REASON_OVERLAP",
     "FlowKey",
     "FlowTracker",
+    "cite_undecoded",
 ]
 
 REASON_OVERLAP = "overlap-discarded"
@@ -28,6 +30,13 @@ REASON_OVERLAP = "overlap-discarded"
 
 REASON_LATE = "late-arrival"
 """Undecoded reason for bytes that arrived after their gap had been committed."""
+
+REASON_CHECKSUM = "bad-checksum"
+"""Undecoded reason for a packet discarded because its checksum did not verify.
+
+Doubles as the skip key for the same packets, since a packet dropped before it
+reaches a session is skipped in exactly the sense the tally means.
+"""
 
 _BYTES_EXIST = "bytes"
 """The only ``reason_class`` a capture-sourced Undecoded block may carry."""
@@ -107,6 +116,58 @@ class FlowKey:
         raise KeyError(f"{endpoint} is not an endpoint of {self.text}")
 
 
+def cite_undecoded(
+    writer: FileWriter | None,
+    source: SourceHandle | None,
+    off_start: int | None,
+    length: int,
+    *,
+    reason: str,
+    decoder: DecoderHandle | None,
+    stats: ConversionStats,
+) -> None:
+    """Declare capture bytes that reached no record.
+
+    Bytes that exist in the capture and reach no record are something nothing
+    else in a `.zpf` can express — a transport stream's gaps are visible in
+    its offsets, but bytes deliberately dropped are not.  Only the
+    *bytes-exist* class may be declared against a capture source; a hole must
+    not be, so no caller here passes one.
+
+    Args:
+        writer: The file being written, or ``None`` when there is none.
+        source: The capture the region belongs to.
+        off_start: Byte offset of the region in the capture file, or ``None``
+            when it cannot be located — a datagram reassembled from several
+            fragments occupies discontiguous ranges, which one block cannot
+            name.
+        length: How many bytes the region covers.
+        reason: Why the region went undecoded; see :data:`REASON_OVERLAP`,
+            :data:`REASON_LATE` and :data:`REASON_CHECKSUM`.
+        decoder: The stage that discarded the bytes.
+        stats: Tally to record the block, or the failure to place it, in.
+
+    """
+    if length <= 0:
+        return
+    if off_start is None or writer is None or source is None:
+        stats.unlocatable_bytes += length
+        return
+    writer.undecoded(
+        source,
+        # Against a capture source there is no input .zpf, so there is no
+        # id namespace to name: the spec requires both written as 0.
+        session_id=0,
+        pid=0,
+        off_start=off_start,
+        off_end=off_start + length,
+        reason=reason,
+        reason_class=_BYTES_EXIST,
+        decoder=decoder,
+    )
+    stats.undecoded_regions += 1
+
+
 class FlowTracker(ABC):
     """Turns one conversation's packets into one session's records.
 
@@ -149,40 +210,26 @@ class FlowTracker(ABC):
     def undecoded(self, off_start: int | None, length: int, *, reason: str) -> None:
         """Declare capture bytes that this stage did not turn into a record.
 
-        An overlapping retransmit exists in the capture and reaches no record,
-        and nothing else in a `.zpf` can say so — a transport stream's gaps are
-        already visible in its offsets, but bytes deliberately dropped are not.
-        Only the *bytes-exist* class may be declared against a capture source;
-        a hole must not be, so no caller here passes one.
+        The tracker-bound form of :func:`cite_undecoded`, which carries the
+        rules.
 
         Args:
             off_start: Byte offset of the region in the capture file, or
-                ``None`` when it cannot be located — a datagram reassembled
-                from several fragments occupies discontiguous ranges, which one
-                block cannot name.
+                ``None`` when it cannot be located.
             length: How many bytes the region covers.
             reason: Why the region went undecoded; see :data:`REASON_OVERLAP`
                 and :data:`REASON_LATE`.
 
         """
-        if length <= 0:
-            return
-        if off_start is None or self._writer is None or self._source is None:
-            self._stats.unlocatable_bytes += length
-            return
-        self._writer.undecoded(
+        cite_undecoded(
+            self._writer,
             self._source,
-            # Against a capture source there is no input .zpf, so there is no
-            # id namespace to name: the spec requires both written as 0.
-            session_id=0,
-            pid=0,
-            off_start=off_start,
-            off_end=off_start + length,
+            off_start,
+            length,
             reason=reason,
-            reason_class=_BYTES_EXIST,
             decoder=self._decoder,
+            stats=self._stats,
         )
-        self._stats.undecoded_regions += 1
 
     def expired(self, now_ticks: int) -> bool:
         """Report whether this flow has been silent for longer than allowed.

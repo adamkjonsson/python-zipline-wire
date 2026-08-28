@@ -61,13 +61,19 @@ def tcp_packet(
     ack: int = 0,
     flags: int = TCP_ACK,
     payload: bytes = b"",
+    checksum: int | None = None,
 ) -> bytes:
-    """Build one Ethernet/IPv4/TCP frame."""
+    """Build one Ethernet/IPv4/TCP frame.
+
+    *checksum* overrides the computed value, which is the only way to write a
+    segment that was corrupted on the wire.
+    """
     builder = (
         PacketBuilder()
         .ethernet(src_mac="00:00:00:00:00:01", dst_mac="00:00:00:00:00:02")
         .ip(src=src, dst=dst)
-        .tcp(src_port=src_port, dst_port=dst_port, seq=seq, ack=ack, flags=flags)
+        .tcp(src_port=src_port, dst_port=dst_port, seq=seq, ack=ack, flags=flags,
+             checksum=checksum)
     )
     if payload:
         builder = builder.payload(data=payload)
@@ -81,13 +87,18 @@ def udp_packet(
     src_port: int = CLIENT_PORT,
     dst_port: int = 53,
     payload: bytes = b"",
+    checksum: int | None = None,
 ) -> bytes:
-    """Build one Ethernet/IPv4/UDP frame."""
+    """Build one Ethernet/IPv4/UDP frame.
+
+    *checksum* overrides the computed value; ``0`` is the legal IPv4 spelling
+    of *no checksum was computed*.
+    """
     builder = (
         PacketBuilder()
         .ethernet(src_mac="00:00:00:00:00:01", dst_mac="00:00:00:00:00:02")
         .ip(src=src, dst=dst)
-        .udp(src_port=src_port, dst_port=dst_port)
+        .udp(src_port=src_port, dst_port=dst_port, checksum=checksum)
     )
     if payload:
         builder = builder.payload(data=payload)

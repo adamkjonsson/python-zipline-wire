@@ -16,7 +16,7 @@ from typing import IO, Literal
 import zpf
 
 from zpfwire.capture import CaptureReader, PacketView
-from zpfwire.flow import FlowKey, FlowTracker
+from zpfwire.flow import REASON_CHECKSUM, FlowKey, FlowTracker, cite_undecoded
 from zpfwire.options import DECODER_NAME, ReassemblyOptions, tool_version
 from zpfwire.stats import ConversionStats
 from zpfwire.tcp import TcpFlow
@@ -170,6 +170,11 @@ def convert(
             if packet_filter is not None and not packet_filter(pkt):
                 stats.filtered += 1
                 continue
+            if pkt.checksum_bad:
+                stats.bad_checksum += 1
+                if options.checksum == "drop":
+                    _drop(pkt, writer, source, decoder=decoder, stats=stats)
+                    continue
 
             key = FlowKey.of(pkt)
             tracker = flows.get(key)
@@ -197,6 +202,33 @@ def convert(
         stats.skipped.update(reader.skipped)
 
     return stats
+
+
+def _drop(
+    pkt: PacketView,
+    writer: zpf.FileWriter,
+    source: zpf.SourceHandle | None,
+    *,
+    decoder: zpf.DecoderHandle,
+    stats: ConversionStats,
+) -> None:
+    """Discard a packet whose checksum did not verify, the way a receiver does.
+
+    The whole packet goes, not just its payload: a receiver that fails the
+    checksum has no reason to trust the header either, so the segment's flags
+    open and close nothing.  Dropping it before the flow lookup also keeps a
+    corrupt packet from being the one that starts a session.
+
+    The payload is cited as an Undecoded region like any other bytes that
+    exist in the capture and reach no record, and the packet is tallied as a
+    skip so that every packet is still converted, skipped or filtered.
+    """
+    stats.skipped[REASON_CHECKSUM] += 1
+    stats.checksum_dropped_bytes += len(pkt.payload)
+    cite_undecoded(
+        writer, source, pkt.payload_offset, len(pkt.payload),
+        reason=REASON_CHECKSUM, decoder=decoder, stats=stats,
+    )
 
 
 def _begin(

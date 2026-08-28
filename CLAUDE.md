@@ -57,12 +57,45 @@ warnings can only be used as a last resort, and **always ask before making such 
 
 - **Never commit or push without explicit instruction.** Do not run `git commit`, `git push`, or any destructive git command (`reset --hard`, `checkout .`, etc.) unless I have asked for it in the current message.
 
+## Versioning and changelog
+
+- The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+  While below 1.0, **breaking changes are allowed in a minor bump** (0.1 → 0.2);
+  they must still be called out.
+- `CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
+  as both siblings do. **Every user-visible change gets an entry under
+  `## [Unreleased]` in the same change that introduces it** — new or changed
+  public API, CLI flags, reassembly policy, defaults, output shape, bug fixes,
+  and docs. Purely internal refactors and test-only changes do not.
+- Change types, in this order, omitting any that are empty: `Added`, `Changed`,
+  `Deprecated`, `Removed`, `Fixed`, `Security`, `Documentation` (the last is a
+  project-specific extra for docs-only work).
+- Anything that breaks backwards compatibility goes under `Changed` (or
+  `Removed`) with a leading **`Breaking:`** and a note on what callers must do
+  instead. That includes a change to what a conversion *writes*: a `.zpf` whose
+  bytes move for the same input and the same options is a break for anyone
+  reproducing one.
+- Each release names the spec version it writes and the two sibling versions it
+  was built against. `zpf.SPEC_VERSION` is the source of truth for the first.
+- `pyproject.toml` carries the version.
+- Releasing, in order:
+  1. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh
+     empty `Unreleased` above it.
+  2. Drop any `.devN` suffix from the version in `pyproject.toml`.
+  3. Update the link definitions at the bottom of `CHANGELOG.md`.
+  4. Tag `vX.Y.Z`.
+  5. Close the release's GitHub issues and its milestone.
+- **Issues close at release, not at merge**, matching packeteer — work can sit
+  merged on `main` under `Unreleased`, and closing an issue then would claim a
+  fix is delivered when it is not yet in any release.
+
 ## Project layout
 
 - `src/zpfwire/` — the code
 - `tests/` — test suite, native pytest style; run with `.venv/bin/pytest`
 - `tests/captures/` — capture fixtures, copied from `../packeteer/testcases/`
 - `PLAN.md` — the design and phasing this project is being built to
+- `CHANGELOG.md` — the release history, kept current as work lands
 
 ## Virtual environment
 
