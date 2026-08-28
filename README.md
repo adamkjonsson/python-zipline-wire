@@ -179,6 +179,10 @@ One purpose of this project is to pressure-test its two dependencies, so gaps
 found here are filed as issues against them rather than worked around here. See
 `CLAUDE.md`, and `docs/internals/` for how the whole thing fits together.
 
+`CHANGELOG.md` records what has changed, in
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) form; every
+user-visible change lands with its entry.
+
 ## Licence
 
 MIT.

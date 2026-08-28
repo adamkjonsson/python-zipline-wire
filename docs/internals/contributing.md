@@ -79,12 +79,33 @@ it gets fixed *there*.  Ask before filing, then file.  See
   interesting content of a commit here is usually the specification rule that
   forced a decision, or the case that broke the obvious implementation.
 
+## The changelog
+
+`CHANGELOG.md` follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
+as both siblings do, and **a user-visible change lands with its entry** under
+`## [Unreleased]` in the same commit — public API, CLI flags, reassembly
+policy, defaults, the shape of what a conversion writes, bug fixes and docs.
+Internal refactors and test-only changes do not get one.
+
+Change types, in this order, omitting the empty ones: `Added`, `Changed`,
+`Deprecated`, `Removed`, `Fixed`, `Security`, `Documentation`.  A break goes
+under `Changed` or `Removed` with a leading **`Breaking:`** — and that
+includes a change to what a conversion *writes*, since a `.zpf` whose bytes
+move for the same input and the same options breaks anyone reproducing one.
+
+Releasing renames `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, adds a fresh empty
+`Unreleased`, updates the link definitions at the foot of the file, tags
+`vX.Y.Z`, and closes the release's issues.  Issues close at **release**, not
+at merge: work can sit merged on `main` under `Unreleased`, and closing early
+would claim a fix is delivered when it is not yet in any release.
+
 ## Where the design lives
 
 | Document | What it is |
 |----------|------------|
 | `PLAN.md` | The design and phasing this project was built to, with the upstream issues each phase depended on. Historical as much as current. |
 | `CLAUDE.md` | The standing rules, in the short form. |
+| `CHANGELOG.md` | What changed, per release, and which spec and sibling versions it was built against. |
 | `docs/internals/` | How it works now. |
 
 `PLAN.md` records *why* things were sequenced the way they were, including
