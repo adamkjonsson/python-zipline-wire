@@ -128,6 +128,55 @@ Coalescing also affects timestamps: a coalesced record is stamped with its
 *last* contributing packet, and carries `ts_first` for its first.  See
 {doc}`provenance`.
 
+### `checksum` — trusting what the wire said
+
+A packet whose transport checksum does not verify was corrupted in flight.  A
+receiver drops it and takes the retransmission that follows; by default
+`zpfwire` keeps it.
+
+```python
+ReassemblyOptions(checksum="drop")           # discard it, as a receiver would
+```
+
+The default is `"ignore"` for one reason: **checksum offload**.  A capture
+taken on a sending host is tapped above the network card, before the hardware
+fills the checksum in, so outbound packets routinely carry a wrong — often
+zero — value for traffic that was perfectly correct on the wire.  Dropping
+those by default would gut such a capture, so the policy is opt-in.
+
+Where the checksums *are* trustworthy, `"drop"` is the more faithful reading,
+and it changes what the file says.  A corrupt segment is usually retransmitted
+cleanly, and the damaged copy arrives first — so `favor-old` keeps the bytes
+no endpoint ever accepted, and cites the good retransmission as an overlap
+discard:
+
+```
+$ zpfwire convert payload_corruption.pcap -o kept.zpf
+payload      74065 bytes
+overlap      9150 bytes (discarded)
+bad cksum    11 packet(s)
+
+$ zpfwire convert payload_corruption.pcap -o dropped.zpf --checksum drop
+payload      74065 bytes
+skipped      11 (bad-checksum)
+bad cksum    11 packet(s)
+dropped      9150 bytes (bad checksum)
+```
+
+The same number of bytes is written either way; eleven of them differ, and
+under `"drop"` they are the ones the receiver actually saw.
+
+The whole packet is discarded, not just its payload — a receiver that fails
+the checksum has no reason to trust the header either, so the segment's flags
+open and close nothing, and a corrupt packet never starts a session.  The
+payload is cited as an `Undecoded` block with reason `bad-checksum`, and the
+packet is tallied as a skip, so the accounting rule holds under either policy.
+
+Two things are deliberately *not* read as failures: an IPv4 UDP datagram whose
+checksum is `0`, which means *none was computed* (RFC 768) rather than a wrong
+one, and any packet from a capture truncated by a snaplen, whose checksum
+covers bytes that were not kept.
+
 ## Validation
 
 Invalid options raise `ValueError` at construction, not at conversion:
@@ -140,7 +189,7 @@ ReassemblyOptions(flush_timeout=-1)
 # ValueError: flush_timeout must not be negative
 ```
 
-The accepted overlap policies are in `OVERLAP_POLICIES`.
+The accepted policies are in `OVERLAP_POLICIES` and `CHECKSUM_POLICIES`.
 
 ## Reading what a policy cost
 

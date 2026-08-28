@@ -20,6 +20,12 @@ the walk was compensating for, so the walk is gone:
 - and :func:`~packeteer.parse.iter_packets` carries the capture header and the
   datagrams reassembly gave up on alongside the packets (packeteer#76).
 
+packeteer 0.9.0 adds one more (packeteer#68): a parsed transport header keeps
+its ``checksum`` only where a rebuild could not derive it, so a value that
+survives the parse is one the bytes beside it do not produce.  That is how
+:attr:`PacketView.checksum_bad` is known, and it cannot be worked out here —
+verifying a checksum needs the pseudo-header the parser has already consumed.
+
 What remains here is the mapping from packeteer's model to ours: deciding what
 counts as a convertible packet, tallying what does not, and putting timestamps
 on one clock.
@@ -115,6 +121,9 @@ class PacketView:
             discontiguous ranges, which one offset cannot express.
         fragment_count: How many capture records the packet came from; ``1``
             unless it was reassembled.
+        checksum_bad: Whether the transport checksum disagrees with the bytes
+            it covers.  A receiver drops such a packet, so a conversion may
+            too — see :attr:`~zpfwire.options.ReassemblyOptions.checksum`.
 
     """
 
@@ -132,6 +141,7 @@ class PacketView:
     tcp_options: TCPOptions | None = None
     payload_offset: int | None = None
     fragment_count: int = 1
+    checksum_bad: bool = False
 
     @property
     def src_endpoint(self) -> str:
@@ -281,6 +291,7 @@ class CaptureReader:
             tcp_options=tcp.options if tcp is not None else None,
             payload_offset=_payload_offset(packet),
             fragment_count=len(packet.source_records) or 1,
+            checksum_bad=_checksum_bad(packet),
         )
 
     def _ticks(self, packet: ParsedPacket) -> int:
@@ -321,6 +332,38 @@ def _ip_protocol(packet: ParsedPacket) -> int | None:
     if isinstance(packet.ip, IPv6Header):
         return packet.ip.next_header
     return packet.ip.protocol if packet.ip is not None else None
+
+
+def _checksum_bad(packet: ParsedPacket) -> bool:
+    """Report whether the transport checksum disagrees with the bytes it covers.
+
+    packeteer keeps ``checksum`` on a parsed header only where a rebuild could
+    not derive it (packeteer#68), so a value that is not ``None`` here is one
+    the payload beside it does not produce.  Two cases that survive that test
+    are nonetheless not failures:
+
+    * **IPv4 UDP carrying ``0``**, which means *no checksum was computed*
+      (RFC 768) rather than a wrong one.  Over IPv6 a zero checksum is illegal
+      (RFC 8200 section 8.1), so there it stands as a failure.
+    * **A truncated capture**, where a snaplen cut off bytes the checksum
+      covers.  The sender's value cannot be recomputed from what was kept, so
+      the verdict is unknown rather than bad.  packeteer means to make this
+      case a ``None`` upstream (packeteer#92); until it does, the check below
+      is ours, and it goes when the fix lands.
+    """
+    transport = packet.transport
+    if not isinstance(transport, (TCPHeader, UDPHeader)) or transport.checksum is None:
+        return False
+    if _truncated(packet):
+        return False
+    if isinstance(transport, UDPHeader) and transport.checksum == 0:
+        return isinstance(packet.ip, IPv6Header)
+    return True
+
+
+def _truncated(packet: ParsedPacket) -> bool:
+    """Report whether a snaplen cut bytes off any record behind this packet."""
+    return any(len(record.data) < record.orig_len for record in packet.source_records)
 
 
 def _payload_offset(packet: ParsedPacket) -> int | None:

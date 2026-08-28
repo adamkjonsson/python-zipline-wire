@@ -112,9 +112,16 @@ Note: some bytes never reached the output. Raise --reorder-window or
 | `--overlap {favor-old,favor-new}` | which copy wins when retransmitted bytes disagree |
 | `--session-timeout SECONDS` | silence after which a conversation is closed |
 | `--no-coalesce` | one record per segment instead of per contiguous byte run |
+| `--checksum {ignore,drop}` | whether to discard a packet whose transport checksum does not verify |
 
 These are hashed into the file's decoder descriptor, so a `.zpf` records the
 policy that produced it.
+
+`--checksum drop` is worth knowing about: a corrupt segment is normally
+retransmitted cleanly, and the damaged copy arrives first, so the default
+keeps bytes no endpoint ever accepted. Dropping is not the default because
+checksum offload makes a capture taken on a sending host show wrong checksums
+for traffic that was fine on the wire.
 
 A TCP hole needs no marker in the file: `seq_start` is the absolute wire
 sequence number, so a gap is visible as arithmetic. (`Discontinuity` blocks are

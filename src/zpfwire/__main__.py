@@ -20,6 +20,9 @@ Examples:
   # Never wait for out-of-order segments; commit every gap immediately
   zpfwire convert capture.pcap -o strict.zpf --reorder-window 0
 
+  # Discard corrupt segments the way a receiver does, keeping the retransmission
+  zpfwire convert lossy.pcap -o lossy.zpf --checksum drop
+
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from packeteer.filter import PacketFilter
 from zpfwire.capture import CaptureReader
 from zpfwire.convert import convert, describe_source
 from zpfwire.filter import matcher
-from zpfwire.options import OVERLAP_POLICIES, ReassemblyOptions
+from zpfwire.options import CHECKSUM_POLICIES, OVERLAP_POLICIES, ReassemblyOptions
 from zpfwire.survey import survey
 
 _ERRORS = (OSError, ValueError, zpf.ZpfError)
@@ -85,6 +88,7 @@ def _options(args: argparse.Namespace) -> ReassemblyOptions:
         flush_timeout=args.flush_timeout,
         session_timeout=args.session_timeout,
         coalesce=not args.no_coalesce,
+        checksum=args.checksum,
     )
 
 
@@ -213,6 +217,9 @@ def main() -> None:
                             help="silence after which a conversation is closed")
     reassembly.add_argument("--no-coalesce", action="store_true",
                             help="emit one record per segment instead of per byte run")
+    reassembly.add_argument("--checksum", choices=CHECKSUM_POLICIES, default="ignore",
+                            help="what to do with a packet whose transport checksum "
+                                 "does not verify (default: ignore)")
     convert_parser.set_defaults(func=_cmd_convert)
 
     info_parser = subparsers.add_parser(

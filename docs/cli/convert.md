@@ -64,8 +64,9 @@ they turn up later.  These settings are what decide when that happens.
 | `--overlap {favor-old,favor-new}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted |
 | `--session-timeout SECONDS` | `300.0` | Silence after which a conversation is closed and a later packet starts a new session |
 | `--no-coalesce` | off | Emit one record per segment instead of one per contiguous byte run |
+| `--checksum {ignore,drop}` | `ignore` | What to do with a packet whose transport checksum does not verify. `drop` discards it as a receiver would, leaving the retransmission to supply the bytes |
 
-All five are hashed into the file's decoder descriptor as a `params_digest`,
+All six are hashed into the file's decoder descriptor as a `params_digest`,
 so a `.zpf` records the policy that produced it and a conversion can be
 reproduced.  {doc}`../guide/reassembly` works through what each one costs.
 
@@ -104,6 +105,8 @@ the output:
 | `gaps` | Places where a record was written past bytes that never arrived |
 | `late bytes` | Bytes that arrived after their gap had been committed, so could not be written |
 | `overlap` | Retransmitted bytes discarded because that range was already accepted |
+| `bad cksum` | Packets whose transport checksum did not verify, whether or not they were dropped |
+| `dropped` | Payload bytes discarded under `--checksum drop` |
 | `undecoded` | Regions of the capture cited as reaching no record |
 | `uncited` | Discarded bytes whose place in the capture could not be named |
 
