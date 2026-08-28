@@ -50,6 +50,13 @@ which the hand-walk had never handled.
 The lesson worth keeping: **the boundary held.**  `PacketView` did not change
 shape, so nothing above `capture.py` was touched.
 
+A sixth shim came and went the same way, after packeteer 0.9.0 made a
+surviving `checksum` mean *wrong on the wire*: the parser kept the field on a
+snaplen-truncated packet too, where the value it derived came from fewer bytes
+than the sender used, so a truncated capture read as corruption throughout.
+`_checksum_bad` carried a `_truncated` guard for one release; packeteer 0.9.1
+clears the field itself (packeteer#92) and the guard is gone.
+
 ## Skip reasons
 
 `ParsedPacket` says what each layer contained, not *why* one is missing, so

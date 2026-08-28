@@ -34,7 +34,7 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 -->
 
 Writes spec **v0.16** (`zpf.SPEC_VERSION == (0, 16)`), against packeteer
-**0.9.0** and python-zipline **0.2.0**.
+**0.9.1** and python-zipline **0.2.0**.
 
 **Nothing has been released yet**, so everything the project does is listed
 here; `0.1.0` will be the first tag.
@@ -122,9 +122,9 @@ here; `0.1.0` will be the first tag.
   Two things are deliberately not read as failures: an IPv4 UDP datagram
   whose checksum is `0`, which means *none was computed* (RFC 768), and any
   packet from a capture a snaplen truncated, whose checksum covers bytes that
-  were not kept.  The second is a local guard against
-  [packeteer#92](https://github.com/adamkjonsson/packeteer/issues/92) and
-  goes when that lands.
+  were not kept.  The first is decided here; the second is the parser's, which
+  clears a checksum it cannot compare since packeteer 0.9.1
+  ([packeteer#92](https://github.com/adamkjonsson/packeteer/issues/92)).
 
   The knob lives on `ReassemblyOptions` rather than being a bare CLI flag
   because it decides which bytes reach the output, so it has to be inside

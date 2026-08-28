@@ -339,31 +339,21 @@ def _checksum_bad(packet: ParsedPacket) -> bool:
 
     packeteer keeps ``checksum`` on a parsed header only where a rebuild could
     not derive it (packeteer#68), so a value that is not ``None`` here is one
-    the payload beside it does not produce.  Two cases that survive that test
-    are nonetheless not failures:
+    the payload beside it does not produce.  A capture a snaplen truncated is
+    already excluded upstream, since 0.9.1 clears the field rather than compare
+    it against bytes the sender never checksummed (packeteer#92).
 
-    * **IPv4 UDP carrying ``0``**, which means *no checksum was computed*
-      (RFC 768) rather than a wrong one.  Over IPv6 a zero checksum is illegal
-      (RFC 8200 section 8.1), so there it stands as a failure.
-    * **A truncated capture**, where a snaplen cut off bytes the checksum
-      covers.  The sender's value cannot be recomputed from what was kept, so
-      the verdict is unknown rather than bad.  packeteer means to make this
-      case a ``None`` upstream (packeteer#92); until it does, the check below
-      is ours, and it goes when the fix lands.
+    One case survives that test without being a failure: **IPv4 UDP carrying
+    ``0``**, which means *no checksum was computed* (RFC 768) rather than a
+    wrong one.  Over IPv6 a zero checksum is illegal (RFC 8200 section 8.1), so
+    there it stands as a failure.
     """
     transport = packet.transport
     if not isinstance(transport, (TCPHeader, UDPHeader)) or transport.checksum is None:
         return False
-    if _truncated(packet):
-        return False
     if isinstance(transport, UDPHeader) and transport.checksum == 0:
         return isinstance(packet.ip, IPv6Header)
     return True
-
-
-def _truncated(packet: ParsedPacket) -> bool:
-    """Report whether a snaplen cut bytes off any record behind this packet."""
-    return any(len(record.data) < record.orig_len for record in packet.source_records)
 
 
 def _payload_offset(packet: ParsedPacket) -> int | None:
