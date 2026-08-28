@@ -602,13 +602,19 @@ wrong checksums for correct traffic, and it lives on the options object rather
 than as a bare flag because it decides which bytes reach the output and so has
 to be inside `params_digest()`.
 
-One gap the work opened: packeteer keeps the checksum on a **truncated**
-packet too, because the value derived from the bytes a snaplen kept is not the
-one the sender computed — so a snaplen-limited capture reads as corruption
-throughout.  Filed as
-[packeteer#92](https://github.com/adamkjonsson/packeteer/issues/92); the
-`_truncated` guard in `capture.py` is the temporary shim and goes when it
-lands.
+One gap the work opened, and closed: packeteer kept the checksum on a
+**truncated** packet too, because the value derived from the bytes a snaplen
+kept is not the one the sender computed — so a snaplen-limited capture read as
+corruption throughout.  Filed as
+[packeteer#92](https://github.com/adamkjonsson/packeteer/issues/92) and fixed
+in **packeteer 0.9.1** (tagged 2026-08-28), which clears both the checksum and
+`UDPHeader.length` when the IP header declares more bytes than the capture
+holds.  The `_truncated` guard in `capture.py` was the temporary shim and is
+gone; the behaviour it protected is unchanged, and
+`test_a_truncated_capture_is_not_read_as_corrupt` now guards the upstream fix.
+The cost upstream documents is ours too: corruption cannot be reported at all
+in a truncated capture, because the bytes the sender checksummed are not in
+the file.
 
 Two things the release does *not* require action on: `TCPOptions.raw`
 (packeteer#87/#88) matters only when re-encoding, and we only read the decoded

@@ -175,7 +175,9 @@ packet is tallied as a skip, so the accounting rule holds under either policy.
 Two things are deliberately *not* read as failures: an IPv4 UDP datagram whose
 checksum is `0`, which means *none was computed* (RFC 768) rather than a wrong
 one, and any packet from a capture truncated by a snaplen, whose checksum
-covers bytes that were not kept.
+covers bytes that were not kept.  The second is packeteer's doing — it clears a
+checksum it cannot compare against the bytes the sender used — so a
+snaplen-limited capture reports no corruption at all, under either policy.
 
 ## Validation
 

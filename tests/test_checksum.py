@@ -128,7 +128,11 @@ def test_an_ipv4_udp_datagram_without_a_checksum_is_not_corrupt(tmp_path: pathli
 
 
 def test_a_truncated_capture_is_not_read_as_corrupt(tmp_path: pathlib.Path):
-    """A snaplen cuts off bytes the checksum covers, so it cannot be checked."""
+    """A snaplen cuts off bytes the checksum covers, so it cannot be checked.
+
+    The parser clears the field it cannot compare (packeteer#92), so this
+    guards an upstream promise rather than anything decided here.
+    """
     capture = _truncate(capture_of([
         tcp_packet(seq=1, payload=b"x" * 200, flags=TCP_ACK | TCP_PSH),
     ]), keep=120)
