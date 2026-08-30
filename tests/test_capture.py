@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import struct
 
 import pytest
 from helpers import (
@@ -16,7 +17,8 @@ from helpers import (
     udp_packet,
 )
 from packeteer.generate import PacketBuilder
-from packeteer.pcap import read_pcap
+from packeteer.generate.loopback import AF_INET
+from packeteer.pcap import LINKTYPE_NULL, read_pcap
 
 from zpfwire.capture import (
     TICK_HZ_US,
@@ -261,6 +263,38 @@ def test_an_unsupported_link_type_skips_every_packet():
 
     assert pkts == []
     assert reader.skipped == {SkipReason.UNSUPPORTED_LINKTYPE: 1}
+
+
+def test_a_bsd_loopback_capture_converts():
+    """DLT_NULL became readable in packeteer 0.12.0, and asks nothing more of us.
+
+    ``tcpdump -i lo0`` on macOS and the BSDs writes this framing, so it is the
+    easiest traffic anyone can capture; before packeteer#124 it could not be
+    parsed at all.
+    """
+    frame = (
+        PacketBuilder()
+        .loopback()
+        .ip(src="127.0.0.1", dst="127.0.0.1")
+        .tcp(src_port=CLIENT_PORT, dst_port=SERVER_PORT, seq=1, flags=TCP_PSH)
+        .payload(data=b"local")
+        .build()
+    )
+    reader, pkts = views(capture_of([frame], link_type=LINKTYPE_NULL))
+
+    assert reader.skipped == {}
+    assert len(pkts) == 1
+    assert pkts[0].payload == b"local"
+    assert pkts[0].src_endpoint == f"127.0.0.1:{CLIENT_PORT}"
+
+
+def test_a_loopback_frame_that_announced_ip_is_a_malformed_ip():
+    """The link layer decoded, so the failure is above it, not at it."""
+    frame = struct.pack("<I", AF_INET) + b"\x45"  # AF_INET, then a stub of an IP header
+    reader, pkts = views(capture_of([frame], link_type=LINKTYPE_NULL))
+
+    assert pkts == []
+    assert reader.skipped == {SkipReason.MALFORMED_IP: 1}
 
 
 def test_a_truncated_ip_header_is_skipped():

@@ -55,10 +55,11 @@ reader.packet_count      # packets seen — 0 before iteration
 reader.skipped           # Counter keyed by SkipReason
 reader.tick_hz           # the rate every timestamp is expressed in
 reader.link_type         # from the capture header
+reader.snaplen           # the capture limit, or None when it states none
 ```
 
-`header`, `tick_hz` and `link_type` are available immediately, because the
-capture's header is read when the reader is constructed.  `packet_count` and
+`header`, `tick_hz`, `link_type` and `snaplen` are available immediately,
+because the capture's header is read when the reader is constructed.  `packet_count` and
 `skipped` are not, because knowing them means reading the file.
 
 ## Surveying a filtered view

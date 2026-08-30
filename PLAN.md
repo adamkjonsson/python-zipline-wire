@@ -631,3 +631,74 @@ which is honest while neither is on PyPI but stops being so the moment they
 are: 4b relies on APIs that exist only in these unreleased versions, and
 python-zipline 0.2.0 is a declared break in both directions. Add floors when
 the two are released.
+
+**packeteer 0.10.0 – 0.12.0** (tagged 2026-08-28 … 08-30) brought one break
+this project had to answer, one capability it gained for nothing, and two
+openings it has not taken yet.  260 of the 261 tests passed unchanged.
+
+The break is the reversal of packeteer#92.  A truncated packet keeps its
+`transport.checksum` and `UDPHeader.length` again (packeteer#126), because
+rebuilding it *as truncated* needs the captured values — and #92's other half
+of the argument, that such a packet could not be rebuilt as itself anyway, no
+longer holds.  So the exclusion moves back here: `_checksum_bad` reads
+`ParsedPacket.datagram_truncated` (packeteer#94, 0.11.0) beside the checksum,
+which is exactly what the upstream changelog asks a consumer that reads a
+recorded checksum as corruption to do.  The behaviour is unchanged — a
+snaplen-limited capture is still never read as corrupt, and corruption is
+still unreportable within one — but it is now our rule rather than a promise
+we could lean on, and `test_a_truncated_capture_is_not_read_as_corrupt` guards
+it as such.  Left unfixed it would have been a fidelity bug of the same shape
+as the one `--checksum drop` was written for, in the other direction:
+`drop` would have gutted every truncated capture.
+
+The free capability is **BSD loopback** (packeteer#124): `DLT_NULL` and
+`DLT_LOOP` parse, so `tcpdump -i lo0` on macOS converts with no change to
+`capture.py` — the packets arrive already decoded.  One thing did need saying:
+a loopback frame states an address family rather than an EtherType, so
+`_unconvertible` was calling a malformed IP packet on such a capture an
+unsupported *link type*, naming a symptom rather than the cause, which is the
+mistake packeteer#123 had just fixed upstream.  It now reads
+`LoopbackHeader.family` against packeteer's own constants.
+
+That inference is still wrong for `LINKTYPE_RAW`, which has no link-layer
+header to test, so a raw-IP capture with a malformed IP header is blamed on the
+link type.  Nothing exposes which link types packeteer supports — filed as
+[packeteer#138](https://github.com/adamkjonsson/packeteer/issues/138), asking
+for `supports_link_type()` or an exported set; the tally is corrected here when
+it lands.
+
+**Not taken yet, and worth deciding on:**
+
+- ~~**Truncation is still not reported.**~~ **Done.**  0.11.0 and 0.12.0 made
+  it visible for the first time — `datagram_truncated` per packet,
+  `PcapRecord.orig_len` per record, and the file's `snaplen` — and until now a
+  capture taken with one converted to a `.zpf` of short payloads with nothing
+  saying so.  TCP noticed indirectly, since the next segment's `seq` leaves a
+  gap the stats already count; **UDP did not**, and a short datagram was
+  silently a whole one.  `ConversionStats.truncated` now counts them,
+  `CaptureReader.snaplen` and `PacketView.truncated` expose the fact, and the
+  snaplen is written on the Source Descriptor.
+
+  It goes in the Source's free-text `comment` (`snaplen=120`), because the
+  block has no field for it: the spec gives a capture source a `link_type` and
+  nothing else about how the capture was taken.  A field or TLV beside
+  `link_type` is the better home and is a **specification** question, not one
+  to settle here.
+
+  The test helper writes such a capture honestly now, with `write_pcap`'s
+  `snaplen=` and per-record `orig_len` (packeteer#126), instead of patching
+  pcap header bytes by hand.
+- **The protocol registry** (packeteer#96–#102, #118) is the mechanism the
+  eventual `zpfwire.dissect` should be built on rather than inventing a second
+  one: `AppProtocol` already carries ports, transport and decode, `parse`
+  dispatches through it, and `--load-protocol` / `PACKETEER_PROTOCOLS` load a
+  user protocol from a path.  Note that a protocol module is *code*, run as
+  code, so exposing it through a `zpfwire` flag inherits that and must say so.
+
+Two changes needed no action.  `PcapFile.packets` now holds `PcapRecord`
+objects rather than tuples (packeteer#126, breaking) and we only read
+`.data_offset` and `len(source_records)`, neither affected.  And
+`UnsupportedLinkTypeWarning` (packeteer#123) now fires once per file on stderr;
+our `unsupported-linktype` tally is the same fact counted per packet, and the
+two are complementary rather than duplicated — the warning names the link type,
+which the tally does not.

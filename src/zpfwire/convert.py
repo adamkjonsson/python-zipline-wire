@@ -150,6 +150,7 @@ def convert(
             uri=uri,
             digest=digest,
             link_type=reader.link_type,
+            comment=_source_comment(reader),
         )
         # The specification makes declaring the head-of-pipeline reassembler a
         # SHOULD, and it is the only place the overlap and gap policy can be
@@ -191,6 +192,8 @@ def convert(
 
             tracker.packet(pkt)
             stats.converted += 1
+            if pkt.truncated:
+                stats.truncated += 1
 
         for key, tracker in list(flows.items()):
             _close(tracker, flows, key)
@@ -202,6 +205,24 @@ def convert(
         stats.skipped.update(reader.skipped)
 
     return stats
+
+
+def _source_comment(reader: CaptureReader) -> str | None:
+    """Say what the capture's snaplen was, when it had one.
+
+    A snaplen is provenance of the same kind as the link type — it says what
+    the capture *is* — and it is what explains payloads shorter than what was
+    sent.  The Source Descriptor has no field for it, so it goes in the block's
+    free-text comment.  A field or TLV of its own would be the better home,
+    beside ``link_type``; that is a specification change, not one to make here.
+
+    Returns:
+        ``"snaplen=262144"``, or ``None`` when the capture states no limit.
+
+    """
+    if reader.snaplen is None:
+        return None
+    return f"snaplen={reader.snaplen}"
 
 
 def _drop(

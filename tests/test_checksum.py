@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import io
 import pathlib
-import struct
 
 import pytest
 import zpf
@@ -130,12 +129,16 @@ def test_an_ipv4_udp_datagram_without_a_checksum_is_not_corrupt(tmp_path: pathli
 def test_a_truncated_capture_is_not_read_as_corrupt(tmp_path: pathlib.Path):
     """A snaplen cuts off bytes the checksum covers, so it cannot be checked.
 
-    The parser clears the field it cannot compare (packeteer#92), so this
-    guards an upstream promise rather than anything decided here.
+    packeteer 0.9.1 cleared the field it could not compare (packeteer#92) and
+    0.12.0 records it again, because rebuilding the packet as truncated needs
+    the captured value (packeteer#126).  So the exclusion is decided here now,
+    from ``datagram_truncated``, and this guards our own rule rather than an
+    upstream promise.
     """
-    capture = _truncate(capture_of([
-        tcp_packet(seq=1, payload=b"x" * 200, flags=TCP_ACK | TCP_PSH),
-    ]), keep=120)
+    capture = capture_of(
+        [tcp_packet(seq=1, payload=b"x" * 200, flags=TCP_ACK | TCP_PSH)],
+        snaplen=120,
+    )
 
     reader = CaptureReader(file_object=capture)
     views = list(reader)
@@ -229,18 +232,3 @@ def test_the_cli_exposes_the_policy(tmp_path: pathlib.Path, monkeypatch: pytest.
         for session in reader.sessions():
             list(session.records())
         assert list(reader.diagnostics) == []
-
-
-def _truncate(capture: io.BytesIO, *, keep: int) -> io.BytesIO:
-    """Re-write a one-record pcap as if a snaplen had cut the frame short.
-
-    The record keeps its original length, which is what tells a reader the
-    bytes are missing rather than absent.
-    """
-    raw = bytearray(capture.getvalue())
-    header, record = 24, 24 + 16
-    incl, _ = struct.unpack_from("<II", raw, header + 8)
-    assert keep < incl, "the frame must actually be cut"
-    struct.pack_into("<I", raw, header + 8, keep)
-    del raw[record + keep:record + incl]
-    return io.BytesIO(bytes(raw))

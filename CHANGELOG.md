@@ -34,7 +34,7 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 -->
 
 Writes spec **v0.16** (`zpf.SPEC_VERSION == (0, 16)`), against packeteer
-**0.9.1** and python-zipline **0.2.0**.
+**0.12.0** and python-zipline **0.2.0**.
 
 **Nothing has been released yet**, so everything the project does is listed
 here; `0.1.0` will be the first tag.
@@ -80,6 +80,24 @@ here; `0.1.0` will be the first tag.
   hole is barred against a capture source, and `seq_start` already carries
   the extent of what is missing.
 
+- **Every link type packeteer reads** — Ethernet, Linux cooked capture v1 and
+  v2, raw IP, and BSD loopback (`DLT_NULL` / `DLT_LOOP`), the framing
+  `tcpdump -i lo0` writes on macOS and the BSDs.  Loopback came with packeteer
+  0.12.0 ([packeteer#124](https://github.com/adamkjonsson/packeteer/issues/124))
+  and needed nothing here: the packets arrive already decoded.  A link type
+  neither sibling knows is skipped and counted as `unsupported-linktype`
+  rather than mistaken for a packet carrying only bytes.
+
+- **A capture cut short says so** — a capture taken with `tcpdump -s` holds
+  less of each packet than crossed the wire, so payloads past the limit reach
+  a record short, and nothing in a payload distinguishes that from a short
+  payload the sender chose.  `ConversionStats.truncated` counts the packets it
+  happened to, `CaptureReader.snaplen` and `PacketView.truncated` expose it per
+  capture and per packet, and the capture's snaplen is recorded on the Source
+  Descriptor beside the link type.  A TCP stream shows the loss a second way,
+  as the gap the next sequence number leaves; **a UDP datagram shows it nowhere
+  else at all**, which is what makes the count worth writing.
+
 - **`--sequenced`** — store each TCP session in a valid causal linearization
   and mark it `SEQUENCED`, rather than in capture order.  A TCP session is
   *hint-ful*, so the order follows from `seq` and `ack` with no guesswork.
@@ -122,9 +140,11 @@ here; `0.1.0` will be the first tag.
   Two things are deliberately not read as failures: an IPv4 UDP datagram
   whose checksum is `0`, which means *none was computed* (RFC 768), and any
   packet from a capture a snaplen truncated, whose checksum covers bytes that
-  were not kept.  The first is decided here; the second is the parser's, which
-  clears a checksum it cannot compare since packeteer 0.9.1
-  ([packeteer#92](https://github.com/adamkjonsson/packeteer/issues/92)).
+  were not kept and so can be compared against nothing.  Both are decided
+  here, the second from `ParsedPacket.datagram_truncated`: packeteer 0.9.1
+  cleared such a checksum ([packeteer#92](https://github.com/adamkjonsson/packeteer/issues/92))
+  and 0.12.0 records it again, since rebuilding the packet as truncated needs
+  the captured value ([packeteer#126](https://github.com/adamkjonsson/packeteer/issues/126)).
 
   The knob lives on `ReassemblyOptions` rather than being a bare CLI flag
   because it decides which bytes reach the output, so it has to be inside
