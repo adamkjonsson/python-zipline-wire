@@ -41,6 +41,13 @@ class ConversionStats:
             checksum, which is zero unless the policy is ``"drop"``. Like
             :attr:`filtered` this is a deliberate exclusion rather than a
             loss: the bytes reached no receiver either.
+        truncated: Packets that reached a session carrying less than was sent,
+            because the capture was taken with a snaplen.  Their payload is
+            short, and nothing downstream can tell that from a short payload
+            the sender chose — so a non-zero count here is the only warning a
+            reader gets.  A TCP stream also shows it as a gap, since the next
+            segment's sequence number skips the bytes that were cut; a UDP
+            datagram shows it nowhere else at all.
         unlocatable_bytes: Discarded bytes that could not be given an Undecoded
             block because their place in the capture cannot be named — a
             datagram reassembled from several fragments occupies discontiguous
@@ -60,6 +67,7 @@ class ConversionStats:
     overlap_bytes: int = 0
     bad_checksum: int = 0
     checksum_dropped_bytes: int = 0
+    truncated: int = 0
     undecoded_regions: int = 0
     unlocatable_bytes: int = 0
 
@@ -97,6 +105,8 @@ class ConversionStats:
             lines.append(f"bad cksum    {self.bad_checksum} packet(s)")
         if self.checksum_dropped_bytes:
             lines.append(f"dropped      {self.checksum_dropped_bytes} bytes (bad checksum)")
+        if self.truncated:
+            lines.append(f"truncated    {self.truncated} packet(s) (payload cut by snaplen)")
         if self.undecoded_regions:
             lines.append(f"undecoded    {self.undecoded_regions} region(s) cited")
         if self.unlocatable_bytes:

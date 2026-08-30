@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import zpf
 from packeteer.generate import PacketBuilder
 from packeteer.generate.tcp import TCP_ACK, TCP_FIN, TCP_PSH, TCP_RST, TCP_SYN
-from packeteer.pcap import LINKTYPE_ETHERNET, write_pcap
+from packeteer.pcap import LINKTYPE_ETHERNET, SNAPLEN_UNLIMITED, write_pcap
 
 from zpfwire import ConversionStats, capture_to_zpf
 
@@ -135,6 +135,7 @@ def capture_of(
     start_us: int = 1_000_000,
     step_us: int = 1_000,
     link_type: int = LINKTYPE_ETHERNET,
+    snaplen: int | None = None,
 ) -> io.BytesIO:
     """Write *frames* to an in-memory pcap, one timestamp step apart.
 
@@ -143,17 +144,28 @@ def capture_of(
         start_us: Timestamp of the first frame, in microseconds since the epoch.
         step_us: Spacing between consecutive frames.
         link_type: Link type recorded in the file header.
+        snaplen: Cut every frame to this many bytes and declare the limit in
+            the file header, as ``tcpdump -s`` would.  Each record keeps its
+            length on the wire, which is what tells a reader the bytes are
+            missing rather than absent.
 
     Returns:
         A rewound stream holding the capture.
 
     """
-    records = []
+    records: list[tuple[bytes, int, int] | tuple[bytes, int, int, int]] = []
     for index, frame in enumerate(frames):
         stamp = start_us + index * step_us
-        records.append((frame, stamp // 1_000_000, stamp % 1_000_000))
+        sec, frac = stamp // 1_000_000, stamp % 1_000_000
+        if snaplen is not None and len(frame) > snaplen:
+            records.append((frame[:snaplen], sec, frac, len(frame)))
+        else:
+            records.append((frame, sec, frac))
     buf = io.BytesIO()
-    write_pcap(records, file_object=buf, link_type=link_type)
+    write_pcap(
+        records, file_object=buf, link_type=link_type,
+        snaplen=SNAPLEN_UNLIMITED if snaplen is None else snaplen,
+    )
     buf.seek(0)
     return buf
 

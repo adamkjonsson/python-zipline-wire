@@ -26,6 +26,14 @@ survives the parse is one the bytes beside it do not produce.  That is how
 :attr:`PacketView.checksum_bad` is known, and it cannot be worked out here —
 verifying a checksum needs the pseudo-header the parser has already consumed.
 
+packeteer 0.12.0 moves that line back for one case: a **truncated** packet
+keeps its checksum again, because rebuilding it as truncated needs the captured
+value (packeteer#126).  Reading the field as corruption therefore takes
+``datagram_truncated`` beside it, which is what :func:`_checksum_bad` does.
+The same release reads BSD loopback captures (packeteer#124); they arrive here
+as ordinary IP packets and ask nothing of this module but that a frame whose
+address family announced IP be told apart from one that did not.
+
 What remains here is the mapping from packeteer's model to ours: deciding what
 counts as a convertible packet, tallying what does not, and putting timestamps
 on one clock.
@@ -41,10 +49,11 @@ from dataclasses import dataclass
 from typing import IO
 
 from packeteer.generate import ETHERTYPE_IPV4, ETHERTYPE_IPV6, IPv6Header
+from packeteer.generate.loopback import AF_INET, LoopbackHeader
 from packeteer.generate.tcp import TCPHeader, TCPOptions
 from packeteer.generate.udp import UDPHeader
 from packeteer.parse import PacketReader, ParsedPacket, iter_packets
-from packeteer.pcap import PcapFileHeader
+from packeteer.pcap import SNAPLEN_UNLIMITED, PcapFileHeader
 
 __all__ = [
     "TICK_HZ_NS",
@@ -124,6 +133,10 @@ class PacketView:
         checksum_bad: Whether the transport checksum disagrees with the bytes
             it covers.  A receiver drops such a packet, so a conversion may
             too — see :attr:`~zpfwire.options.ReassemblyOptions.checksum`.
+        truncated: Whether the capture holds less of this packet than the IP
+            header says was sent, as after a capture taken with a snaplen.
+            :attr:`payload` is then short of what crossed the wire, and no
+            later stage can tell that from a short payload the sender chose.
 
     """
 
@@ -142,6 +155,7 @@ class PacketView:
     payload_offset: int | None = None
     fragment_count: int = 1
     checksum_bad: bool = False
+    truncated: bool = False
 
     @property
     def src_endpoint(self) -> str:
@@ -240,6 +254,19 @@ class CaptureReader:
         """The capture's link-layer type."""
         return self.header.link_type
 
+    @property
+    def snaplen(self) -> int | None:
+        """Bytes kept per packet, or ``None`` when nothing was cut.
+
+        A capture written with no limit records
+        :data:`~packeteer.pcap.SNAPLEN_UNLIMITED`, and one written by a tool
+        that did not fill the field records ``0``; neither says a packet was
+        cut short, so both read as ``None`` here.
+        """
+        if self.header.snaplen in (0, SNAPLEN_UNLIMITED):
+            return None
+        return self.header.snaplen
+
     def __iter__(self) -> Iterator[PacketView]:
         """Yield a :class:`PacketView` for every TCP segment and UDP datagram."""
         self.skipped.clear()
@@ -292,6 +319,7 @@ class CaptureReader:
             payload_offset=_payload_offset(packet),
             fragment_count=len(packet.source_records) or 1,
             checksum_bad=_checksum_bad(packet),
+            truncated=packet.datagram_truncated,
         )
 
     def _ticks(self, packet: ParsedPacket) -> int:
@@ -311,8 +339,10 @@ class CaptureReader:
 def _unconvertible(packet: ParsedPacket) -> str | None:
     """Return why a packet carries no stream, or ``None`` when it does."""
     if packet.ip is None:
-        if packet.ethernet is None and packet.sll is None:
+        if packet.ethernet is None and packet.sll is None and packet.loopback is None:
             return SkipReason.UNSUPPORTED_LINKTYPE
+        if packet.loopback is not None:
+            return _loopback_skip_reason(packet.loopback)
         ethertype = packet.ethernet.ethertype if packet.ethernet is not None else None
         if ethertype in _IP_ETHERTYPES:
             return SkipReason.MALFORMED_IP
@@ -327,6 +357,19 @@ def _unconvertible(packet: ParsedPacket) -> str | None:
     return SkipReason.NOT_TCP_UDP
 
 
+def _loopback_skip_reason(header: LoopbackHeader) -> str:
+    """Tell a malformed IP packet from a non-IP one on a loopback capture.
+
+    A loopback frame states an address family rather than an EtherType, and the
+    value is the capturing platform's — ``AF_INET6`` is 30 on macOS and 10 on
+    Linux — so the comparison uses packeteer's own constants rather than a
+    table repeated here.
+    """
+    if header.family == AF_INET or header.is_ipv6:
+        return SkipReason.MALFORMED_IP
+    return SkipReason.NON_IP
+
+
 def _ip_protocol(packet: ParsedPacket) -> int | None:
     """Return the transport protocol number the IP header declares, if any."""
     if isinstance(packet.ip, IPv6Header):
@@ -339,17 +382,27 @@ def _checksum_bad(packet: ParsedPacket) -> bool:
 
     packeteer keeps ``checksum`` on a parsed header only where a rebuild could
     not derive it (packeteer#68), so a value that is not ``None`` here is one
-    the payload beside it does not produce.  A capture a snaplen truncated is
-    already excluded upstream, since 0.9.1 clears the field rather than compare
-    it against bytes the sender never checksummed (packeteer#92).
+    the payload beside it does not produce.
 
-    One case survives that test without being a failure: **IPv4 UDP carrying
-    ``0``**, which means *no checksum was computed* (RFC 768) rather than a
-    wrong one.  Over IPv6 a zero checksum is illegal (RFC 8200 section 8.1), so
-    there it stands as a failure.
+    Two cases survive that test without being a failure.
+
+    A **truncated** packet is the first.  packeteer 0.9.1 cleared the field
+    there (packeteer#92); 0.12.0 records it again, because rebuilding the
+    packet as truncated needs the captured value (packeteer#126), and upstream
+    now asks a consumer reading a checksum as corruption to test
+    :attr:`~packeteer.parse.ParsedPacket.datagram_truncated` beside it.  The
+    bytes the sender checksummed are not in the file, so the value cannot be
+    checked at all — which is a different statement from its being wrong.
+    Corruption stays unreportable in a truncated capture, as it was before.
+
+    The second is **IPv4 UDP carrying ``0``**, which means *no checksum was
+    computed* (RFC 768) rather than a wrong one.  Over IPv6 a zero checksum is
+    illegal (RFC 8200 section 8.1), so there it stands as a failure.
     """
     transport = packet.transport
     if not isinstance(transport, (TCPHeader, UDPHeader)) or transport.checksum is None:
+        return False
+    if packet.datagram_truncated:
         return False
     if isinstance(transport, UDPHeader) and transport.checksum == 0:
         return isinstance(packet.ip, IPv6Header)

@@ -72,7 +72,7 @@ specification's provenance/layer table. Concretely:
 | Block | What goes in it |
 |---|---|
 | File Header | tick rate from the capture, `single_clock` (one capture is one tap) |
-| Source | `kind=capture`, the path, a SHA-256 digest, the link type |
+| Source | `kind=capture`, the path, a SHA-256 digest, the link type, and the capture's snaplen when it had one |
 | Decoder | `tcp-reassembly`, `output_layer=transport`, plus a digest of the reassembly policy |
 | Session | one per conversation, both directions together |
 | Participant | one per endpoint, with `isn` and `tcp_role` when the handshake was captured |

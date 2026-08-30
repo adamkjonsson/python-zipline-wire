@@ -186,12 +186,17 @@ The Source Descriptor records what the file was derived from:
 ```python
 with zpf.open("capture.zpf") as reader:
     for source in reader.sources.values():
-        print(source.kind, source.uri, source.digest, source.link_type)
+        print(source.kind, source.uri, source.digest, source.link_type, source.comment)
 ```
 
 ```
-capture capture.pcap sha256:9f2c… 1
+capture capture.pcap sha256:9f2c… 1 None
 ```
+
+The comment carries the capture's snaplen when it had one — `snaplen=262144` —
+and is `None` otherwise.  It belongs here because it is what explains payloads
+shorter than what was sent; the Source Descriptor has no field of its own for
+it yet.  `ConversionStats.truncated` counts the packets it actually cut.
 
 The digest is the dependency edge: it is how a consumer confirms a `.zpf`
 still matches the capture it came from.  Compute it yourself with
