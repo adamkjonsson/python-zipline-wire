@@ -154,6 +154,35 @@ here; `0.1.0` will be the first tag.
   rather than only a `FlowTracker` method, so a stage that discards a packet
   before it reaches a session can still cite it.
 
+### Fixed
+
+- **The handshake record sits at the stream origin, not at the `isn`.**  The
+  SYN consumes a sequence number without delivering a byte, so the origin is
+  `isn + 1` and a record at the `isn` is one below it — an offset of `-1` in a
+  space that has none.  The subtraction is modular, so nothing reported the
+  error: it absorbed it, placing the record at offset 4294967295 and making
+  every stream with an observed handshake measure 4294967295 bytes however far
+  its data actually ran.  Spec `0.16` already gave this shape in prose; `0.17`
+  promotes it to a MUST, states what a reader does with a violating record
+  (accept the file, treat the record as unplaceable at zero width, report), and
+  carries the shape this wrote as its negative vector,
+  `advisory-seq-start-below-origin`.
+
+  The corrected record shares its `seq_start` with the first data record, which
+  is what the origin being `isn + 1` means; the two are stored in the order
+  they were produced, and the ordering rule is satisfied by the SYN coming
+  first.
+
+- **A coalesced record's timestamps are the extremes over its contributing
+  packets, not the last one appended.**  A segment held out of order arrives
+  *before* the segment that fills the hole below it and is appended *after*
+  it, so taking the last append's time dated the unit complete a step before
+  its final packet arrived — and left `ts_first`, taken from the earlier
+  append, *after* `timestamp`, a record that started after it finished.
+  `timestamp` is now the last contributing packet in capture order and
+  `ts_first` the first, which is the per-unit reading spec `0.17` states
+  explicitly.
+
 ### Documentation
 
 - A Sphinx site under `docs/`: an introduction, task guides for converting,
