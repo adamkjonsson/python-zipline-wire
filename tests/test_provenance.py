@@ -258,6 +258,35 @@ def test_ts_first_never_follows_ts(tmp_path: pathlib.Path):
                 assert record.ts_first <= record.timestamp
 
 
+def test_a_held_segment_does_not_drag_the_stamps_backwards(
+    tmp_path: pathlib.Path,
+):
+    """Both stamps are per unit: the last and the first contributor in capture order.
+
+    A segment held out of order arrives *before* the one that fills the hole
+    below it and is appended *after* it.  Stamping the run from whichever
+    packet was appended last dates the unit complete before its final packet
+    arrived, and leaves ts_first after ts — a record that started after it
+    finished.
+    """
+    out = to_zpf(
+        capture_of(
+            [tcp_packet(seq=ISN, flags=TCP_SYN),                            # 1_000_000
+             tcp_packet(seq=ISN + 3, payload=b"bb"),                        # 1_001_000, held
+             tcp_packet(seq=ISN + 1, flags=TCP_PSH | TCP_ACK,
+                        payload=b"aa")],                                    # 1_002_000, fills
+            start_us=1_000_000,
+            step_us=1_000,
+        ),
+        tmp_path,
+    )
+
+    record = out.only.by(0)[1]                 # [0] is the handshake record
+    assert record.payload == b"aabb"
+    assert record.timestamp == 1_002_000
+    assert record.ts_first == 1_001_000
+
+
 # ── the handshake ───────────────────────────────────────────────────────
 
 
@@ -285,17 +314,41 @@ def test_the_handshake_is_written_as_a_record_in_each_direction(
     syn_ack = out.only.by(1)[0]
 
     assert syn.flags & zpf.RecordFlags.SYN
-    assert syn.seq_start == ISN
+    assert syn.seq_start == ISN + 1
     assert syn.payload == b""
     assert syn.ack is None            # a bare SYN acknowledges nothing
 
     assert syn_ack.flags & zpf.RecordFlags.SYN
-    assert syn_ack.seq_start == 5000
+    assert syn_ack.seq_start == 5001
     assert syn_ack.ack == ISN + 1
 
 
+def test_the_syn_record_sits_at_the_origin_and_never_below_it(
+    tmp_path: pathlib.Path,
+):
+    """A record below isn + 1 has no offset, and the arithmetic hides it.
+
+    The origin is a floor.  At the isn the offset is negative, the modular
+    subtraction returns just under 2**32 instead, and the stream measures
+    that many bytes however far its data actually runs.
+    """
+    for name in sorted(p.name for p in CAPTURES.glob("*.pcap*")):
+        out = to_zpf(CAPTURES / name, tmp_path)
+        for session in out.sessions:
+            for participant in session.participants:
+                if participant.isn is None:
+                    continue
+                origin = (participant.isn + 1) % (1 << 32)
+                for record in session.by(participant.participant_id):
+                    if record.seq_start is None:
+                        continue
+                    # Serial arithmetic: the offset is in the half-space
+                    # above the origin, never wrapped around from below it.
+                    assert (record.seq_start - origin) % (1 << 32) < (1 << 31), name
+
+
 def test_a_retransmitted_syn_does_not_get_a_second_record(tmp_path: pathlib.Path):
-    """Two records at one seq_start would break the ascending-order rule."""
+    """A retransmitted SYN re-opens nothing, so it reports nothing new."""
     out = to_zpf(
         capture_of([tcp_packet(seq=ISN, flags=TCP_SYN), tcp_packet(seq=ISN, flags=TCP_SYN)]),
         tmp_path,

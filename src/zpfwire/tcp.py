@@ -88,8 +88,10 @@ class _Run:
     seq_start: int
     data: bytearray = field(default_factory=bytearray)
     # The specification stamps a reassembled record with the time of the LAST
-    # packet that contributed bytes — the moment the unit became complete —
-    # because an ack can never precede arrival of what it acknowledges.
+    # packet that contributed bytes, in capture order — the moment the unit
+    # became complete — because an ack can never precede arrival of what it
+    # acknowledges.  Both stamps are set from the first packet appended and
+    # widened from there; see _append.
     ts: int = 0
     # When a run coalesces several segments, the time it *began* is otherwise
     # unrecoverable: spans could carry it, but they must reference a zpf-input
@@ -204,8 +206,17 @@ class TcpFlow(FlowTracker):
         otherwise lose: ``isn`` says where the stream begins in sequence space
         but not when, and the first data record is stamped with its own
         arrival. Only the first SYN of a direction gets one — a retransmitted
-        SYN re-opens nothing, and a second record at the same ``seq_start``
-        would break the ascending-order rule.
+        SYN re-opens nothing.
+
+        The record sits at ``isn + 1``, the stream origin, and **not** at the
+        ``isn``: the SYN consumes a sequence number but delivers no byte, so a
+        record at the ``isn`` sits one below the origin, where the offset
+        ``seq_start - (isn + 1)`` is negative in a space that has no negative
+        offsets. The subtraction is modular and absorbs it rather than
+        reporting it, putting the record at offset 2**32 - 1 and making the
+        stream measure that many bytes. Sharing the origin with the first data
+        record is what the specification asks for: the two are stored in the
+        order they were produced, and the SYN comes first.
         """
         if stream.syn_written or stream.isn is None or pkt.seq != stream.isn:
             return
@@ -214,7 +225,7 @@ class TcpFlow(FlowTracker):
             self.participant(stream.endpoint),
             ts=pkt.ts_ticks,
             payload=b"",
-            seq_start=stream.isn,
+            seq_start=_advance(stream.isn, 1),
             ack=pkt.ack if pkt.tcp_flags & TCP_ACK else None,
             flags=RecordFlags.SYN,
             decoder=self._decoder,
@@ -275,9 +286,16 @@ class TcpFlow(FlowTracker):
 
     def _append(self, stream: _Stream, seq: int, data: bytes, pkt: PacketView) -> None:
         if stream.run is None:
-            stream.run = _Run(seq_start=seq, ts_first=pkt.ts_ticks)
+            stream.run = _Run(seq_start=seq, ts=pkt.ts_ticks, ts_first=pkt.ts_ticks)
         stream.run.data.extend(data)
-        stream.run.ts = pkt.ts_ticks
+        # Both stamps are extremes over the run's contributing packets, not
+        # the packet that happened to be appended last: a segment held out of
+        # order arrives *before* the one that made it contiguous but is
+        # appended after it, and taking its time would stamp the run as
+        # complete before its last packet arrived — and leave ts_first, set
+        # from the earlier append, later than ts.
+        stream.run.ts = max(stream.run.ts, pkt.ts_ticks)
+        stream.run.ts_first = min(stream.run.ts_first, pkt.ts_ticks)
         stream.run.ack = pkt.ack
         self._attach_flags(stream, pkt)
         stream.next_seq = _advance(seq, len(data))
