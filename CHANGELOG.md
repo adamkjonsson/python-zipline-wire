@@ -33,8 +33,8 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
-Writes spec **v0.16** (`zpf.SPEC_VERSION == (0, 16)`), against packeteer
-**0.12.0** and python-zipline **0.2.0**.
+Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
+**0.12.0** and python-zipline **0.3.0**.
 
 **Nothing has been released yet**, so everything the project does is listed
 here; `0.1.0` will be the first tag.
@@ -48,9 +48,23 @@ here; `0.1.0` will be the first tag.
   one fact that settles most of the encoding decisions.
 
   The capture is declared as the file's source with its SHA-256 digest, so a
-  consumer can confirm a `.zpf` still matches what it came from, and the file
-  is stamped `SINGLE_CLOCK` — one capture is one tap, so every timestamp in
-  it was taken against one clock.
+  consumer can confirm a `.zpf` still matches what it came from.
+
+- **The file says who built it and when** — `creator`, `produced_by` and
+  `produced_at` on the File Header.  Since spec `0.19` this is a file's whole
+  account of itself: a `SEQUENCED` session no longer records what its order
+  rests on, the producer being trusted for the basis exactly as it already was
+  for the order, so build provenance is what a consumer has to go on.
+
+  `produced_at` is the only part of the output that is **not** a function of
+  the input, so two conversions of one capture otherwise differ by nothing but
+  those bytes.  `capture_to_zpf(..., produced_at=...)` takes `"now"` (the
+  default), an `int` of Unix seconds or a `datetime` to pin it, or `None` to
+  leave it off.  The command line has no flag for it — a caller who needs a
+  pinned stamp is scripting the conversion — so a CLI conversion is not
+  byte-reproducible.  The reproducibility of the *decode* is a separate thing
+  and rests on the decoder's `params_digest`, which is a function of the
+  options alone.
 
 - **TCP reassembly, with the policy written into the file** — segments in,
   runs of stream bytes out, as one session per conversation and two

@@ -13,7 +13,7 @@ right. Nothing here is maintained after the work it describes has landed.
 
 The live records stay in the project root:
 [`CHANGELOG.md`](../CHANGELOG.md) for what shipped, and
-[`PLAN.md`](../PLAN.md) for the original design and phasing.
+[`PLAN.md`](PLAN.md) for the original design and phasing.
 
 | Document | What it is |
 | --- | --- |

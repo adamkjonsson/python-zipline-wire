@@ -81,40 +81,47 @@ to the ergonomic writer upstream.
 It is written only when the run coalesced more than one packet.  For a single
 segment it would repeat `timestamp`.
 
-## The sequenced-basis decision
-
-This is the subtlest thing in the writer, and the obvious implementation is
-wrong.
+## What a sequenced session declares, and what it used to
 
 A session is **hint-ful** when its records carry `seq`/`ack`, and a hint-ful
-session's causal order follows from the records themselves — no
-`sequenced_basis` needed.  A TCP session is hint-ful, so the first
-implementation passed no basis.
+session's causal order follows from the records themselves.  A TCP session is
+hint-ful — except when it has no records at all.  A conversation of pure
+acknowledgements produces none, and three of the four sessions in
+`http_example.pcapng` are exactly that.
 
-It fails, because **a TCP session is hint-ful only if it has records.**  A
-conversation of pure acknowledgements produces none, and a session with no
-records carries no `seq`/`ack` at all.  Three of the four sessions in
-`http_example.pcapng` are exactly that, and the writer refuses them:
+Under spec `0.16` this was the subtlest thing in the writer.  A hint-less
+session had to record what its order rested on, in `sequenced_basis`; the flag
+is written on the Session Descriptor *before* any record exists, so a producer
+could not know which kind of session it had when it had to decide.  We declared
+`sequenced_basis="clock"` on every sequenced session — redundant for the
+hint-ful ones, correct for the rest — resting on the `SINGLE_CLOCK` file flag,
+one capture being one tap.
 
-```
-Session(session 1) is SEQUENCED and carries no seq/ack on any record,
-so it must record what its order rests on in sequenced_basis
-```
+**Spec `0.19` deleted both options**, and with them the whole problem.
+`SEQUENCED` is a bare assertion: a reader cannot check a basis any more than it
+can check the order, so trusting the producer for one and not the other bought
+nothing.  `begin_session` therefore passes `sequenced=` and `linearize=` and
+nothing else.
 
-The flag is written on the Session Descriptor, *before* any record exists, so
-a producer cannot know which kind the session will turn out to be.  The
-specification anticipates this and says to record what you **rely on** rather
-than what turns out to apply.  Our files set `SINGLE_CLOCK` — one capture is
-one tap — which supplies a sound basis for any hint-less session, so every
-sequenced session declares `sequenced_basis="clock"`: redundant for the
-hint-ful ones, correct for the rest.
+## What answers the forensic question now
 
-## Why `single_clock=True` at all
+The account of the file moved to its build provenance, and `zpf.create()`
+carries all of it:
 
-One capture file is one tap, so every timestamp in the output was stamped
-against one clock.  Saying so is honest, and it is load-bearing twice: it lets
-a later stage sequence regrouped one-way streams by time, and it is what makes
-the `clock` basis above available.
+| Field | What we write |
+| --- | --- |
+| `creator` | `zpfwire <version>` |
+| `produced_by` | the same — permitted on a capture-sourced file, required only once a `zpf-input` Source appears |
+| `produced_at` | the conversion's wall-clock time, or whatever `produced_at=` pinned |
+
+`produced_at` is the only part of the output that is not a function of the
+input, so it is the only thing between two conversions of one capture and
+byte-identical results.  `_produced_at` in `convert.py` resolves the three
+answers: `"now"` stamps, a value pins, `None` omits.
+
+One capture file is still one tap, so every timestamp in the output was stamped
+against one clock — that is what lets a later stage sequence regrouped one-way
+streams by time.  The file no longer has a field in which to say so.
 
 ## Extending to another transport
 

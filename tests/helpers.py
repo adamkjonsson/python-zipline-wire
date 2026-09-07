@@ -223,6 +223,12 @@ class Converted:
         sessions: The sessions in the written file.
         diagnostics: Anything the reader objected to — must be empty.
         path: Where the file was written.
+        undecoded: The Undecoded regions the file cites.
+        unplaceable: Records the offset space could not place — must be
+            empty.  Reported apart from *diagnostics* because since spec
+            ``0.19`` such a record breaks no rule, so a file carrying one
+            still reads clean; a producer writing one is discarding its own
+            bytes all the same.
 
     """
 
@@ -231,6 +237,7 @@ class Converted:
     diagnostics: list[object]
     path: pathlib.Path
     undecoded: list[object] = field(default_factory=list)
+    unplaceable: list[object] = field(default_factory=list)
 
     @property
     def only(self) -> SessionSnapshot:
@@ -249,7 +256,6 @@ class SessionSnapshot:
     records: list[object]
     end_reason: str | None
     sequenced: bool = False
-    sequenced_basis: str | None = None
 
     def by(self, pid: int) -> list[object]:
         """Return the records sent by participant *pid*, in stored order."""
@@ -272,8 +278,8 @@ def to_zpf(source: io.BytesIO | pathlib.Path | str, tmp_path: pathlib.Path,
     """Convert a capture and read the result straight back.
 
     Reading back is not incidental: a file that does not survive
-    ``zpf.open`` with empty diagnostics is not a conversion, so every test
-    goes through this.
+    ``zpf.open`` with empty diagnostics *and* nothing unplaceable is not a
+    conversion, so every test goes through this.
 
     Args:
         source: The capture to convert.
@@ -299,10 +305,10 @@ def to_zpf(source: io.BytesIO | pathlib.Path | str, tmp_path: pathlib.Path,
                 records=list(session.records()),
                 end_reason=session.end.reason if session.end else None,
                 sequenced=bool(session.sequenced),
-                sequenced_basis=getattr(session, "sequenced_basis", None),
             ))
         undecoded = list(reader.undecoded)
         diagnostics = list(reader.diagnostics)
+        unplaceable = list(reader.unplaceable)
 
     return Converted(stats=stats, sessions=snapshots, diagnostics=diagnostics, path=out,
-                     undecoded=undecoded)
+                     undecoded=undecoded, unplaceable=unplaceable)

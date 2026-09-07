@@ -131,11 +131,17 @@ def test_a_udp_session_is_not_marked(tmp_path: pathlib.Path):
 
 
 def test_a_session_with_no_records_still_validates(tmp_path: pathlib.Path):
-    """The case that a hint-ful assumption gets wrong.
+    """The case that used to need an answer at write time.
 
     A TCP conversation of pure acks produces no records, and a session with
-    no records carries no seq or ack — so it is hint-less however TCP it is,
-    and must say what its order rests on.
+    no records carries no seq or ack — so it is hint-less however TCP it is.
+    Under spec ``0.16`` that meant it had to say what its order rested on,
+    and the flag is written on the Session Descriptor before any record
+    exists, so a producer could not know which kind of session it had.  Since
+    ``0.19`` there is nothing to say: the producer is trusted for the basis
+    exactly as it already was for the order, neither being checkable.  Three
+    of the four sessions in ``http_example.pcapng`` are this shape, so the
+    guard stays whichever way the format goes.
     """
     out = to_zpf(
         capture_of([tcp_packet(seq=ISN + 1, ack=SERVER_ISN + 1, flags=TCP_ACK)]),
@@ -156,6 +162,7 @@ def test_every_capture_sequences_without_diagnostics(
     out = to_zpf(CAPTURES / name, tmp_path, sequenced=True)
 
     assert out.diagnostics == []
+    assert out.unplaceable == []
     for session in out.sessions:
         if session.sequenced:
             zpf.verify_sequenced(session.records,

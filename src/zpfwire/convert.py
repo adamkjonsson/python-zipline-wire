@@ -8,6 +8,7 @@ they are taken.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import os
 from collections.abc import Callable, Iterable
@@ -39,6 +40,7 @@ def capture_to_zpf(
     packet_filter: Callable[[PacketView], bool] | None = None,
     face: Literal["binary", "jsonl"] = "binary",
     sequenced: bool = False,
+    produced_at: int | datetime.datetime | Literal["now"] | None = "now",
 ) -> ConversionStats:
     """Convert a capture file into a `.zpf` file.
 
@@ -55,6 +57,8 @@ def capture_to_zpf(
             projection.
         sequenced: Store each TCP session's records in a causal order and
             mark it ``SEQUENCED``.  Costs memory — see :func:`convert`.
+        produced_at: When this file was built — see :func:`convert`.  Pin it
+            to make two conversions of one capture byte-identical.
 
     Returns:
         What the conversion did, including everything it could not convert.
@@ -85,6 +89,7 @@ def capture_to_zpf(
         packet_filter=packet_filter,
         face=face,
         sequenced=sequenced,
+        produced_at=produced_at,
     )
 
 
@@ -99,6 +104,7 @@ def convert(
     packet_filter: Callable[[PacketView], bool] | None = None,
     face: Literal["binary", "jsonl"] = "binary",
     sequenced: bool = False,
+    produced_at: int | datetime.datetime | Literal["now"] | None = "now",
 ) -> ConversionStats:
     """Write the packets of an already-open capture as a `.zpf` file.
 
@@ -119,8 +125,25 @@ def convert(
             of a session in hand, so the session is buffered until it ends —
             unbounded for its lifetime, which is why this is off by default in
             a format whose point is streaming.  Only TCP sessions are marked:
-            a TCP session is *hint-ful*, so its order follows from seq and ack
-            and needs no ``sequenced_basis``, which a UDP session would.
+            a TCP session's order follows from seq and ack, which is a claim
+            the capture supports, where a UDP session's would rest on the
+            clock alone — a different claim, and not one this tool makes on a
+            caller's behalf.
+        produced_at: When this file was built.  ``"now"`` stamps the
+            conversion, an ``int`` (Unix seconds) or timezone-aware
+            :class:`~datetime.datetime` pins it, and ``None`` omits it.
+
+            Since spec ``0.19`` this is where the forensic account of a file
+            lives: a ``SEQUENCED`` session no longer records what its order
+            rests on, the producer being trusted for the basis exactly as it
+            already was for the order, so the build provenance beside
+            ``produced_by`` is what a consumer has to go on.
+
+            It is also the only part of the output that is not a function of
+            the input, so two conversions of one capture differ by the stamp
+            alone.  Pin it where that matters; the reproducibility of the
+            *decode* is unaffected either way, being carried by the Decoder's
+            ``params_digest``.
 
     Returns:
         What the conversion did.
@@ -136,10 +159,7 @@ def convert(
         tick_hz=reader.tick_hz,
         creator=f"zpfwire {version}",
         produced_by=f"zpfwire {version}",
-        # One capture file is one tap, so every timestamp in the output was
-        # stamped against one clock. Saying so lets a later stage sequence
-        # regrouped streams by time soundly.
-        single_clock=True,
+        produced_at=_produced_at(produced_at),
         face=face,
     ) as writer:
         # This is the file's only source, so records may omit `source=` and
@@ -207,6 +227,23 @@ def convert(
     return stats
 
 
+def _produced_at(
+    value: int | datetime.datetime | Literal["now"] | None,
+) -> int | datetime.datetime | None:
+    """Resolve the build stamp, ``"now"`` meaning this moment.
+
+    ``None`` passes straight through, keeping the meaning it has on
+    :func:`zpf.create` — the field is absent.
+
+    Returns:
+        What to stamp the File Header with, or ``None`` to stamp nothing.
+
+    """
+    if value == "now":
+        return datetime.datetime.now(tz=datetime.timezone.utc)
+    return value
+
+
 def _source_comment(reader: CaptureReader) -> str | None:
     """Say what the capture's snaplen was, when it had one.
 
@@ -263,24 +300,16 @@ def _begin(
     source: zpf.SourceHandle | None = None,
     sequenced: bool = False,
 ) -> FlowTracker:
-    # A TCP session is hint-ful, so its causal order follows from seq/ack
-    # alone. `linearize` buffers the session and emits it in that order at
-    # end(), which is what lets the reassembler go on producing each direction
-    # in its own order — the only order it has.
+    # A TCP session's causal order follows from seq/ack alone. `linearize`
+    # buffers the session and emits it in that order at end(), which is what
+    # lets the reassembler go on producing each direction in its own order —
+    # the only order it has.
     causal = sequenced and key.protocol == "tcp"
     session = writer.begin_session(
         proto=key.protocol,
         key=key.text,
         sequenced=causal,
         linearize=causal,
-        # A hint-ful session needs no basis, but whether this one *is* hint-ful
-        # depends on records that do not exist yet: a TCP conversation of pure
-        # acks produces none, and a session with no records is hint-less by
-        # default. The specification's answer is to record what the producer
-        # relies on rather than what turns out to apply, and SINGLE_CLOCK —
-        # which this file sets, one capture being one tap — is exactly the
-        # basis that covers those sessions.
-        sequenced_basis="clock" if causal else None,
     )
     tracker_type = _TRACKERS[key.protocol]
     return tracker_type(

@@ -16,7 +16,7 @@ It is glue, and deliberately so:
   mapping onto the specification's model.
 
 **Status: early.** The format itself is `0.x` and says it is not ready for
-production; this is a first implementation against `0.16`.
+production; this is a first implementation against `0.19`.
 
 Full documentation lives in `docs/` — build it with `cd docs && make html`.
 This README is the short version.
@@ -71,7 +71,7 @@ specification's provenance/layer table. Concretely:
 
 | Block | What goes in it |
 |---|---|
-| File Header | tick rate from the capture, `single_clock` (one capture is one tap) |
+| File Header | tick rate from the capture, and who built the file and when |
 | Source | `kind=capture`, the path, a SHA-256 digest, the link type, and the capture's snaplen when it had one |
 | Decoder | `tcp-reassembly`, `output_layer=transport`, plus a digest of the reassembly policy |
 | Session | one per conversation, both directions together |
@@ -161,7 +161,7 @@ is why it is opt-in in a format whose point is streaming.
 - **SACK-aware loss inference.** TCP options are parsed and carried on each
   packet, but the reassembler does not yet use them.
 
-`PLAN.md` tracks these.
+`plans/PLAN.md` tracks these.
 
 ## Development
 
@@ -173,7 +173,7 @@ ruff check src/ tests/ docs/                        # lint, must be silent
 
 Capture fixtures in `tests/captures/` are copied from packeteer's `testcases/`.
 Every test asserts that what was written reads back through `zpf.open` with no
-diagnostics — a file that does not is not a conversion.
+diagnostics and nothing unplaceable — a file that does not is not a conversion.
 
 One purpose of this project is to pressure-test its two dependencies, so gaps
 found here are filed as issues against them rather than worked around here. See

@@ -15,7 +15,7 @@ The specification is `zipline-payload-format`, version `zpf.SPEC_VERSION`.
 | `tick_hz` | The capture's rate | Read from the file header, and each packet rescaled into it. A pcapng states resolution per interface, so two packets in one file need not share a unit, while a `.zpf` carries exactly one. |
 | `creator` | `zpfwire <version>` | |
 | `produced_by` | `zpfwire <version>` | *Permitted* on a capture-sourced file — only *required* once a `zpf-input` source appears. Set anyway. |
-| `single_clock` | `True` | One capture file is one tap, so every timestamp was stamped against one clock. Saying so lets a later stage sequence regrouped streams by time soundly. |
+| `produced_at` | The conversion's wall-clock time | Build provenance is where the forensic account of a file lives since spec `0.19`. It is also the only part of the output that is not a function of the input: pass `produced_at=` an `int` or `datetime` to pin it and get byte-identical conversions, or `None` to leave it off. |
 
 ## Source Descriptor
 
@@ -55,8 +55,7 @@ One per conversation, both directions.
 |-------|-------|
 | `proto` | `tcp` or `udp` |
 | `key` | `a:port <-> b:port`, endpoints sorted so direction does not matter |
-| `sequenced` | `False` unless `sequenced=True` was asked for, and then only for TCP |
-| `sequenced_basis` | `clock` on a sequenced session — see {doc}`../guide/ordering` |
+| `sequenced` | `False` unless `sequenced=True` was asked for, and then only for TCP — a bare assertion since spec `0.19`, see {doc}`../guide/ordering` |
 
 ## Participant
 

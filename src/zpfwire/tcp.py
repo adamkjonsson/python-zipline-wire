@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import zpf
 from packeteer.generate.tcp import TCP_ACK, TCP_FIN, TCP_PSH, TCP_RST, TCP_SYN, TCP_URG
 from zpf import RecordFlags, TcpRole
 
@@ -225,10 +226,12 @@ class TcpFlow(FlowTracker):
             self.participant(stream.endpoint),
             ts=pkt.ts_ticks,
             payload=b"",
-            seq_start=_advance(stream.isn, 1),
-            ack=pkt.ack if pkt.tcp_flags & TCP_ACK else None,
+            hints=zpf.Hints(
+                seq_start=_advance(stream.isn, 1),
+                ack=pkt.ack if pkt.tcp_flags & TCP_ACK else None,
+            ),
             flags=RecordFlags.SYN,
-            decoder=self._decoder,
+            decoded=zpf.Decoded(decoder=self._decoder),
         )
         self._stats.records += 1
 
@@ -489,10 +492,9 @@ class TcpFlow(FlowTracker):
             self.participant(stream.endpoint),
             ts=run.ts,
             payload=bytes(run.data),
-            seq_start=run.seq_start,
-            ack=run.ack,
+            hints=zpf.Hints(seq_start=run.seq_start, ack=run.ack),
             flags=flags,
-            decoder=self._decoder,
+            decoded=zpf.Decoded(decoder=self._decoder),
             # Only worth stating when the run coalesced more than one packet;
             # for a single segment it would repeat `ts`.
             ts_first=run.ts_first if run.ts_first != run.ts else None,
