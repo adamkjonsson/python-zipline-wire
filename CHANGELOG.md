@@ -33,11 +33,13 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+## [0.1.0] - 2026-09-07
+
 Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
 **0.12.0** and python-zipline **0.3.0**.
 
-**Nothing has been released yet**, so everything the project does is listed
-here; `0.1.0` will be the first tag.
+**The first release**, so everything the project does is listed here rather
+than what changed since a previous one.
 
 ### Added
 
@@ -230,7 +232,5 @@ here; `0.1.0` will be the first tag.
 
 ---
 
-<!-- No release has been tagged yet, so there is nothing to compare against;
-     this becomes a compare link at 0.1.0. -->
-
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/commits/main
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/adamkjonsson/python-zipline-wire/releases/tag/v0.1.0
