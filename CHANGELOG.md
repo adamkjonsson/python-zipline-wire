@@ -197,6 +197,26 @@ here; `0.1.0` will be the first tag.
   `ts_first` the first, which is the per-unit reading spec `0.17` states
   explicitly.
 
+- **A coalesced record's `ack` is the serial maximum over its contributing
+  packets** ([#11](https://github.com/adamkjonsson/python-zipline-wire/issues/11)),
+  on the same rule as the two stamps beside it.  It came from whichever packet
+  was appended last, which is not a rule: for a drained run that is the
+  *earlier* packet, so a record reported a timestamp and an acknowledgement
+  taken from two different packets.
+
+  Acks are cumulative, so one observed on any contributor is still true when
+  the run completes, and the maximum is the strongest statement the run can
+  make that is certainly true.  Understating one is sound — a lower bound
+  yields no false edges — but it is a lost edge rather than a harmless one:
+  under `--sequenced` the linearization releases a record once every peer
+  record it acknowledges has been emitted, so the same conversation could
+  sequence differently for a reason that was not in the capture.
+
+  The `ACK` flag is deliberately **not** consulted here.  A data segment always
+  has something to acknowledge whatever its flags say; the one place the flag
+  is read is the handshake record, whose opening `SYN` genuinely has nothing to
+  acknowledge yet.
+
 ### Documentation
 
 - A Sphinx site under `docs/`: an introduction, task guides for converting,
@@ -206,7 +226,7 @@ here; `0.1.0` will be the first tag.
 - `README.md` covering install, the two commands, and what the output is.
 - Three HTTP captures added to the fixture corpus in `tests/captures/`, which
   every test sweeps: each must convert to a file `zpf.open` reads with no
-  diagnostics.
+  diagnostics and nothing unplaceable.
 
 ---
 

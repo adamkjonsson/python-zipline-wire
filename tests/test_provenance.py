@@ -287,6 +287,90 @@ def test_a_held_segment_does_not_drag_the_stamps_backwards(
     assert record.ts_first == 1_001_000
 
 
+def test_the_ack_is_the_highest_a_contributor_carried_not_the_last_appended(
+    tmp_path: pathlib.Path,
+):
+    """The third hint on a run, on the same rule as the two stamps beside it.
+
+    The held segment is appended *after* the one that fills the hole below it,
+    so taking the last append's ack keeps the earlier packet's — a record
+    reporting a timestamp and an acknowledgement from two different packets.
+    Acks are cumulative, so the maximum over the contributors is the strongest
+    statement the run can make that is certainly true.
+    """
+    out = to_zpf(
+        capture_of(
+            [tcp_packet(seq=ISN, flags=TCP_SYN),
+             tcp_packet(seq=ISN + 3, ack=6000, payload=b"bb"),            # held
+             tcp_packet(seq=ISN + 1, ack=7000, flags=TCP_PSH | TCP_ACK,
+                        payload=b"aa")],                                  # fills
+            start_us=1_000_000,
+            step_us=1_000,
+        ),
+        tmp_path,
+    )
+
+    record = out.only.by(0)[1]
+    assert record.payload == b"aabb"
+    assert record.timestamp == 1_002_000       # the last contributor's
+    assert record.ack == 7000                  # and its ack, this time
+
+
+def test_a_higher_ack_on_the_held_segment_is_kept_by_rule_not_by_luck(
+    tmp_path: pathlib.Path,
+):
+    """The mirror case, which the old behaviour got right for the wrong reason.
+
+    Peer acks reordered on the wire, or a delayed ack on the filling segment,
+    put the higher ack on the packet appended first.  Keeping it is sound —
+    a cumulative ack observed from this sender stays true later — and under
+    the maximum it is sound by rule rather than by which append happened last.
+    """
+    out = to_zpf(
+        capture_of(
+            [tcp_packet(seq=ISN, flags=TCP_SYN),
+             tcp_packet(seq=ISN + 3, ack=9000, payload=b"bb"),            # held
+             tcp_packet(seq=ISN + 1, ack=5000, flags=TCP_PSH | TCP_ACK,
+                        payload=b"aa")],                                  # fills
+            start_us=1_000_000,
+            step_us=1_000,
+        ),
+        tmp_path,
+    )
+
+    record = out.only.by(0)[1]
+    assert record.payload == b"aabb"
+    assert record.ack == 9000
+
+
+def test_the_ack_maximum_is_serial_so_it_survives_a_wrap(
+    tmp_path: pathlib.Path,
+):
+    """Sequence space wraps, so the comparison cannot be a plain `>`.
+
+    An ack just past 2**32 is *ahead* of one just below it, and a numeric
+    maximum would take the larger integer and hand the record an ack four
+    billion bytes in the past.
+    """
+    before_wrap = 0xFFFF_FF00
+    after_wrap = 0x0000_0100
+    out = to_zpf(
+        capture_of(
+            [tcp_packet(seq=ISN, flags=TCP_SYN),
+             tcp_packet(seq=ISN + 3, ack=before_wrap, payload=b"bb"),
+             tcp_packet(seq=ISN + 1, ack=after_wrap, flags=TCP_PSH | TCP_ACK,
+                        payload=b"aa")],
+            start_us=1_000_000,
+            step_us=1_000,
+        ),
+        tmp_path,
+    )
+
+    record = out.only.by(0)[1]
+    assert record.payload == b"aabb"
+    assert record.ack == after_wrap
+
+
 # ── the handshake ───────────────────────────────────────────────────────
 
 

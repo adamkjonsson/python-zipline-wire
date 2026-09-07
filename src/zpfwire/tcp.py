@@ -98,6 +98,8 @@ class _Run:
     # unrecoverable: spans could carry it, but they must reference a zpf-input
     # source and ours is a capture, so ts_first is the only place it fits.
     ts_first: int = 0
+    # The serial maximum over the run's contributing packets — the strongest
+    # true statement the run can make, acks being cumulative; see _append.
     ack: int | None = None
     flags: int = 0
     retransmit: bool = False
@@ -228,6 +230,12 @@ class TcpFlow(FlowTracker):
             payload=b"",
             hints=zpf.Hints(
                 seq_start=_advance(stream.isn, 1),
+                # The one place the ACK flag is consulted, and deliberately so:
+                # the opening SYN of a connection has nothing to acknowledge
+                # yet, so its ack field is not a number that was understated —
+                # it is a number that does not exist.  A data segment always
+                # has something to acknowledge whatever its flags say, which is
+                # why _append reads every contributor's ack without asking.
                 ack=pkt.ack if pkt.tcp_flags & TCP_ACK else None,
             ),
             flags=RecordFlags.SYN,
@@ -291,7 +299,7 @@ class TcpFlow(FlowTracker):
         if stream.run is None:
             stream.run = _Run(seq_start=seq, ts=pkt.ts_ticks, ts_first=pkt.ts_ticks)
         stream.run.data.extend(data)
-        # Both stamps are extremes over the run's contributing packets, not
+        # All three hints are extremes over the run's contributing packets, not
         # the packet that happened to be appended last: a segment held out of
         # order arrives *before* the one that made it contiguous but is
         # appended after it, and taking its time would stamp the run as
@@ -299,7 +307,20 @@ class TcpFlow(FlowTracker):
         # from the earlier append, later than ts.
         stream.run.ts = max(stream.run.ts, pkt.ts_ticks)
         stream.run.ts_first = min(stream.run.ts_first, pkt.ts_ticks)
-        stream.run.ack = pkt.ack
+        # The ack is the serial MAXIMUM rather than the last arrival's, which
+        # for a drained run is the earlier packet's and for any other the later
+        # one's — a value taken from no rule.  Acks are cumulative, so one
+        # observed on any contributor is still true when the run completes, and
+        # the maximum is therefore the strongest statement the run can make
+        # that is certainly true.  Taking the ack of the packet that supplies
+        # `ts` would keep the two hints on one packet at the cost of throwing
+        # away a real edge whenever the last contributor's ack is the lower
+        # one, which a delayed ack makes common.  It matters most under
+        # `sequenced`: the linearization releases a record once every peer
+        # record it acks has been emitted, so understating one delays a record
+        # for a reason that is not in the capture.
+        if stream.run.ack is None or _delta(pkt.ack, stream.run.ack) > 0:
+            stream.run.ack = pkt.ack
         self._attach_flags(stream, pkt)
         stream.next_seq = _advance(seq, len(data))
 
