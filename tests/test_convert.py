@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
+import time
 
 import pytest
 import zpf
@@ -45,16 +46,52 @@ def test_the_stream_is_capture_sourced_and_transport_layer(tmp_path: pathlib.Pat
     assert layer == zpf.OutputLayer.TRANSPORT
 
 
-def test_the_header_declares_one_clock_and_names_the_tool(tmp_path: pathlib.Path):
+def test_the_header_names_the_tool_and_says_when_it_ran(tmp_path: pathlib.Path):
+    """Build provenance: who wrote this, and when.
+
+    Since spec ``0.19`` this is the whole of a file's account of itself — a
+    ``SEQUENCED`` session no longer records what its order rests on, so what
+    a consumer has to go on is the producer and its build time.
+    """
+    before = int(time.time())
     out = to_zpf(tcp_segments([Seg(1, b"x", flags=TCP_PSH)]), tmp_path)
 
     with read(out.path) as f:
         header = f.header
 
-    assert header.flags & zpf.FileFlags.SINGLE_CLOCK
     assert header.creator.startswith("zpfwire ")
     assert header.produced_by.startswith("zpfwire ")
+    assert before <= header.produced_at <= int(time.time())
     assert (header.version_major, header.version_minor) == zpf.SPEC_VERSION
+
+
+def test_the_build_stamp_can_be_pinned_for_a_reproducible_conversion(
+    tmp_path: pathlib.Path,
+):
+    """The stamp is the only part of the output that is not a function of input.
+
+    So it is the only thing standing between two conversions of one capture
+    and byte-identical results, and pinning it is how a caller gets them.
+    """
+    capture = CAPTURES / "no_errors.pcap"
+    first = tmp_path / "first.zpf"
+    second = tmp_path / "second.zpf"
+
+    for sink in (first, second):
+        capture_to_zpf(capture, sink, produced_at=1_600_000_000)
+
+    assert first.read_bytes() == second.read_bytes()
+
+    with read(first) as f:
+        assert f.header.produced_at == 1_600_000_000
+
+
+def test_the_build_stamp_can_be_left_off(tmp_path: pathlib.Path):
+    out = to_zpf(tcp_segments([Seg(1, b"x", flags=TCP_PSH)]), tmp_path,
+                 produced_at=None)
+
+    with read(out.path) as f:
+        assert f.header.produced_at is None
 
 
 def test_the_capture_is_declared_as_the_source_with_its_digest(tmp_path: pathlib.Path):
@@ -108,7 +145,6 @@ def test_sessions_are_not_claimed_to_be_sequenced(tmp_path: pathlib.Path):
     with read(out.path) as f:
         for session in f.sessions():
             assert not session.sequenced
-            assert session.descriptor.sequenced_basis is None
 
 
 def test_the_tick_rate_follows_the_capture(tmp_path: pathlib.Path):
@@ -187,10 +223,18 @@ def test_a_packet_filter_excludes_and_counts(tmp_path: pathlib.Path):
 def test_every_capture_produces_a_file_that_reads_back_clean(
     tmp_path: pathlib.Path, name: str,
 ):
-    """The load-bearing assertion: zpf accepts what we wrote, with no findings."""
+    """The load-bearing assertion: zpf accepts what we wrote, with no findings.
+
+    Two lists since spec ``0.19``.  A record the offset space cannot place
+    breaks no rule, so the file reads clean and ``unplaceable`` is the only
+    thing that says otherwise — and a producer writing one has put its bytes
+    in no offset, which is a bug every time.  This project shipped exactly
+    that for months, as the handshake record one below the origin.
+    """
     out = to_zpf(CAPTURES / name, tmp_path)
 
     assert out.diagnostics == []
+    assert out.unplaceable == []
 
 
 @pytest.mark.parametrize("name", ALL_CAPTURES)

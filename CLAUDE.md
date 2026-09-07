@@ -7,12 +7,12 @@ It is glue: it owns no file format and no packet parser of its own.
 
 - **packeteer** (`../packeteer`) parses captures and packets.
 - **zpf** (`../python-zipline`, import name `zpf`) reads and writes `.zpf`
-  against **spec v0.16** — `zpf.SPEC_VERSION` is the single source of truth.
+  against **spec v0.19** — `zpf.SPEC_VERSION` is the single source of truth.
 - The specification itself lives in `../zipline/docs/zipline-payload-format.md`.
 
 The output of a capture conversion is a **capture-sourced, transport-layer**
 file — the top-left cell of the spec's two-axes table. That single fact settles
-most encoding questions; see `PLAN.md`.
+most encoding questions; see `plans/PLAN.md`.
 
 This code consists of a CLI defined in `src/zpfwire/__main__.py` and a Python
 API which the CLI uses. It is important that all functionality implemented in
@@ -33,7 +33,7 @@ Gaps found here get fixed *there*, not papered over here.
   just outright bugs. Ask before filing, then file.
 - Any local shim is **temporary**. It carries a comment naming the upstream
   issue, and it is deleted when the fix lands.
-- `PLAN.md` tracks the known gaps and which phase depends on them.
+- `plans/PLAN.md` tracks the known gaps and which phase depends on them.
 
 ## Vocabulary trap
 
@@ -94,7 +94,8 @@ warnings can only be used as a last resort, and **always ask before making such 
 - `src/zpfwire/` — the code
 - `tests/` — test suite, native pytest style; run with `.venv/bin/pytest`
 - `tests/captures/` — capture fixtures, copied from `../packeteer/testcases/`
-- `PLAN.md` — the design and phasing this project is being built to
+- `plans/` — release plans and the design record, historical rather than
+  normative; `plans/PLAN.md` is the design and phasing this project was built to
 - `CHANGELOG.md` — the release history, kept current as work lands
 
 ## Virtual environment
@@ -115,5 +116,8 @@ python -m venv .venv
 - Use `.venv/bin/pytest` to run tests and `ruff` (on PATH) to lint.
 - Docstrings follow Google style with ruff-enforced formatting (see `ruff.toml`). Sections (Args, Returns, Raises, Attributes, Example) need a blank line before the closing `"""`.
 - Every produced `.zpf` must read back clean: `zpf.open(path)`, walk the
-  sessions, and assert `reader.diagnostics == []`. That is the load-bearing
-  test assertion.
+  sessions, and assert **both** `reader.diagnostics == []` and
+  `reader.unplaceable == []`. That is the load-bearing test assertion. It is
+  two lists because since spec `0.19` a record the offset space cannot place
+  breaks no rule — the file reads clean and `unplaceable` is the only thing
+  that says otherwise.

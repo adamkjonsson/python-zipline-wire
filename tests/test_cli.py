@@ -16,10 +16,16 @@ def run(monkeypatch: pytest.MonkeyPatch, *argv: str) -> None:
 
 
 def clean(path: pathlib.Path) -> list[object]:
+    """Everything the reader had to say about a file — must be empty.
+
+    Two lists, not one: since spec ``0.19`` a record the offset space cannot
+    place breaks no rule, so it is reported apart from ``diagnostics`` and a
+    file carrying one still reads clean.  Nothing we write should be either.
+    """
     with zpf.open(path) as reader:
         for session in reader.sessions():
             list(session.records())
-        return list(reader.diagnostics)
+        return [*reader.diagnostics, *reader.unplaceable]
 
 
 # ── convert ─────────────────────────────────────────────────────────────
@@ -223,7 +229,9 @@ def test_version_reports_both_tool_and_spec(monkeypatch: pytest.MonkeyPatch,
     assert exit_info.value.code == 0
     out = capsys.readouterr().out
     assert "zpfwire" in out
-    assert "zipline 0.16" in out
+    # Built from SPEC_VERSION rather than written out, so a spec bump cannot
+    # leave this test asserting a version nothing writes any more.
+    assert f"zipline {zpf.SPEC_VERSION[0]}.{zpf.SPEC_VERSION[1]}" in out
 
 
 def test_a_command_is_required(monkeypatch: pytest.MonkeyPatch):

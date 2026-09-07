@@ -103,14 +103,14 @@ would claim a fix is delivered when it is not yet in any release.
 
 | Document | What it is |
 |----------|------------|
-| `PLAN.md` | The design and phasing this project was built to, with the upstream issues each phase depended on. Historical as much as current. |
+| `plans/PLAN.md` | The design and phasing this project was built to, with the upstream issues each phase depended on. Historical as much as current. |
 | `CLAUDE.md` | The standing rules, in the short form. |
 | `CHANGELOG.md` | What changed, per release, and which spec and sibling versions it was built against. |
 | `docs/internals/` | How it works now. |
 
-`PLAN.md` records *why* things were sequenced the way they were, including
+`plans/PLAN.md` records *why* things were sequenced the way they were, including
 decisions that were reversed.  When it disagrees with the code, the code is
-right and `PLAN.md` wants updating.
+right and `plans/PLAN.md` wants updating.
 
 ## Adding a transport
 

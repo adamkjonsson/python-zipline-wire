@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zpf
 from zpf import RecordFlags
 
 from zpfwire.capture import PacketView
@@ -37,7 +38,7 @@ class UdpFlow(FlowTracker):
             ts=pkt.ts_ticks,
             payload=pkt.payload,
             flags=RecordFlags.MESSAGE,
-            decoder=self._decoder,
+            decoded=zpf.Decoded(decoder=self._decoder),
         )
         self._stats.records += 1
         self._stats.payload_bytes += len(pkt.payload)

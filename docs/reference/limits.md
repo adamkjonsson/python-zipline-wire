@@ -37,9 +37,17 @@ would.  Filtering by address or port keeps whole conversations and is safe.
 ## Not yet implemented
 
 **Sequenced UDP sessions.** A datagram carries no `seq`/`ack`, so a UDP
-session is hint-less and its order would rest on the clock alone.  Defensible
-given `SINGLE_CLOCK`, but a distinct claim from the one `--sequenced` makes.
-See {doc}`../guide/ordering`.
+session is hint-less and its order would rest on the clock alone.  Defensible,
+one capture being one tap, but a distinct claim from the one `--sequenced`
+makes.  See {doc}`../guide/ordering`.
+
+**A conversion run from the CLI is not byte-reproducible.**  The File Header
+carries `produced_at`, a wall-clock stamp, so two conversions of one capture
+differ by those bytes.  The API takes `produced_at=` to pin or omit it; the
+command line has no flag for it, on the grounds that a caller who needs a
+pinned stamp is scripting the conversion anyway.  The reproducibility of the
+*decode* is a separate thing and is unaffected — it rests on the Decoder's
+`params_digest`, which is a function of the options alone.
 
 **SACK-aware loss inference.** TCP options are parsed and carried on every
 {class}`~zpfwire.capture.PacketView` — `tcp_options.sack_blocks` tells you

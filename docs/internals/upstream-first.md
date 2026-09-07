@@ -13,7 +13,7 @@ siblings substantially.
   bugs.  Ask the maintainer before filing, then file.
 - Any local shim is **temporary**.  It carries a comment naming the upstream
   issue, and it is deleted when the fix lands.
-- `PLAN.md` tracks the known gaps and which phase depends on them.
+- `plans/PLAN.md` tracks the known gaps and which phase depends on them.
 
 The reason it is worth the friction: a workaround here hides the problem from
 every *other* consumer of that library.  Filing it fixes it once.
@@ -87,7 +87,7 @@ thing.
 ## Shims
 
 There are none right now.  When there is one, it looks like this: a comment
-naming the issue, and a note in `PLAN.md` saying which phase is waiting.  When
+naming the issue, and a note in `plans/PLAN.md` saying which phase is waiting.  When
 the fix lands, the shim is deleted in the same commit that records the
 version bump.
 

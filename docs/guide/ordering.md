@@ -42,44 +42,37 @@ It raises if the promise was not kept.  Note what is *not* checked:
 timestamps.  A stored order may run backwards in time — a sequenced order is a
 causal claim, not a chronological one.
 
-## Why a TCP session needs no basis
+## Why the order is trustworthy, and what says so
 
 A session is **hint-ful** when its records carry `seq` and `ack`.  Those are
 exactly what establishes what happened before what, so a hint-ful session's
-causal order follows from the records themselves and needs no external
-justification.
+causal order follows from the records themselves — which is why a TCP
+conversation can be sequenced at all, and why the reader-side check above has
+something to check against.
 
-A **hint-less** session — one with no `seq`/`ack` at all — has to say what its
-order rests on, in `sequenced_basis`.  This is where an obvious implementation
-goes wrong, and the reason is worth knowing.
+A session with no `seq`/`ack` is **hint-less**, and its order rests on
+something outside the records.  Spec `0.19` made a decision worth knowing
+about here: the flag is now a **bare assertion** either way.  A producer no
+longer records what its order rests on, because a reader cannot verify the
+basis any more than it can verify the order itself — so trusting the producer
+for one and not the other bought nothing.  What answers the forensic question
+instead is the file's build provenance: `produced_by` and `produced_at` on the
+File Header, both of which zpfwire writes.
 
-## The empty-session trap
+### The case that made this real
 
 A TCP session is hint-ful only if it *has* records.  A conversation of pure
 acknowledgements produces none — and a session with no records carries no
-`seq`/`ack`, so it is hint-less however TCP it is.  Marking it `SEQUENCED`
-without a basis is a semantic violation, and the writer will refuse it:
-
-```
-Session(session 1) is SEQUENCED and carries no seq/ack on any record,
-so it must record what its order rests on in sequenced_basis
-```
-
-This is not a corner case: three of the four sessions in the project's
-`http_example.pcapng` fixture are exactly this.
+`seq`/`ack`, so it is hint-less however TCP it is.  This is not a corner case:
+three of the four sessions in the project's `http_example.pcapng` fixture are
+exactly that.
 
 The flag is written on the Session Descriptor, *before* any record exists, so
-a producer cannot know which kind the session will be.  The specification's
-answer is to record what you **rely on** rather than what turns out to apply —
-and zpfwire's files set `SINGLE_CLOCK`, one capture being one tap, which
-supplies a sound basis for any session that turns out hint-less.  So every
-sequenced session declares:
-
-```python
-sequenced_basis="clock"
-```
-
-which is redundant for the hint-ful ones and correct for the rest.
+a producer cannot know which kind of session it has when it has to decide.
+Under spec `0.16` that was a genuine bind — the file had to justify a claim
+whose ground it could not yet see, and zpfwire declared `sequenced_basis="clock"`
+to cover it.  Since `0.19` there is nothing to declare, and the bind is gone
+along with the option.
 
 ## The cost
 
@@ -105,10 +98,10 @@ stats = zpfwire.capture_to_zpf("dns.pcap", "out.zpf", sequenced=True)
 ```
 
 A datagram carries no `seq` or `ack`, so a UDP session is hint-less and its
-order would rest on the clock alone.  That is arguably defensible given
-`SINGLE_CLOCK`, but it is a different claim from the one this flag was added
-to make, and zpfwire does not make it.  If you need it, the pieces are all
-present — see the note in `PLAN.md`.
+order would rest on the clock alone.  One capture is one tap, so that is
+arguably defensible — but it is a different claim from the one this flag was
+added to make, and not one zpfwire makes on your behalf.  If you need it, the
+pieces are all present — see the note in `plans/PLAN.md`.
 
 ## What sequencing does not change
 

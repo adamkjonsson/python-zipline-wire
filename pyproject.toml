@@ -22,9 +22,13 @@ classifiers = [
     "Topic :: System :: Networking :: Monitoring",
     "Typing :: Typed",
 ]
+# Floors, not ranges: neither sibling is on PyPI, so these document what this
+# release was built against as much as they resolve anything.  Both are
+# required — 0.1.0 writes spec 0.19, which zpf 0.2.0 refuses at the version
+# gate, and reads packeteer's truncation and loopback support.
 dependencies = [
-    "packeteer",
-    "zpf",
+    "packeteer>=0.12.0",
+    "zpf>=0.3.0",
 ]
 
 [tool.setuptools]
@@ -46,4 +50,4 @@ zpfwire = "zpfwire.__main__:main"
 
 [project.urls]
 Repository = "https://github.com/adamkjonsson/python-zipline-wire.git"
-Specification = "https://github.com/adamkjonsson/zipline/blob/v0.16/docs/zipline-payload-format.md"
+Specification = "https://github.com/adamkjonsson/zipline/blob/v0.19/docs/zipline-payload-format.md"
