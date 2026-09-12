@@ -25,8 +25,25 @@ one.
 
 ## [Unreleased]
 
+<!--
+Add entries here as work lands, under the change types listed above.
+Releasing: rename this heading to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh
+Unreleased section above it, drop any `.devN` suffix from the version in
+pyproject.toml, update the link definitions at the bottom of this file, tag
+`vX.Y.Z`, and close the release's issues and milestone.
+-->
+
+## [0.2.0] - 2026-09-12
+
 Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
 **0.14.0** and python-zipline **0.3.0**.
+
+**The packeteer 0.14.0 release**, and a small one: one misfiled skip reason
+fixed, one fact the reader can now state up front, one option value withdrawn
+because nothing ever read it, and a documentation sweep.  Every `.zpf` this
+version writes is byte-identical to `0.1.0`'s for the same input and options.
+The TCP Timestamps work ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17))
+is held for `0.3.0` until a real capture exists to validate it against.
 
 ### Added
 
@@ -106,14 +123,6 @@ Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
   reading it is held ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17)),
   and ties the one-policy `overlap` option to the deferred `favor-acked`
   design ([#18](https://github.com/adamkjonsson/python-zipline-wire/issues/18)).
-
-<!--
-Add entries here as work lands, under the change types listed above.
-Releasing: rename this heading to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh
-Unreleased section above it, drop any `.devN` suffix from the version in
-pyproject.toml, update the link definitions at the bottom of this file, tag
-`vX.Y.Z`, and close the release's issues and milestone.
--->
 
 ## [0.1.0] - 2026-09-07
 
@@ -314,5 +323,6 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adamkjonsson/python-zipline-wire/releases/tag/v0.1.0

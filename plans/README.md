@@ -18,3 +18,4 @@ The live records stay in the project root:
 | Document | What it is |
 | --- | --- |
 | [`V0.1.0-RELEASE-PLAN.md`](V0.1.0-RELEASE-PLAN.md) | The first tagged release: the port to python-zipline `0.3.0` / spec `0.19` ([#13](https://github.com/adamkjonsson/python-zipline-wire/issues/13)), the coalesced-`ack` rule ([#11](https://github.com/adamkjonsson/python-zipline-wire/issues/11)), and the release mechanics. |
+| [`V0.2.0-RELEASE-PLAN.md`](V0.2.0-RELEASE-PLAN.md) | The packeteer `0.14.0` step ([#16](https://github.com/adamkjonsson/python-zipline-wire/issues/16)) and the withdrawal of `favor-new`; records why the TCP Timestamps work ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17)) was held for `0.3.0`, what it turned out to need, and the three upstream issues filed for it. |

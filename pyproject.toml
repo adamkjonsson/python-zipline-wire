@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zpfwire"
-version = "0.2.0.dev0"
+version = "0.2.0"
 requires-python = ">=3.11"
 description = "Turn network captures into Zipline Payload Format (.zpf) files"
 authors = [ { name = "Adam Jonsson", email = "akj426@gmail.com" } ]
