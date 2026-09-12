@@ -47,6 +47,20 @@ Passing both is an error — it would leave nothing to convert.  Packets
 excluded this way are counted under `tcp-not-requested` or
 `udp-not-requested`, so the summary still accounts for every packet.
 
+The same rule refuses a capture whose **link type packeteer cannot decode**:
+nothing in it can be reached, so rather than write a valid, empty file and
+report `skipped N (unsupported-linktype)` at the end, `convert` says so and
+exits `1`.  `zpfwire info` reports the same fact and continues, since
+reporting is its job; and the API still writes the empty file if asked —
+{class}`~zpfwire.capture.CaptureReader` exposes the fact as
+`link_type_supported`, and {func}`~zpfwire.convert.convert` keeps its
+every-packet contract.
+
+```
+$ zpfwire convert weird.pcap -o weird.zpf
+Error: link type 999 is one packeteer cannot decode, so every packet in the capture is skipped: nothing to convert
+```
+
 The filtering flags described in {doc}`index` apply here too, and compose with
 these: `--no-udp --dst-port 443` keeps only TCP traffic to port 443.
 
@@ -61,7 +75,7 @@ they turn up later.  These settings are what decide when that happens.
 |------|---------|-----------------|
 | `--reorder-window BYTES` | `262144` | How much out-of-order data a direction may hold before the oldest gap is committed. `0` disables buffering entirely. |
 | `--flush-timeout SECONDS` | `5.0` | How long a gap may stay unfilled, measured in capture time, before it is committed |
-| `--overlap {favor-old,favor-new}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted |
+| `--overlap {favor-old}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted.  One policy: a single-pass writer cannot prefer a copy against bytes already written — see {doc}`../guide/reassembly` |
 | `--session-timeout SECONDS` | `300.0` | Silence after which a conversation is closed and a later packet starts a new session |
 | `--no-coalesce` | off | Emit one record per segment instead of one per contiguous byte run |
 | `--checksum {ignore,drop}` | `ignore` | What to do with a packet whose transport checksum does not verify. `drop` discards it as a receiver would, leaving the retransmission to supply the bytes |

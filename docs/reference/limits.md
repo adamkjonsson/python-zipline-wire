@@ -55,6 +55,27 @@ which ranges the receiver actually got — but the reassembler does not consult
 them.  It infers loss from arrival order and its timeouts alone, so a capture
 with SACK information available is analysed as though it had none.
 
+**The TCP Timestamps option is not read either**, and it could settle three
+things the reassembler currently assumes: whether a repeated segment is a
+retransmission or the same transmission seen twice (a mirror port doubles
+every packet, and today each copy sets `retransmit`); whether late bytes were
+a delayed original or a loss recovered after the gap was committed; and, as
+PAWS, whether a segment that looks 2³¹ behind is really from after a sequence
+wrap.  This is [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
+held until a real capture exists of a retransmission carrying the option —
+none does, here or in packeteer's corpus
+([packeteer#149](https://github.com/adamkjonsson/packeteer/issues/149)) —
+and until the format says whether `retransmit` means the sender resent or
+the reassembler discarded
+([zipline#142](https://github.com/adamkjonsson/zipline/issues/142)).
+
+**A fourth thing the option could settle needs a different reassembler:**
+which copy of disagreeing bytes the *receiver* kept, read from the TSval its
+acknowledgement echoes.  That evidence arrives after the data it settles, by
+which time the first copy has been written, so acting on it means holding
+every run until the peer acknowledges it.  It is the same reason `overlap`
+has one policy — see {doc}`../guide/reassembly`.
+
 **Byte ranges for discarded fragments.** A datagram reassembled from several
 IP fragments occupies several discontiguous ranges of the capture, and an
 `Undecoded` block names one range.  Rather than name the wrong bytes, a
@@ -84,7 +105,10 @@ hard-coded number.  The format guarantees no upgrade path across a minor
 version while it is below 1.0, so a file written against one minor may be
 refused by a library implementing another.
 
-**Neither sibling is on PyPI yet**, and `pyproject.toml` names both without a
-version constraint.  That is honest while they are installed from local
-checkouts and will need revisiting when they are released — the current code
-depends on APIs that exist only in unreleased versions of both.
+**Neither sibling is on PyPI yet.**  `pyproject.toml` floors both —
+`packeteer>=0.14.0`, `zpf>=0.3.0` — but with nothing to resolve against, a
+floor is documentation as much as a constraint: it names the releases the
+code was built against, which each `CHANGELOG.md` entry names too, and it
+makes an older checkout fail at import rather than somewhere subtler.  Both
+are installed editable from the checkouts beside this one, so what is
+actually in use is whatever those checkouts are at.

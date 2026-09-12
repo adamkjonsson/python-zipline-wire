@@ -55,11 +55,14 @@ reader.packet_count      # packets seen — 0 before iteration
 reader.skipped           # Counter keyed by SkipReason
 reader.tick_hz           # the rate every timestamp is expressed in
 reader.link_type         # from the capture header
+reader.link_type_supported  # whether packeteer can decode it at all
 reader.snaplen           # the capture limit, or None when it states none
 ```
 
-`header`, `tick_hz`, `link_type` and `snaplen` are available immediately,
-because the capture's header is read when the reader is constructed.  `packet_count` and
+`header`, `tick_hz`, `link_type`, `link_type_supported` and `snaplen` are
+available immediately, because the capture's header is read when the reader
+is constructed — and `link_type_supported` is worth checking first, since
+when it is `False` the survey will be empty and every packet skipped.  `packet_count` and
 `skipped` are not, because knowing them means reading the file.
 
 ## Surveying a filtered view

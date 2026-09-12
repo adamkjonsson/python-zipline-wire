@@ -327,6 +327,9 @@ def test_the_packet_count_includes_the_packets_that_were_skipped(
     ("kwargs", "match"),
     [
         ({"overlap": "favour-old"}, "overlap must be one of"),
+        # Offered until 0.2.0 and never applied; refused rather than ignored,
+        # so a digest never again names a policy no code ran.
+        ({"overlap": "favor-new"}, "overlap must be one of"),
         ({"reorder_window": -1}, "reorder_window"),
         ({"flush_timeout": -1}, "flush_timeout"),
         ({"session_timeout": -1}, "session_timeout"),

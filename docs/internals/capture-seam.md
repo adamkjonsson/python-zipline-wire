@@ -55,17 +55,40 @@ surviving `checksum` mean *wrong on the wire*: the parser kept the field on a
 snaplen-truncated packet too, where the value it derived came from fewer bytes
 than the sender used, so a truncated capture read as corruption throughout.
 `_checksum_bad` carried a `_truncated` guard for one release; packeteer 0.9.1
-clears the field itself (packeteer#92) and the guard is gone.
+cleared the field itself (packeteer#92) and the guard went.  It came back in a
+different form: 0.12.0 keeps the checksum on a truncated packet again, because
+rebuilding the packet *as* truncated needs the captured value, and asks a
+consumer reading the field as corruption to test `datagram_truncated` beside
+it.  So `_checksum_bad` tests it — not a shim this time but the documented
+contract, which is the difference between a workaround and a seam.
 
 ## Skip reasons
 
 `ParsedPacket` says what each layer contained, not *why* one is missing, so
-the reasons are reconstructed:
+the reasons are reconstructed — with one exception, decided before any packet
+is read.
+
+**The link type is a property of the file, and it is asked, not inferred.**
+`CaptureReader.__init__` calls `packeteer.parse.supports_link_type` on the
+header's link type (an override lands there too) and keeps the answer as
+`link_type_supported`.  When it is `False`, `__iter__` tallies every record as
+`UNSUPPORTED_LINKTYPE` without looking at it, and silences the
+`UnsupportedLinkTypeWarning` packeteer would otherwise raise for saying the
+same thing.
+
+That used to be inferred per packet, from every link-layer object being
+`None` — and that is also what a raw-IP packet with a bad IP header looks
+like, because `LINKTYPE_RAW` has no link-layer header to parse.  The packet
+cannot tell the two apart (`offsets == {}` in both), which is why the fact has
+to come from the file (packeteer#138).  The ladder now takes it as an
+argument:
 
 ```python
 if packet.ip is None:
-    if packet.ethernet is None and packet.sll is None:
-        return SkipReason.UNSUPPORTED_LINKTYPE
+    if headerless:                          # raw IP: the link type announced IP
+        return SkipReason.MALFORMED_IP
+    if packet.loopback is not None:
+        return _loopback_skip_reason(packet.loopback)
     if ethertype in (ETHERTYPE_IPV4, ETHERTYPE_IPV6):
         return SkipReason.MALFORMED_IP      # announced IP, none parsed
     return SkipReason.NON_IP
@@ -126,4 +149,6 @@ closes what it opened.
 
 Nothing, and that is the point.  The one remaining local decision — how to
 classify a skip — exists because `ParsedPacket` reports absence rather than
-cause, which is a reasonable thing for a parser to do.
+cause, which is a reasonable thing for a parser to do.  The one part of that
+decision a packet could never carry — whether the file's link type is one the
+parser knows — is now asked of the parser instead.

@@ -33,6 +33,97 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+## [0.2.0] - 2026-09-12
+
+Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
+**0.14.0** and python-zipline **0.3.0**.
+
+**The packeteer 0.14.0 release**, and a small one: one misfiled skip reason
+fixed, one fact the reader can now state up front, one option value withdrawn
+because nothing ever read it, and a documentation sweep.  Every `.zpf` this
+version writes is byte-identical to `0.1.0`'s for the same input and options.
+The TCP Timestamps work ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17))
+is held for `0.3.0` until a real capture exists to validate it against.
+
+### Added
+
+- **`CaptureReader.link_type_supported`**
+  ([#16](https://github.com/adamkjonsson/python-zipline-wire/issues/16)) —
+  whether packeteer can decode the capture's link type, asked of
+  `packeteer.parse.supports_link_type` once at open (a `--link-type`
+  override included) rather than inferred per packet.  When it is `False`
+  the reader yields nothing and tallies every packet as
+  `unsupported-linktype`, which it always did; what is new is that it can
+  say so before reading the first record.
+
+  On the command line, **`zpfwire info` says so up front**, on its own line
+  before the table, and **`zpfwire convert` refuses** — exit `1`, "nothing
+  to convert" — by the same rule that already refuses `--no-tcp --no-udp`.
+  The API still writes the valid, empty file if asked.  packeteer's own
+  `UnsupportedLinkTypeWarning` is silenced for exactly that case, since the
+  reader has already said it.
+
+### Changed
+
+- **Breaking: `overlap="favor-new"` is withdrawn.**  It was accepted,
+  hashed into `params_digest`, documented on the CLI and in the guide — and
+  never read: the reassembler has always kept the first copy of any range,
+  because a single-pass writer cannot prefer a later copy against bytes it
+  has already written, and a rule that held only while a run happened to be
+  open would not have been a policy.  `ReassemblyOptions(overlap="favor-new")`
+  and `--overlap favor-new` now raise, as any unknown value does.
+  **Callers pass `favor-old`, which is what `favor-new` always did**; no
+  file's bytes move, and a file already written under `favor-new` carries a
+  digest naming a policy that was never applied — which is the reason to
+  stop writing more of them.  Any future policy — the copy the peer's
+  acknowledgement echoes, say — needs a reassembler that holds runs until
+  the choice can be made, and will arrive as a new value of the same field.
+- **packeteer floor raised to 0.14.0** (`packeteer>=0.14.0` in
+  `pyproject.toml`).  The tree asks `packeteer.parse.supports_link_type`,
+  which exists only from that release.  Nothing else in packeteer 0.13.0 or
+  0.14.0 reaches this project: the protocol dialect, the front-door
+  accessors and the generated-capture changes all sit above the transport
+  layer or on the generator side, and every fixture here is byte-identical
+  to packeteer's at `v0.14.0`.
+
+### Fixed
+
+- **A raw-IP packet whose IP header did not parse was skipped as
+  `unsupported-linktype`** ([#16](https://github.com/adamkjonsson/python-zipline-wire/issues/16),
+  from [packeteer#138](https://github.com/adamkjonsson/packeteer/issues/138)).
+  `LINKTYPE_RAW` has no link-layer header, so such a packet arrives with no
+  header object of any kind — the same shape as an unknown link layer, which
+  is what the old inference read it as.  It is now `malformed-ip-header`:
+  the link type itself announced IP, so the failure is above the link layer,
+  exactly as for an Ethernet frame with an IP EtherType and no IP header.
+  The skip ladder is told whether the capture is headerless, because nothing
+  on the packet can say.  Only the reason's name moves; no `.zpf` written
+  for any capture packeteer already decoded changes.
+
+### Documentation
+
+- A sweep of every page against what the tree does after `0.1.0`.  Two
+  passages were wrong rather than stale: the provenance guide and the
+  reassembler internals both placed the handshake record "at the initial
+  sequence number", where it has sat at `isn + 1` — the stream origin,
+  shared with the first data record — since the python-zipline#63 fix, and
+  the guide's gap walk still told readers to skip the SYN record to avoid a
+  phantom one-byte gap that no longer occurs.  The accounting identity in
+  four places predated `checksum="drop"` and omitted
+  `checksum_dropped_bytes`; the specification mapping's `ack` row said "as
+  last seen" where `0.1.0` made it the serial maximum over contributing
+  packets, and lacked the handshake record, the Source comment and the
+  `bad-checksum` reason.  The rest is drift: the read-back assertion is two
+  lists since spec `0.19`; the fixture and test-file tables gained the
+  entries added since; the upstream ledger now lists all twenty-one issues
+  this project has filed, with the three open ones named as what `0.3.0`
+  waits on; and the pointers to `plans/PLAN.md` as a live document now go to
+  the release plans and `limits.md`, which are.
+- `limits.md` states what the TCP Timestamps option could settle and why
+  reading it is held ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17)),
+  and ties the one-policy `overlap` option to the deferred `favor-acked`
+  design ([#18](https://github.com/adamkjonsson/python-zipline-wire/issues/18)).
+
 ## [0.1.0] - 2026-09-07
 
 Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
@@ -232,5 +323,6 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adamkjonsson/python-zipline-wire/releases/tag/v0.1.0

@@ -95,8 +95,18 @@ def _options(args: argparse.Namespace) -> ReassemblyOptions:
 # ── convert subcommand ──────────────────────────────────────────────────
 
 
+def _undecodable(reader: CaptureReader) -> str:
+    """Say, in one sentence shared by both commands, that packeteer cannot read the link type."""
+    return (f"link type {reader.link_type} is one packeteer cannot decode, "
+            f"so every packet in the capture is skipped")
+
+
 def _cmd_convert(args: argparse.Namespace) -> None:
     reader = CaptureReader(path=args.capture, link_type=args.link_type, tick_hz=args.tick_hz)
+    # A file that would be valid and empty is not a conversion, any more than
+    # one with both transports switched off; the API will still write it.
+    if not reader.link_type_supported:
+        raise ValueError(f"{_undecodable(reader)}: nothing to convert")
     digest, uri = describe_source(args.capture)
     wanted = {name for name, on in (("tcp", not args.no_tcp), ("udp", not args.no_udp)) if on}
     if not wanted:
@@ -133,6 +143,8 @@ def _cmd_info(args: argparse.Namespace) -> None:
     flows = survey(reader, packet_filter=matcher(_build_packet_filter(args)))
 
     print(f"{args.capture}: {reader.packet_count} packets, tick_hz {reader.tick_hz}")
+    if not reader.link_type_supported:
+        print(_undecodable(reader))
     print(f"{len(flows)} conversation(s) would become sessions\n")
     print(f"{'proto':<6} {'packets':>8} {'payload':>10} {'seconds':>8}  flow")
     for flow in sorted(flows, key=lambda f: -f.payload_bytes):

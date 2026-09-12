@@ -82,18 +82,20 @@ convert a capture live or five years later.
 ### `overlap` — which copy wins
 
 When retransmitted bytes disagree with bytes already accepted, `"favor-old"`
-keeps what was seen first, as most receiving stacks do.  `"favor-new"` prefers
-the retransmission.
-
-```python
-ReassemblyOptions(overlap="favor-new")
-```
+keeps what was seen first, as most receiving stacks do.  It is the only
+policy, and the reason is structural rather than a gap: the converter writes
+in one pass, so once a record is out, a later copy of its bytes cannot replace
+them.  Any rule that prefers a later copy — the retransmission, or the copy
+the peer's acknowledgement turns out to echo — means holding every run until
+the choice can be made, which is a different reassembler.  (A `"favor-new"`
+was offered until 0.2.0; it was never read, and was withdrawn rather than
+left to put a policy in the digest that no code applied.)
 
 Disagreeing retransmits are rare in healthy traffic and are a classic evasion
 technique in unhealthy traffic: a sender that knows a monitor prefers one copy
 can hide bytes in the other.  If you are analysing traffic adversarially, this
-setting is the one to think about, and the digest is what lets you prove which
-way you had it set.
+is the setting to know about, and the digest is what lets you prove which rule
+the file was built under — even while there is only one.
 
 ### `session_timeout` — when a conversation is over
 
@@ -175,8 +177,9 @@ packet is tallied as a skip, so the accounting rule holds under either policy.
 Two things are deliberately *not* read as failures: an IPv4 UDP datagram whose
 checksum is `0`, which means *none was computed* (RFC 768) rather than a wrong
 one, and any packet from a capture truncated by a snaplen, whose checksum
-covers bytes that were not kept.  The second is packeteer's doing — it clears a
-checksum it cannot compare against the bytes the sender used — so a
+covers bytes that were not kept.  The second is decided here, from packeteer's
+`datagram_truncated`: the value cannot be checked against bytes that are not
+in the file, which is a different statement from its being wrong — so a
 snaplen-limited capture reports no corruption at all, under either policy.
 
 ## Validation
@@ -185,7 +188,7 @@ Invalid options raise `ValueError` at construction, not at conversion:
 
 ```python
 ReassemblyOptions(overlap="favour-old")
-# ValueError: overlap must be one of favor-old, favor-new, got 'favour-old'
+# ValueError: overlap must be one of favor-old, got 'favour-old'
 
 ReassemblyOptions(flush_timeout=-1)
 # ValueError: flush_timeout must not be negative
@@ -229,7 +232,7 @@ with zpf.open("capture.zpf") as reader:
 ```
 
 ```
-tcp-reassembly 0.1.0 sha256:1f3a…
+tcp-reassembly 0.2.0 sha256:1f3a…
 ```
 
 The name is `DECODER_NAME`.  Declaring it is a **should** in the

@@ -109,7 +109,7 @@ Note: some bytes never reached the output. Raise --reorder-window or
 |---|---|
 | `--reorder-window BYTES` | how much out-of-order data to hold before giving up on a gap |
 | `--flush-timeout SECONDS` | how long a gap may stay unfilled |
-| `--overlap {favor-old,favor-new}` | which copy wins when retransmitted bytes disagree |
+| `--overlap {favor-old}` | which copy wins when retransmitted bytes disagree — one policy, for a structural reason the guide explains |
 | `--session-timeout SECONDS` | silence after which a conversation is closed |
 | `--no-coalesce` | one record per segment instead of per contiguous byte run |
 | `--checksum {ignore,drop}` | whether to discard a packet whose transport checksum does not verify |
@@ -158,10 +158,14 @@ is why it is opt-in in a format whose point is streaming.
   clean transport-layer output here is what makes that possible.
 - **Sequenced UDP sessions.** A UDP session carries no `seq`/`ack`, so its
   order rests on something else and claiming it is a separate judgement.
-- **SACK-aware loss inference.** TCP options are parsed and carried on each
-  packet, but the reassembler does not yet use them.
+- **Reading the TCP options.** They are parsed and carried on each packet,
+  but the reassembler does not yet use them — neither SACK for loss inference
+  nor the Timestamps option, which would tell a mirror port's duplicate from
+  a real retransmission. The second is
+  [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
+  held until a real capture exists to validate it against.
 
-`plans/PLAN.md` tracks these.
+`docs/reference/limits.md` tracks these, and says which are permanent.
 
 ## Development
 
@@ -171,9 +175,10 @@ ruff check src/ tests/ docs/                        # lint, must be silent
 .venv/bin/sphinx-build -W docs docs/_build/html     # docs, warnings are errors
 ```
 
-Capture fixtures in `tests/captures/` are copied from packeteer's `testcases/`.
-Every test asserts that what was written reads back through `zpf.open` with no
-diagnostics and nothing unplaceable — a file that does not is not a conversion.
+Capture fixtures in `tests/captures/` are copied from packeteer's `testcases/`,
+plus three real HTTP captures added directly. Every test asserts that what was
+written reads back through `zpf.open` with no diagnostics and nothing
+unplaceable — a file that does not is not a conversion.
 
 One purpose of this project is to pressure-test its two dependencies, so gaps
 found here are filed as issues against them rather than worked around here. See

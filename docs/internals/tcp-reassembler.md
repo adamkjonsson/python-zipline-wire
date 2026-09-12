@@ -102,16 +102,30 @@ Both "one record per segment" and "coalesce contiguous bytes" are conformant
 byte runs.  The default coalesces, flushing on PSH, on a gap, on FIN or RST,
 at a timeout, and at end of capture.  `--no-coalesce` flushes every segment.
 
-A run carries two timestamps:
+A run carries three hints, and all three are extremes over its contributing
+packets rather than values from whichever packet happened to be appended last:
 
 ```python
 ts        # the LAST packet contributing bytes — when the run became complete
 ts_first  # the FIRST, written only when more than one packet contributed
+ack       # the serial MAXIMUM of the contributors' acks
 ```
 
 The `ts` rule is the specification's.  An acknowledgement can never precede
 arrival of what it acknowledges, so the completion time is the meaningful one;
 a retransmit contributing no accepted bytes does not move it.
+
+The `ack` rule is this project's, and it exists because "last appended" is not
+"last arrived": a segment held out of order arrives *before* the one that made
+it contiguous but is appended *after* it, so a drained run would otherwise
+carry the earlier packet's ack beside the later packet's timestamp — two hints
+from two packets, by no rule.  Acks are cumulative, so one observed on any
+contributor is still true when the run completes; the maximum is the strongest
+statement the run can make that is certainly true, and it can never overstate.
+It matters most under `--sequenced`, where the linearization releases a record
+once every peer record it acks has been emitted, so an understated ack delays
+a record for a reason that is not in the capture.  Serial, never `max()`: a
+32-bit wrap in the middle of a run is exactly where a naive maximum inverts.
 
 ## Two things that produce no record
 
@@ -126,17 +140,31 @@ carries the flag; when it arrives alone, the direction's close is carried by
 the Session End reason instead of an empty record.
 
 A SYN *does* get a record, because it is the one event whose time would
-otherwise be nowhere in the file.  Only the first per direction — a second at
-the same `seq_start` would break the ascending-order rule.
+otherwise be nowhere in the file.  It sits at `isn + 1` — the stream origin —
+and **not** at the `isn`: the SYN consumes a sequence number but delivers no
+byte, so a record at the `isn` is one below the origin, where the offset
+`seq_start - (isn + 1)` is negative in a space that has none.  The modular
+subtraction absorbs that rather than reporting it, putting the record at
+offset 2³²−1 and making the stream measure that many bytes — which is what
+this project shipped for months before python-zipline#63, and what the
+writer now refuses.  Sharing the origin with the first data record is what
+the specification asks for: two records at one `seq_start` are stored in the
+order they were produced, and the SYN comes first.
+
+Only the first SYN per direction gets one — a retransmitted SYN re-opens
+nothing.
 
 ## Where to be careful
 
 **Sequence comparisons.**  Use `_delta`, never `<`.
 
 **The `_stamp` helper.**  Draining a held segment appends it with the *held*
-packet's timestamp and flags, not the arriving packet's, so a run's `ts`
-reflects when its bytes actually arrived.  A synthetic `PacketView` carries
-that metadata; it has `payload=b""` because the payload travels separately.
+packet's timestamp, flags and ack, not the arriving packet's, so a run's
+hints reflect the packets that actually carried its bytes.  A synthetic
+`PacketView` carries that metadata; it has `payload=b""` because the payload
+travels separately.  `_commit_remaining` builds the same kind of view at end
+of capture.  Both fold through `_append`, which is why the three-hint rule
+above lives there and nowhere else.
 
 **Citing discards.**  Every discard site must both count and cite.  Counting
 without citing loses the byte range; citing without counting breaks the

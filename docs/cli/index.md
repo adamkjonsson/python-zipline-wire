@@ -61,6 +61,11 @@ Both subcommands exit `0` on success and `1` on error, printing
 error — it exits `0` and says so in the summary, because losing bytes is a
 documented outcome of the reassembly policy rather than a failure.
 
+A conversion that could produce *nothing* is: `convert` refuses a capture
+whose link type packeteer cannot decode, exactly as it refuses
+`--no-tcp --no-udp`, rather than write a valid, empty file.  `info` reports
+the same fact and continues.
+
 ```{toctree}
 :maxdepth: 1
 
