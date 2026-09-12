@@ -28,6 +28,24 @@ one.
 Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
 **0.14.0** and python-zipline **0.3.0**.
 
+### Added
+
+- **`CaptureReader.link_type_supported`**
+  ([#16](https://github.com/adamkjonsson/python-zipline-wire/issues/16)) —
+  whether packeteer can decode the capture's link type, asked of
+  `packeteer.parse.supports_link_type` once at open (a `--link-type`
+  override included) rather than inferred per packet.  When it is `False`
+  the reader yields nothing and tallies every packet as
+  `unsupported-linktype`, which it always did; what is new is that it can
+  say so before reading the first record.
+
+  On the command line, **`zpfwire info` says so up front**, on its own line
+  before the table, and **`zpfwire convert` refuses** — exit `1`, "nothing
+  to convert" — by the same rule that already refuses `--no-tcp --no-udp`.
+  The API still writes the valid, empty file if asked.  packeteer's own
+  `UnsupportedLinkTypeWarning` is silenced for exactly that case, since the
+  reader has already said it.
+
 ### Changed
 
 - **packeteer floor raised to 0.14.0** (`packeteer>=0.14.0` in
@@ -37,6 +55,20 @@ Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
   accessors and the generated-capture changes all sit above the transport
   layer or on the generator side, and every fixture here is byte-identical
   to packeteer's at `v0.14.0`.
+
+### Fixed
+
+- **A raw-IP packet whose IP header did not parse was skipped as
+  `unsupported-linktype`** ([#16](https://github.com/adamkjonsson/python-zipline-wire/issues/16),
+  from [packeteer#138](https://github.com/adamkjonsson/packeteer/issues/138)).
+  `LINKTYPE_RAW` has no link-layer header, so such a packet arrives with no
+  header object of any kind — the same shape as an unknown link layer, which
+  is what the old inference read it as.  It is now `malformed-ip-header`:
+  the link type itself announced IP, so the failure is above the link layer,
+  exactly as for an Ethernet frame with an IP EtherType and no IP header.
+  The skip ladder is told whether the capture is headerless, because nothing
+  on the packet can say.  Only the reason's name moves; no `.zpf` written
+  for any capture packeteer already decoded changes.
 
 <!--
 Add entries here as work lands, under the change types listed above.

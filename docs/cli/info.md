@@ -68,7 +68,7 @@ skipped 207 (not-tcp-or-udp)
 
 | Reason | Meaning |
 |--------|---------|
-| `unsupported-linktype` | No link-layer header could be read at all |
+| `unsupported-linktype` | The capture's link type is one packeteer cannot decode.  A property of the file, so every packet lands here — and `info` says so on its own line before the table rather than leaving it to the tally |
 | `non-ip` | The link layer carried something else — ARP, for instance |
 | `malformed-ip-header` | The link layer announced IP, but no IP header parsed |
 | `not-tcp-or-udp` | An IP datagram carrying another transport |

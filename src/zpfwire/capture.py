@@ -34,6 +34,15 @@ The same release reads BSD loopback captures (packeteer#124); they arrive here
 as ordinary IP packets and ask nothing of this module but that a frame whose
 address family announced IP be told apart from one that did not.
 
+packeteer 0.14.0 answers a question this module used to guess at
+(packeteer#138): whether a capture's link type is one it can decode.
+:func:`~packeteer.parse.supports_link_type` is asked once, at open, and the
+answer is :attr:`CaptureReader.link_type_supported`.  Before that the skip
+ladder inferred "unsupported link type" from every link-layer object being
+``None`` — which is also what a raw-IP packet with a bad IP header looks
+like, since ``LINKTYPE_RAW`` has no link-layer header to parse.  That packet
+is now filed where it belongs, as a malformed IP header.
+
 What remains here is the mapping from packeteer's model to ours: deciding what
 counts as a convertible packet, tallying what does not, and putting timestamps
 on one clock.
@@ -43,6 +52,7 @@ from __future__ import annotations
 
 import os
 import socket
+import warnings
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -52,8 +62,14 @@ from packeteer.generate import ETHERTYPE_IPV4, ETHERTYPE_IPV6, IPv6Header
 from packeteer.generate.loopback import AF_INET, LoopbackHeader
 from packeteer.generate.tcp import TCPHeader, TCPOptions
 from packeteer.generate.udp import UDPHeader
-from packeteer.parse import PacketReader, ParsedPacket, iter_packets
-from packeteer.pcap import SNAPLEN_UNLIMITED, PcapFileHeader
+from packeteer.parse import (
+    PacketReader,
+    ParsedPacket,
+    UnsupportedLinkTypeWarning,
+    iter_packets,
+    supports_link_type,
+)
+from packeteer.pcap import LINKTYPE_RAW, SNAPLEN_UNLIMITED, PcapFileHeader
 
 __all__ = [
     "TICK_HZ_NS",
@@ -82,8 +98,11 @@ class SkipReason:
     translating anything.
 
     Attributes:
-        UNSUPPORTED_LINKTYPE: No link-layer header was recognised, so nothing
-            below it could be reached.
+        UNSUPPORTED_LINKTYPE: The capture's link type is one packeteer cannot
+            decode, so nothing in any packet could be reached.  A property of
+            the file, not the packet — see
+            :attr:`CaptureReader.link_type_supported` — and so every packet
+            of such a capture lands here.
         NON_IP: The link layer carried something other than IP — ARP, for
             instance.
         MALFORMED_IP: The link layer announced IP, but no IP header parsed.
@@ -200,6 +219,13 @@ class CaptureReader:
 
     Attributes:
         header: The capture's file header.
+        link_type_supported: Whether packeteer can decode the capture's link
+            type — asked of :func:`~packeteer.parse.supports_link_type` once,
+            at open, for the effective link type (a *link_type* override
+            included).  When ``False`` nothing above the link layer can be
+            reached, so every packet is skipped as
+            :attr:`SkipReason.UNSUPPORTED_LINKTYPE` and the reader yields
+            nothing; the tally still counts them.
         tick_hz: Ticks per second for every :attr:`PacketView.ts_ticks`.  Taken
             from the header unless overridden; per-packet timestamps are
             rescaled into it, so a pcapng whose interfaces disagree still lands
@@ -245,6 +271,11 @@ class CaptureReader:
         self._link_type = link_type
         with self._open() as reader:
             self.header: PcapFileHeader = reader.header
+        # One link type per capture, and an override lands in the header, so
+        # this is asked once here rather than inferred per packet from which
+        # header objects came back None — an inference that cannot tell an
+        # unknown link layer from a headerless one whose IP header failed.
+        self.link_type_supported: bool = supports_link_type(self.header.link_type)
         self.tick_hz: int = tick_hz if tick_hz is not None else self.header.tick_hz
         self.packet_count: int = 0
         self.skipped: Counter[str] = Counter()
@@ -271,6 +302,17 @@ class CaptureReader:
         """Yield a :class:`PacketView` for every TCP segment and UDP datagram."""
         self.skipped.clear()
         self.packet_count = 0
+        if not self.link_type_supported:
+            # Nothing in the file can be reached, and that was decided at
+            # open.  packeteer says the same thing as a warning when it
+            # parses the first record; it is silenced here, and only here,
+            # because the reader has already said it in its own terms.
+            with self._open() as reader, warnings.catch_warnings():
+                warnings.simplefilter("ignore", UnsupportedLinkTypeWarning)
+                for index, _packet in enumerate(reader, start=1):
+                    self.packet_count = index
+                    self.skipped[SkipReason.UNSUPPORTED_LINKTYPE] += 1
+            return
         with self._open() as reader:
             for index, packet in enumerate(reader, start=1):
                 self.packet_count = index
@@ -296,7 +338,7 @@ class CaptureReader:
         )
 
     def _view(self, packet: ParsedPacket, index: int) -> PacketView | None:
-        reason = _unconvertible(packet)
+        reason = _unconvertible(packet, headerless=self.link_type == LINKTYPE_RAW)
         if reason is not None:
             self.skipped[reason] += 1
             return None
@@ -336,11 +378,26 @@ class CaptureReader:
         return packet.ts_sec * self.tick_hz + (packet.ts_frac * self.tick_hz) // source_hz
 
 
-def _unconvertible(packet: ParsedPacket) -> str | None:
-    """Return why a packet carries no stream, or ``None`` when it does."""
+def _unconvertible(packet: ParsedPacket, *, headerless: bool) -> str | None:
+    """Return why a packet carries no stream, or ``None`` when it does.
+
+    Only called for a link type packeteer decodes; an unsupported one is
+    settled per file, not per packet.
+
+    Args:
+        packet: The parsed packet.
+        headerless: Whether the capture's link type carries no link-layer
+            header at all — raw IP.  The packet cannot say so itself: a
+            raw-IP packet whose IP header failed has no header object of any
+            kind, exactly as an unknown link layer would, so the fact has to
+            come from the file.
+
+    """
     if packet.ip is None:
-        if packet.ethernet is None and packet.sll is None and packet.loopback is None:
-            return SkipReason.UNSUPPORTED_LINKTYPE
+        if headerless:
+            # The link type itself announced IP, so this is the same failure
+            # as an Ethernet frame with an IP EtherType and no IP header.
+            return SkipReason.MALFORMED_IP
         if packet.loopback is not None:
             return _loopback_skip_reason(packet.loopback)
         ethertype = packet.ethernet.ethertype if packet.ethernet is not None else None

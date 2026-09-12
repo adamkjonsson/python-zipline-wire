@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import struct
+import warnings
 
 import pytest
 from helpers import (
@@ -18,7 +19,8 @@ from helpers import (
 )
 from packeteer.generate import PacketBuilder
 from packeteer.generate.loopback import AF_INET
-from packeteer.pcap import LINKTYPE_NULL, read_pcap
+from packeteer.parse import UnsupportedLinkTypeWarning
+from packeteer.pcap import LINKTYPE_ETHERNET, LINKTYPE_NULL, LINKTYPE_RAW, read_pcap
 
 from zpfwire.capture import (
     TICK_HZ_US,
@@ -259,10 +261,66 @@ def test_an_unsupported_link_type_skips_every_packet():
     # 113 used to land here; packeteer now reads it as Linux cooked capture,
     # so this needs a link type it genuinely does not know.
     buf = capture_of([tcp_packet(payload=b"x")], link_type=999)
-    reader, pkts = views(buf)
+    reader = CaptureReader(file_object=buf)
+    assert not reader.link_type_supported
+
+    # packeteer warns once per parse call site that it decoded nothing.  The
+    # reader has already said so itself, in `link_type_supported`, so the
+    # warning is silenced deliberately — and if it ever surfaces again, this
+    # is where it shows.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UnsupportedLinkTypeWarning)
+        pkts = list(reader)
 
     assert pkts == []
+    assert reader.packet_count == 1
     assert reader.skipped == {SkipReason.UNSUPPORTED_LINKTYPE: 1}
+
+
+def test_a_supported_link_type_says_so():
+    reader, _ = views(capture_of([tcp_packet(payload=b"x")]))
+    assert reader.link_type_supported
+
+
+def test_link_type_support_follows_the_override():
+    """``--link-type`` lands in the header, so the answer is for the override."""
+    buf = capture_of([tcp_packet(payload=b"x")], link_type=999)
+    reader = CaptureReader(file_object=buf, link_type=LINKTYPE_ETHERNET)
+
+    assert reader.link_type == LINKTYPE_ETHERNET
+    assert reader.link_type_supported
+    assert [p.payload for p in reader] == [b"x"]
+
+
+def test_raw_ip_with_a_bad_ip_header_is_a_malformed_ip():
+    """The link type itself announced IP, so the failure is above the link layer.
+
+    ``LINKTYPE_RAW`` has no link-layer header at all, so a packet whose IP
+    header fails arrives with no header object of any kind — nothing on the
+    packet says which layer failed.  Before packeteer#138 that shape was
+    read as an unsupported link type; the link type is now asked, and a
+    packet with nothing below IP on a supported, headerless link type is an
+    IP failure.
+    """
+    reader, pkts = views(capture_of([b"\xff" * 40], link_type=LINKTYPE_RAW))
+
+    assert pkts == []
+    assert reader.link_type_supported
+    assert reader.skipped == {SkipReason.MALFORMED_IP: 1}
+
+
+def test_raw_ip_with_a_good_header_converts():
+    frame = (
+        PacketBuilder()
+        .ip(src=CLIENT_IP, dst=SERVER_IP)
+        .tcp(src_port=CLIENT_PORT, dst_port=SERVER_PORT, seq=1, flags=TCP_PSH)
+        .payload(data=b"raw")
+        .build()
+    )
+    reader, pkts = views(capture_of([frame], link_type=LINKTYPE_RAW))
+
+    assert reader.skipped == {}
+    assert [p.payload for p in pkts] == [b"raw"]
 
 
 def test_a_bsd_loopback_capture_converts():

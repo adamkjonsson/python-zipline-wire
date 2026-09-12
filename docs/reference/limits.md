@@ -84,7 +84,10 @@ hard-coded number.  The format guarantees no upgrade path across a minor
 version while it is below 1.0, so a file written against one minor may be
 refused by a library implementing another.
 
-**Neither sibling is on PyPI yet**, and `pyproject.toml` names both without a
-version constraint.  That is honest while they are installed from local
-checkouts and will need revisiting when they are released — the current code
-depends on APIs that exist only in unreleased versions of both.
+**Neither sibling is on PyPI yet.**  `pyproject.toml` floors both —
+`packeteer>=0.14.0`, `zpf>=0.3.0` — but with nothing to resolve against, a
+floor is documentation as much as a constraint: it names the releases the
+code was built against, which each `CHANGELOG.md` entry names too, and it
+makes an older checkout fail at import rather than somewhere subtler.  Both
+are installed editable from the checkouts beside this one, so what is
+actually in use is whatever those checkouts are at.

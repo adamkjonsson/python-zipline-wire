@@ -47,6 +47,20 @@ Passing both is an error — it would leave nothing to convert.  Packets
 excluded this way are counted under `tcp-not-requested` or
 `udp-not-requested`, so the summary still accounts for every packet.
 
+The same rule refuses a capture whose **link type packeteer cannot decode**:
+nothing in it can be reached, so rather than write a valid, empty file and
+report `skipped N (unsupported-linktype)` at the end, `convert` says so and
+exits `1`.  `zpfwire info` reports the same fact and continues, since
+reporting is its job; and the API still writes the empty file if asked —
+{class}`~zpfwire.capture.CaptureReader` exposes the fact as
+`link_type_supported`, and {func}`~zpfwire.convert.convert` keeps its
+every-packet contract.
+
+```
+$ zpfwire convert weird.pcap -o weird.zpf
+Error: link type 999 is one packeteer cannot decode, so every packet in the capture is skipped: nothing to convert
+```
+
 The filtering flags described in {doc}`index` apply here too, and compose with
 these: `--no-udp --dst-port 443` keeps only TCP traffic to port 443.
 

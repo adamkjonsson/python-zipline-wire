@@ -4,7 +4,7 @@ import pathlib
 
 import pytest
 import zpf
-from helpers import CAPTURES
+from helpers import CAPTURES, capture_of, tcp_packet
 
 from zpfwire.__main__ import main
 
@@ -192,6 +192,40 @@ def test_info_reports_what_it_skipped(monkeypatch: pytest.MonkeyPatch,
 
     out = capsys.readouterr().out
     assert "not-tcp-or-udp" in out
+
+
+def unsupported_capture(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Write a capture whose link type packeteer cannot decode, and return its path."""
+    path = tmp_path / "unsupported.pcap"
+    path.write_bytes(capture_of([tcp_packet(payload=b"x")], link_type=999).getvalue())
+    return path
+
+
+def test_info_says_up_front_when_the_link_type_is_undecodable(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+):
+    run(monkeypatch, "info", str(unsupported_capture(tmp_path)))
+
+    out = capsys.readouterr().out
+    notice = out.index("link type 999")
+    assert "packeteer cannot decode" in out
+    assert notice < out.index("conversation(s)"), "said before the table, not after it"
+    assert "skipped 1 (unsupported-linktype)" in out
+
+
+def test_convert_refuses_a_capture_whose_link_type_is_undecodable(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+):
+    """Nothing to convert is not a conversion — the same rule as --no-tcp --no-udp."""
+    output = tmp_path / "out.zpf"
+    with pytest.raises(SystemExit) as exit_info:
+        run(monkeypatch, "convert", str(unsupported_capture(tmp_path)), "-o", str(output))
+
+    assert exit_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "link type 999" in err
+    assert "nothing to convert" in err
+    assert not output.exists()
 
 
 def test_info_respects_filters(monkeypatch: pytest.MonkeyPatch,
