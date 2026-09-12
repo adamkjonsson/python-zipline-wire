@@ -109,7 +109,7 @@ Note: some bytes never reached the output. Raise --reorder-window or
 |---|---|
 | `--reorder-window BYTES` | how much out-of-order data to hold before giving up on a gap |
 | `--flush-timeout SECONDS` | how long a gap may stay unfilled |
-| `--overlap {favor-old,favor-new}` | which copy wins when retransmitted bytes disagree |
+| `--overlap {favor-old}` | which copy wins when retransmitted bytes disagree — one policy, for a structural reason the guide explains |
 | `--session-timeout SECONDS` | silence after which a conversation is closed |
 | `--no-coalesce` | one record per segment instead of per contiguous byte run |
 | `--checksum {ignore,drop}` | whether to discard a packet whose transport checksum does not verify |

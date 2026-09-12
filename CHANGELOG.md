@@ -48,6 +48,19 @@ Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
 
 ### Changed
 
+- **Breaking: `overlap="favor-new"` is withdrawn.**  It was accepted,
+  hashed into `params_digest`, documented on the CLI and in the guide — and
+  never read: the reassembler has always kept the first copy of any range,
+  because a single-pass writer cannot prefer a later copy against bytes it
+  has already written, and a rule that held only while a run happened to be
+  open would not have been a policy.  `ReassemblyOptions(overlap="favor-new")`
+  and `--overlap favor-new` now raise, as any unknown value does.
+  **Callers pass `favor-old`, which is what `favor-new` always did**; no
+  file's bytes move, and a file already written under `favor-new` carries a
+  digest naming a policy that was never applied — which is the reason to
+  stop writing more of them.  Any future policy — the copy the peer's
+  acknowledgement echoes, say — needs a reassembler that holds runs until
+  the choice can be made, and will arrive as a new value of the same field.
 - **packeteer floor raised to 0.14.0** (`packeteer>=0.14.0` in
   `pyproject.toml`).  The tree asks `packeteer.parse.supports_link_type`,
   which exists only from that release.  Nothing else in packeteer 0.13.0 or

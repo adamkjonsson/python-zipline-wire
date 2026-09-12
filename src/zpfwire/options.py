@@ -18,8 +18,14 @@ __all__ = [
 DECODER_NAME = "tcp-reassembly"
 """Name recorded on the Decoder Descriptor for the reassembly stage."""
 
-OVERLAP_POLICIES = ("favor-old", "favor-new")
-"""How to resolve bytes that arrive twice with differing content."""
+OVERLAP_POLICIES = ("favor-old",)
+"""How to resolve bytes that arrive twice with differing content.
+
+One value, and deliberately so.  A ``favor-new`` was offered until 0.2.0 and
+never read: a single-pass writer cannot prefer a later copy against bytes it
+has already written, and a policy that held only while a run happened to be
+open would not have been a policy.  See :attr:`ReassemblyOptions.overlap`.
+"""
 
 CHECKSUM_POLICIES = ("ignore", "drop")
 """What to do with a packet whose transport checksum does not verify."""
@@ -51,7 +57,13 @@ class ReassemblyOptions:
     Attributes:
         overlap: Which copy wins when retransmitted bytes disagree with bytes
             already accepted. ``"favor-old"`` keeps what was seen first, as
-            most receiving stacks do.
+            most receiving stacks do — and it is the only policy, because it
+            is the only one a single pass can keep: once a record has been
+            written, a later copy of its bytes cannot replace them.  Any
+            other rule means holding every run until the choice can be made
+            — until the peer acknowledges it, say — which is a different
+            reassembler.  The field stays so the digest names the rule and
+            so a future policy is a new value, not a new option.
         reorder_window: Bytes a direction may hold out of order before the
             oldest gap is committed. ``0`` disables buffering entirely.
         flush_timeout: Seconds a gap may stay unfilled, measured in capture

@@ -75,7 +75,7 @@ they turn up later.  These settings are what decide when that happens.
 |------|---------|-----------------|
 | `--reorder-window BYTES` | `262144` | How much out-of-order data a direction may hold before the oldest gap is committed. `0` disables buffering entirely. |
 | `--flush-timeout SECONDS` | `5.0` | How long a gap may stay unfilled, measured in capture time, before it is committed |
-| `--overlap {favor-old,favor-new}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted |
+| `--overlap {favor-old}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted.  One policy: a single-pass writer cannot prefer a copy against bytes already written — see {doc}`../guide/reassembly` |
 | `--session-timeout SECONDS` | `300.0` | Silence after which a conversation is closed and a later packet starts a new session |
 | `--no-coalesce` | off | Emit one record per segment instead of one per contiguous byte run |
 | `--checksum {ignore,drop}` | `ignore` | What to do with a packet whose transport checksum does not verify. `drop` discards it as a receiver would, leaving the retransmission to supply the bytes |

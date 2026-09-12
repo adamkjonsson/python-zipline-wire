@@ -111,11 +111,11 @@ def test_the_policy_is_recorded_in_the_file(tmp_path: pathlib.Path,
                                             monkeypatch: pytest.MonkeyPatch):
     out = tmp_path / "out.zpf"
     run(monkeypatch, "convert", str(CAPTURES / "no_errors.pcap"), "-o", str(out),
-        "--reorder-window", "1024", "--overlap", "favor-new", "-q")
+        "--reorder-window", "1024", "--flush-timeout", "2.5", "-q")
 
     from zpfwire import ReassemblyOptions
 
-    expected = ReassemblyOptions(reorder_window=1024, overlap="favor-new").params_digest()
+    expected = ReassemblyOptions(reorder_window=1024, flush_timeout=2.5).params_digest()
     with zpf.open(out) as reader:
         assert next(iter(reader.decoders.values())).params_digest == expected
 

@@ -82,18 +82,20 @@ convert a capture live or five years later.
 ### `overlap` — which copy wins
 
 When retransmitted bytes disagree with bytes already accepted, `"favor-old"`
-keeps what was seen first, as most receiving stacks do.  `"favor-new"` prefers
-the retransmission.
-
-```python
-ReassemblyOptions(overlap="favor-new")
-```
+keeps what was seen first, as most receiving stacks do.  It is the only
+policy, and the reason is structural rather than a gap: the converter writes
+in one pass, so once a record is out, a later copy of its bytes cannot replace
+them.  Any rule that prefers a later copy — the retransmission, or the copy
+the peer's acknowledgement turns out to echo — means holding every run until
+the choice can be made, which is a different reassembler.  (A `"favor-new"`
+was offered until 0.2.0; it was never read, and was withdrawn rather than
+left to put a policy in the digest that no code applied.)
 
 Disagreeing retransmits are rare in healthy traffic and are a classic evasion
 technique in unhealthy traffic: a sender that knows a monitor prefers one copy
 can hide bytes in the other.  If you are analysing traffic adversarially, this
-setting is the one to think about, and the digest is what lets you prove which
-way you had it set.
+is the setting to know about, and the digest is what lets you prove which rule
+the file was built under — even while there is only one.
 
 ### `session_timeout` — when a conversation is over
 
@@ -185,7 +187,7 @@ Invalid options raise `ValueError` at construction, not at conversion:
 
 ```python
 ReassemblyOptions(overlap="favour-old")
-# ValueError: overlap must be one of favor-old, favor-new, got 'favour-old'
+# ValueError: overlap must be one of favor-old, got 'favour-old'
 
 ReassemblyOptions(flush_timeout=-1)
 # ValueError: flush_timeout must not be negative
