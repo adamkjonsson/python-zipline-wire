@@ -25,6 +25,19 @@ one.
 
 ## [Unreleased]
 
+Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
+**0.14.0** and python-zipline **0.3.0**.
+
+### Changed
+
+- **packeteer floor raised to 0.14.0** (`packeteer>=0.14.0` in
+  `pyproject.toml`).  The tree asks `packeteer.parse.supports_link_type`,
+  which exists only from that release.  Nothing else in packeteer 0.13.0 or
+  0.14.0 reaches this project: the protocol dialect, the front-door
+  accessors and the generated-capture changes all sit above the transport
+  layer or on the generator side, and every fixture here is byte-identical
+  to packeteer's at `v0.14.0`.
+
 <!--
 Add entries here as work lands, under the change types listed above.
 Releasing: rename this heading to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh
