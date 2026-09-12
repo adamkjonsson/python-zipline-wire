@@ -13,14 +13,16 @@ siblings substantially.
   bugs.  Ask the maintainer before filing, then file.
 - Any local shim is **temporary**.  It carries a comment naming the upstream
   issue, and it is deleted when the fix lands.
-- `plans/PLAN.md` tracks the known gaps and which phase depends on them.
+- The release plan in `plans/` tracks the known gaps and which phase depends
+  on them; {doc}`../reference/limits` states them for users.
 
 The reason it is worth the friction: a workaround here hides the problem from
 every *other* consumer of that library.  Filing it fixes it once.
 
 ## What it produced
 
-Ten issues, all resolved.
+Twenty-one issues so far; three are open, and all three are what the next
+release waits on.
 
 **packeteer**, filed before a line of code was written:
 
@@ -41,6 +43,16 @@ Ten issues, all resolved.
 | #72 | `Defragmenter` reported nothing about which fragments composed a datagram | `AssembledFrame.tokens` |
 | #76 | `iter_packets` exposed neither the capture header nor what reassembly dropped | `PacketReader` |
 
+**packeteer**, filed while using it:
+
+| Issue | Gap | Resolution |
+|-------|-----|-----------|
+| #92 | A snaplen-truncated packet kept its checksum, so a truncated capture read as corruption throughout | Cleared on truncation (0.9.1); reinstated with `datagram_truncated` beside it (0.12.0) |
+| #94 | Nothing said a packet *was* truncated, so a cleared checksum was ambiguous | `ParsedPacket.datagram_truncated`, `PcapRecord.orig_len` |
+| #138 | No way to ask whether a link type is supported, so it was inferred from missing headers — and a raw-IP packet with a bad IP header was misfiled | `supports_link_type`, `SUPPORTED_LINK_TYPES` (0.14.0) |
+| #149 | No real capture, here or in packeteer's corpus, of a retransmission carrying the TCP Timestamps option | **Open** — what #17 waits on |
+| #150 | The generator rebuilds every resend with a fresh TSval, so it cannot produce a capture-point duplicate | **Open** |
+
 **python-zipline**:
 
 | Issue | Gap | Resolution |
@@ -48,6 +60,13 @@ Ten issues, all resolved.
 | #47 | `ts_first` unreachable from the ergonomic writer | `record(ts_first=…)` |
 | #48 | Specification URL pointed at a stale version | Held to `SPEC_VERSION` by a test |
 | #49 | No writer-side support for causal output ordering | `begin_session(linearize=True)` and a write-time order guard |
+| #63 | A zero-length SYN record at the `isn` sat one below the stream origin, and `check_coverage` measured the stream as 2³²−1 bytes | The writer refuses a `syn` record whose `seq_start` is not `isn + 1`, and `FileReader.unplaceable` reports what the offset space cannot place (0.3.0) |
+
+**zipline** (the specification):
+
+| Issue | Gap | Resolution |
+|-------|-----|-----------|
+| #142 | The `retransmit` flag's "retransmission/overlap" carries two readings — the sender resent, or the reassembler discarded — and a duplicated capture tells them apart | **Open** — what #17's first rule waits on |
 
 Two of packeteer's fixes went further than asked — #73 added `iter_packets`
 in response to the composition problem, and #76 put the tick rate on the
@@ -70,7 +89,14 @@ The issues above share a shape, and it is worth copying:
 The most useful ones explain why the obvious workaround does *not* work.
 #71's argument was that `len(frame) - len(payload)` looks like a substitute
 for a payload offset and silently is not, once #66 trims padding — that is the
-part a maintainer cannot be expected to notice.
+part a maintainer cannot be expected to notice.  #138's was that the inference
+from missing headers *looks* right on every link type but one, and that one
+has no headers to be missing.
+
+A gap in test material is an issue too.  packeteer#149 asks for a capture,
+not a feature: the rule it would validate is sound on paper and unverified on
+any real stack, and filing that is what keeps the rule from shipping on paper
+alone.
 
 ## Verify, do not trust the changelog
 
@@ -87,9 +113,9 @@ thing.
 ## Shims
 
 There are none right now.  When there is one, it looks like this: a comment
-naming the issue, and a note in `plans/PLAN.md` saying which phase is waiting.  When
-the fix lands, the shim is deleted in the same commit that records the
-version bump.
+naming the issue, and a note in the current release plan under `plans/`
+saying which phase is waiting.  When the fix lands, the shim is deleted in
+the same commit that records the version bump.
 
 {doc}`capture-seam` is the worked example of a shim's whole lifecycle — five
 workarounds in one module, all now gone.

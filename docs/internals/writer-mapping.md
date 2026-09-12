@@ -49,8 +49,11 @@ missing bytes with no rule for which to believe.
 
 So `_count_repeat` splits a discard by whether it falls inside a committed
 gap, and cites both halves with different reasons — `late-arrival` for bytes
-we refused to write, `overlap-discarded` for a genuine duplicate — but never
-cites the hole itself.
+we refused to write, `overlap-discarded` for a retransmit of bytes already
+accepted — but never cites the hole itself.  A third reason, `bad-checksum`,
+comes from `convert.py` rather than the reassembler: under `checksum="drop"`
+a packet that failed its checksum is discarded whole before it reaches a
+flow, and its payload is cited the same way.
 
 ### When it cannot be done
 
@@ -67,7 +70,7 @@ if off_start is None or self._writer is None or self._source is None:
 The accounting identity the tests assert is what keeps that honest:
 
 ```
-cited bytes + unlocatable_bytes == overlap_bytes + late_bytes
+cited bytes + unlocatable_bytes == overlap_bytes + late_bytes + checksum_dropped_bytes
 ```
 
 ## `ts_first` rather than `spans`
@@ -144,5 +147,5 @@ Three things to get right, in rough order of how easy they are to get wrong:
 3. **Count everything you drop**, and cite it when you can name its place in
    the capture.
 
-`UdpFlow` is 54 lines and is the honest example of how little the base class
-leaves you to do.
+`UdpFlow` is some fifty lines and is the honest example of how little the
+base class leaves you to do.

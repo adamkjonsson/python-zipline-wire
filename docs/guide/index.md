@@ -12,12 +12,12 @@ Everything public is importable from the top-level `zpfwire` package:
 | `convert` | The lower half, for a caller who built their own reader |
 | `describe_source` | Hash a capture, for the Source Descriptor |
 | `CaptureReader`, `PacketView`, `SkipReason` | Reading a capture as convertible packets |
-| `ReassemblyOptions`, `OVERLAP_POLICIES`, `DECODER_NAME` | The policy that decides which bytes survive |
+| `ReassemblyOptions`, `OVERLAP_POLICIES`, `CHECKSUM_POLICIES`, `DECODER_NAME` | The policy that decides which bytes survive |
 | `ConversionStats` | What a conversion did, and what it could not do |
 | `survey`, `FlowSummary` | Looking at a capture without writing anything |
 | `matcher`, `spec_of` | Filtering, on top of packeteer's `PacketFilter` |
 | `FlowKey`, `FlowTracker`, `TcpFlow`, `UdpFlow` | The flow layer, for extending the conversion |
-| `REASON_OVERLAP`, `REASON_LATE` | The `reason` strings on `Undecoded` blocks |
+| `REASON_OVERLAP`, `REASON_LATE`, `REASON_CHECKSUM` | The `reason` strings on `Undecoded` blocks |
 | `END_FIN`, `END_RST`, `END_TIMEOUT`, `END_CAPTURE_END` | The Session End reasons |
 | `format_endpoint`, `TICK_HZ_US`, `TICK_HZ_NS`, `tool_version` | Small helpers |
 

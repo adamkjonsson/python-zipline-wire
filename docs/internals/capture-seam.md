@@ -55,7 +55,12 @@ surviving `checksum` mean *wrong on the wire*: the parser kept the field on a
 snaplen-truncated packet too, where the value it derived came from fewer bytes
 than the sender used, so a truncated capture read as corruption throughout.
 `_checksum_bad` carried a `_truncated` guard for one release; packeteer 0.9.1
-clears the field itself (packeteer#92) and the guard is gone.
+cleared the field itself (packeteer#92) and the guard went.  It came back in a
+different form: 0.12.0 keeps the checksum on a truncated packet again, because
+rebuilding the packet *as* truncated needs the captured value, and asks a
+consumer reading the field as corruption to test `datagram_truncated` beside
+it.  So `_checksum_bad` tests it — not a shim this time but the documented
+contract, which is the difference between a workaround and a seam.
 
 ## Skip reasons
 
@@ -144,4 +149,6 @@ closes what it opened.
 
 Nothing, and that is the point.  The one remaining local decision — how to
 classify a skip — exists because `ParsedPacket` reports absence rather than
-cause, which is a reasonable thing for a parser to do.
+cause, which is a reasonable thing for a parser to do.  The one part of that
+decision a packet could never carry — whether the file's link type is one the
+parser knows — is now asked of the parser instead.

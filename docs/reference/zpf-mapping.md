@@ -27,6 +27,7 @@ Exactly one, so records may omit `source=` and be attributed to it.
 | `uri` | The capture's path, or absent for an unnamed stream |
 | `digest` | `sha256:…` of the capture's bytes |
 | `link_type` | The pcap LINKTYPE from the file header |
+| `comment` | `snaplen=N` when the capture states a limit, absent otherwise — provenance of the same kind as the link type, and what explains payloads shorter than what was sent. The descriptor has no field for it; a field of its own would be a specification change |
 
 The digest is the dependency edge: it is how a consumer confirms the `.zpf`
 still matches the capture it came from.
@@ -86,9 +87,20 @@ One per run of contiguous stream bytes, or one per datagram for UDP.
 | `ts_first` | The first contributing packet's time, when the run coalesced more than one |
 | `payload` | The stream bytes |
 | `seq_start` | The absolute wire sequence number of the first payload byte (TCP) |
-| `ack` | The acknowledgement number as last seen (TCP) |
-| `flags` | `PSH` / `FIN` / `RST` / `URG` / `SYN` as seen; `RETRANSMIT` when overlap was resolved inside the record; `MESSAGE` for a UDP datagram |
+| `ack` | The serial **maximum** of the acknowledgement numbers on the packets that contributed bytes (TCP) — acks are cumulative, so it is the strongest statement the run can make that is certainly true |
+| `flags` | `PSH` / `FIN` / `RST` / `URG` as seen; `RETRANSMIT` when overlap was resolved inside the record; `MESSAGE` for a UDP datagram |
 | `decoder` | The reassembly decoder |
+
+One record is not a byte run: the **handshake record**, written once per
+direction when its SYN was captured.
+
+| Field | Value |
+|-------|-------|
+| `payload` | Empty |
+| `seq_start` | `isn + 1` — the stream origin, shared with the first data record, and **not** the `isn`, which sits one below the origin in a space with no negative offsets |
+| `ack` | The SYN's own, when its `ACK` flag was set; absent on the opening SYN, which has nothing yet to acknowledge |
+| `flags` | `SYN` |
+| `timestamp` | When the connection opened — the one time nothing else in the file records |
 
 The timestamp rule is the specification's, not a choice: a retransmit
 contributing no accepted bytes does not move it, because an acknowledgement
@@ -110,7 +122,7 @@ Written for bytes that are in the capture and reached no record.
 | `source_id` | The capture source |
 | `session_id`, `participant_id` | **`0`** — against a capture source there is no input `.zpf`, so there is no id namespace to name |
 | `off_start`, `off_end` | Byte offsets **into the capture file**, half-open |
-| `reason` | `overlap-discarded` or `late-arrival` |
+| `reason` | `overlap-discarded`, `late-arrival`, or `bad-checksum` under `checksum="drop"` |
 | `reason_class` | `bytes` |
 | `decoder_id` | The reassembly decoder |
 
@@ -156,4 +168,4 @@ The `zpf` writer runs its conformance checker *before* bytes reach the sink,
 so a violation raises `zpf.SemanticError` at the offending call rather than
 producing a bad file.  zpfwire does not duplicate those checks; it relies on
 them, and the test suite asserts that every file it writes reads back with no
-diagnostics.
+diagnostics and nothing unplaceable.

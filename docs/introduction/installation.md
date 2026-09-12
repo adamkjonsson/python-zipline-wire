@@ -51,9 +51,11 @@ something else.
 .venv/bin/python -m build
 ```
 
-The wheel declares `packeteer` and `zpf` as dependencies without version
-constraints, which is honest while neither is on PyPI and will need revisiting
-once they are released.
+The wheel floors `packeteer` and `zpf` at the releases the code was built
+against — `CHANGELOG.md` names them per release — but with neither on PyPI a
+floor documents more than it resolves.  An older checkout beside this one
+fails at import rather than somewhere subtler, which is what the floor is
+for.
 
 ## Running the checks
 

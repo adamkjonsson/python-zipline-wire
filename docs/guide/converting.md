@@ -95,6 +95,10 @@ stats.late_bytes         # bytes that arrived after their gap closed
 stats.overlap_bytes      # retransmits discarded as already-accepted
 stats.undecoded_regions  # capture ranges cited as reaching no record
 stats.unlocatable_bytes  # discarded bytes whose capture range cannot be named
+
+stats.bad_checksum           # packets whose checksum did not verify, either policy
+stats.checksum_dropped_bytes # payload discarded with them, under checksum="drop"
+stats.truncated              # packets the capture's snaplen cut short
 ```
 
 The convenience predicate for "did anything get lost":
@@ -122,10 +126,14 @@ with zpf.open("capture.zpf") as reader:
         for record in session.records():
             ...
     assert reader.diagnostics == []
+    assert reader.unplaceable == []
 ```
 
 Diagnostics accumulate as the file is read, so they are only complete once the
-sessions and their records have been walked.
+sessions and their records have been walked.  `unplaceable` is a second list
+because since spec `0.19` a record the offset space cannot place breaks no
+rule — the file reads clean — and that list is the only thing that says a
+producer discarded its own bytes.
 
 ## The two-step form
 

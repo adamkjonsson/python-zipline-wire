@@ -20,7 +20,7 @@ contributing
 
 ## Module map
 
-Roughly 1,700 lines of source, and the ordering below is the order data moves
+Roughly 2,400 lines of source, and the ordering below is the order data moves
 through them.
 
 | Module | Purpose |

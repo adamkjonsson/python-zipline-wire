@@ -83,6 +83,30 @@ Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
   on the packet can say.  Only the reason's name moves; no `.zpf` written
   for any capture packeteer already decoded changes.
 
+### Documentation
+
+- A sweep of every page against what the tree does after `0.1.0`.  Two
+  passages were wrong rather than stale: the provenance guide and the
+  reassembler internals both placed the handshake record "at the initial
+  sequence number", where it has sat at `isn + 1` — the stream origin,
+  shared with the first data record — since the python-zipline#63 fix, and
+  the guide's gap walk still told readers to skip the SYN record to avoid a
+  phantom one-byte gap that no longer occurs.  The accounting identity in
+  four places predated `checksum="drop"` and omitted
+  `checksum_dropped_bytes`; the specification mapping's `ack` row said "as
+  last seen" where `0.1.0` made it the serial maximum over contributing
+  packets, and lacked the handshake record, the Source comment and the
+  `bad-checksum` reason.  The rest is drift: the read-back assertion is two
+  lists since spec `0.19`; the fixture and test-file tables gained the
+  entries added since; the upstream ledger now lists all twenty-one issues
+  this project has filed, with the three open ones named as what `0.3.0`
+  waits on; and the pointers to `plans/PLAN.md` as a live document now go to
+  the release plans and `limits.md`, which are.
+- `limits.md` states what the TCP Timestamps option could settle and why
+  reading it is held ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17)),
+  and ties the one-policy `overlap` option to the deferred `favor-acked`
+  design ([#18](https://github.com/adamkjonsson/python-zipline-wire/issues/18)).
+
 <!--
 Add entries here as work lands, under the change types listed above.
 Releasing: rename this heading to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh

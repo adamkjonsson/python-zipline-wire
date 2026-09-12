@@ -11,7 +11,9 @@ capture file
    │  CaptureReader           packeteer parses; fragments already reassembled
    ▼
 PacketView                    one TCP segment or UDP datagram, reduced
+   │  tcp / udp wanted?       a transport switched off is `<proto>-not-requested`
    │  packet_filter           optional predicate; rejects counted as `filtered`
+   │  checksum policy         a bad checksum is counted; under "drop" it ends here, cited
    ▼
 FlowKey.of(pkt)               direction-free conversation identity
    │
@@ -114,3 +116,10 @@ arguments and calls one library function; no decision that affects output is
 made there.  The rule is that anything the CLI can do must be reachable from
 Python, so a flag that has no API equivalent is a bug in the API rather than a
 feature of the CLI.
+
+The two things it decides on its own are refusals, and both rest on a fact
+the API exposes: `convert` will not run with both transports switched off, or
+on a capture whose link type packeteer cannot decode
+(`CaptureReader.link_type_supported`).  Either would be a valid, empty file;
+the library will still write one if asked, and the CLI declines to, because
+nothing to convert is not a conversion.

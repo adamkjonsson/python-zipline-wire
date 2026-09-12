@@ -1,6 +1,6 @@
 # Testing
 
-198 tests, native pytest style, in a top-level `tests/`.  Run them with:
+287 tests, native pytest style, in a top-level `tests/`.  Run them with:
 
 ```bash
 .venv/bin/pytest
@@ -15,11 +15,17 @@ with zpf.open(out) as reader:
     for session in reader.sessions():
         list(session.records())
     assert reader.diagnostics == []
+    assert reader.unplaceable == []
 ```
 
-A file that does not survive `zpf.open` with empty diagnostics is not a
+A file that does not survive `zpf.open` with both lists empty is not a
 conversion, so this is not one test among many — it is the floor.  It runs on
 every fixture, in both plain and sequenced modes.
+
+It is two lists because since spec `0.19` a record the offset space cannot
+place breaks no rule: the file reads clean, and `unplaceable` is the only
+thing that says a producer discarded its own bytes.  The below-origin SYN this
+project shipped for months is exactly what the second list would have caught.
 
 Diagnostics accumulate as the file is read, so the sessions and their records
 must be walked before the list is complete.  A test that opens a file and
@@ -67,8 +73,10 @@ packeteer's `testcases/`, each chosen for a behaviour:
 | `http_example.pcapng` | The payload `decode_app` protects, *and* three record-less sessions |
 | `dns_example.pcapng`, `udp.pcap` | UDP datagram flows |
 | `sctp.pcap` | A capture that converts nothing; every packet skipped |
+| `http.pcap`, `http_gzip.pcap`, `http_stream_1.pcap` | Three real HTTP captures added directly rather than copied: a 3-conversation exchange with one retransmit, a 10-packet gzip response carrying the TCP Timestamps option, and a 4 140-packet, 20-conversation stream — the largest fixture, and the one to time against |
 
-Several tests are parametrised over all of them, which is how the
+Several tests are parametrised over all of them — `ALL_CAPTURES` globs the
+directory, so a new fixture is swept the moment it lands — which is how the
 empty-session sequencing bug was caught.
 
 ## What the suite is organised around
@@ -81,7 +89,10 @@ empty-session sequencing bug was caught.
 | `test_convert.py` | Orchestration, stats accounting, the fixture sweep |
 | `test_provenance.py` | `Undecoded` blocks, `ts_first`, SYN records |
 | `test_sequenced.py` | Causal ordering and what may be claimed |
+| `test_checksum.py` | The `checksum` policy: what is dropped, cited and counted, and what is deliberately not read as a failure |
+| `test_truncation.py` | Snaplen-cut captures: the count, the Source comment, and corruption staying unreportable |
 | `test_cli.py` | Argument handling and output |
+| `test_package.py` | What the package declares about itself — the specification URL held to `zpf.SPEC_VERSION` |
 
 ## Accounting invariants
 
@@ -92,11 +103,12 @@ likely to catch a real regression:
 # every packet is converted, skipped, or filtered
 stats.converted + sum(stats.skipped.values()) + stats.filtered == total
 
-# every observed byte is written, discarded as overlap, or dropped as late
-payload_bytes + overlap_bytes + late_bytes == observed
+# every observed byte is written, discarded as overlap, dropped as late,
+# or — under checksum="drop" — discarded whole with its packet
+payload_bytes + overlap_bytes + late_bytes + checksum_dropped_bytes == observed
 
 # every discarded byte is either cited or counted as unlocatable
-cited + unlocatable_bytes == overlap_bytes + late_bytes
+cited + unlocatable_bytes == overlap_bytes + late_bytes + checksum_dropped_bytes
 ```
 
 Prefer adding to these over adding a test that pins a specific number.  A

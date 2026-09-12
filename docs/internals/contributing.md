@@ -94,29 +94,38 @@ includes a change to what a conversion *writes*, since a `.zpf` whose bytes
 move for the same input and the same options breaks anyone reproducing one.
 
 Releasing renames `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, adds a fresh empty
-`Unreleased`, updates the link definitions at the foot of the file, tags
-`vX.Y.Z`, and closes the release's issues.  Issues close at **release**, not
-at merge: work can sit merged on `main` under `Unreleased`, and closing early
-would claim a fix is delivered when it is not yet in any release.
+`Unreleased`, drops the `.devN` suffix from the version in `pyproject.toml`,
+updates the link definitions at the foot of the file, tags `vX.Y.Z`, and
+closes the release's issues and its milestone.  Issues close at **release**,
+not at merge: work can sit merged on `main` under `Unreleased`, and closing
+early would claim a fix is delivered when it is not yet in any release.
+
+The `.devN` suffix goes on as soon as the tree diverges from the last tag,
+not at the end: every file carries `produced_by = "zpfwire <version>"`, so a
+tree that behaves differently from a release while stamping its output with
+that release's number is a provenance error in the files themselves.
 
 ## Where the design lives
 
 | Document | What it is |
 |----------|------------|
-| `plans/PLAN.md` | The design and phasing this project was built to, with the upstream issues each phase depended on. Historical as much as current. |
+| `plans/PLAN.md` | The design and phasing this project was originally built to, with the upstream issues each phase depended on. |
+| `plans/V*-RELEASE-PLAN.md` | One per release: what it was measured against, the decisions taken, and where execution departed from the plan. |
 | `CLAUDE.md` | The standing rules, in the short form. |
 | `CHANGELOG.md` | What changed, per release, and which spec and sibling versions it was built against. |
 | `docs/internals/` | How it works now. |
 
-`plans/PLAN.md` records *why* things were sequenced the way they were, including
-decisions that were reversed.  When it disagrees with the code, the code is
-right and `plans/PLAN.md` wants updating.
+Everything under `plans/` records *why* — including decisions that were
+reversed — and is **historical, not normative**: a plan describes the world as
+it was when written, and nothing there is maintained after the work lands.
+Where a plan disagrees with the code, the code is right; where it disagrees
+with `CLAUDE.md` or `docs/`, those are.  See `plans/README.md`.
 
 ## Adding a transport
 
 A new transport is a {class}`~zpfwire.flow.FlowTracker` subclass and one entry
 in `convert._TRACKERS`.  {doc}`writer-mapping` has the checklist; `udp.py` is
-54 lines and shows how much the base class already does.
+some fifty lines and shows how much the base class already does.
 
 ## A note on what this project is for
 

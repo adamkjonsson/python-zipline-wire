@@ -10,13 +10,14 @@ opened.  All three exist because the alternative is losing something quietly.
 Every byte a conversion reads is either written to a record or counted:
 
 ```python
-stats.payload_bytes      # written
-stats.overlap_bytes      # discarded as an already-accepted retransmit
-stats.late_bytes         # arrived after its gap had been committed
+stats.payload_bytes            # written
+stats.overlap_bytes            # discarded as an already-accepted retransmit
+stats.late_bytes               # arrived after its gap had been committed
+stats.checksum_dropped_bytes   # discarded with its packet, under checksum="drop"
 ```
 
-Nothing else can happen to a stream byte.  The two loss counters are then
-*cited* wherever their position in the capture can be named:
+Nothing else can happen to a stream byte.  The three discard counters are
+then *cited* wherever their position in the capture can be named:
 
 ```python
 stats.undecoded_regions  # Undecoded blocks written
@@ -26,10 +27,11 @@ stats.unlocatable_bytes  # discarded bytes whose capture range cannot be named
 so that:
 
 ```
-cited bytes + unlocatable_bytes == overlap_bytes + late_bytes
+cited bytes + unlocatable_bytes == overlap_bytes + late_bytes + checksum_dropped_bytes
 ```
 
-That identity is asserted by the test suite on every fixture.
+That identity is asserted by the test suite on every fixture, under both
+checksum policies.
 
 ## Undecoded blocks
 
@@ -94,9 +96,7 @@ sequence number, so a gap is visible as arithmetic:
 
 ```python
 sent = [r for r in session.records()
-        if r.sender_pid == pid
-        and r.seq_start is not None
-        and not r.flags & zpf.RecordFlags.SYN]
+        if r.sender_pid == pid and r.seq_start is not None]
 
 for before, after in zip(sent, sent[1:]):
     expected = (before.seq_start + len(before.payload)) % (1 << 32)
@@ -106,15 +106,18 @@ for before, after in zip(sent, sent[1:]):
 
 Two details in that snippet are load-bearing.
 
-**Skip the SYN record.**  A SYN consumes a sequence number while carrying no
-payload, so a walk that includes it reports a phantom one-byte gap after every
-handshake.
-
 **Take the modulo.**  Sequence numbers wrap at 32 bits, and a long-lived
 stream will wrap.
 
+**The SYN record needs no special case.**  It sits at `isn + 1` with an empty
+payload, so the walk expects the first data record at `isn + 1` as well, and
+finds it there.  (It did need one once: a SYN record placed at the `isn`
+itself made the walk report a phantom one-byte gap after every handshake —
+see below.)
+
 Done that way, the count matches what the conversion reported — six gaps on
-`packet_loss.pcap`, from both directions, exactly `stats.gaps`.
+`packet_loss.pcap`, from both directions, exactly `stats.gaps`, with or
+without the handshake records in the walk.
 
 Declaring it again would be a second account of the same missing bytes with no
 rule for which to believe.  So `Undecoded` covers the opposite case — bytes
@@ -158,7 +161,7 @@ capture-sourced file can record a run's beginning.
 ## The handshake
 
 When the SYN is captured, each direction gets an empty record carrying the
-`SYN` flag at the initial sequence number:
+`SYN` flag at the stream origin — `isn + 1`, not the `isn` itself:
 
 ```python
 import zpf
@@ -172,9 +175,19 @@ for record in session.records():
 when; the first data record carries its own arrival time.  Without these
 records the moment the connection opened is nowhere in the file.
 
+The record shares its `seq_start` with the first data record, and that is the
+specification's shape rather than a coincidence: the SYN consumes a sequence
+number but delivers no byte, so the stream's first byte *is* `isn + 1`, and a
+record placed at the `isn` would sit one below the origin, in an offset space
+that has no negative offsets.  Two records at one `seq_start` are stored in
+the order they were produced; the SYN comes first.  A record at the `isn`
+was what this project wrote before python-zipline#63: the modular subtraction
+absorbed the negative offset rather than reporting it, the record landed at
+offset 2³²−1, and the stream measured that many bytes.  The writer now refuses
+it, and `FileReader.unplaceable` is where such a record would show.
+
 Only the first SYN of a direction gets one.  A retransmitted SYN re-opens
-nothing, and a second record at the same `seq_start` would break the
-ascending-order rule.
+nothing.
 
 A capture that starts mid-connection has no handshake to report, so it gets no
 SYN records — and correctly no `isn` either.
