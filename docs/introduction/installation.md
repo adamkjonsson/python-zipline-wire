@@ -1,6 +1,6 @@
 # Installation
 
-zpfwire requires **Python 3.11 or newer** — the floor its `zpf` dependency
+zpfwire requires **Python 3.10 or newer** — the floor its `zpf` dependency
 sets — and depends on two sibling projects:
 
 | Dependency | Import name | What it does here |

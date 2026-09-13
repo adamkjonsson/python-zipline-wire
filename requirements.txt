@@ -8,6 +8,7 @@
 
 # Testing
 pytest
+tomli; python_version < "3.11"
 
 # Code standard
 ruff

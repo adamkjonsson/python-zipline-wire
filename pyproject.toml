@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "zpfwire"
 version = "0.2.0"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 description = "Turn network captures into Zipline Payload Format (.zpf) files"
 authors = [ { name = "Adam Jonsson", email = "akj426@gmail.com" } ]
 readme = "README.md"
@@ -15,6 +15,7 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
