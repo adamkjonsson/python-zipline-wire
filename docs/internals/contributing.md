@@ -10,7 +10,7 @@ python3 -m venv .venv
 .venv/bin/pip install -e . -r requirements.txt
 ```
 
-Python ≥ 3.11 — the floor `zpf` sets.  The two siblings are installed editable
+Python ≥ 3.10 — the floor `zpf` sets.  The two siblings are installed editable
 from `../packeteer` and `../python-zipline`, so a change in either is picked
 up without reinstalling.
 

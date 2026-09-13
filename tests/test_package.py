@@ -9,10 +9,15 @@ which is what these tests hold.
 from __future__ import annotations
 
 import pathlib
-import tomllib
+import sys
 
 import pytest
 import zpf
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 PYPROJECT = pathlib.Path(__file__).parent.parent / "pyproject.toml"
 

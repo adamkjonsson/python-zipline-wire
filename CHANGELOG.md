@@ -33,6 +33,18 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+### Changed
+
+**Python 3.10 is now supported** — `requires-python` is `>=3.10`, down from
+`>=3.11` ([#20](https://github.com/adamkjonsson/python-zipline-wire/issues/20)).
+Nothing in `zpfwire` itself pinned the floor; it was inherited from `zpf`,
+which lowered its own in
+[python-zipline#67](https://github.com/adamkjonsson/python-zipline/issues/67).
+The one 3.11-ism here was `tomllib` in a test, which now falls back to `tomli`
+below 3.11 (a dev-only dependency; the runtime dependencies are unchanged).
+CI runs the suite on 3.10 as well.  Requires a `zpf` built from that change —
+python-zipline `main` after 0.3.0, until the next release.
+
 ## [0.2.0] - 2026-09-12
 
 Writes spec **v0.19** (`zpf.SPEC_VERSION == (0, 19)`), against packeteer
