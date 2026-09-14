@@ -33,7 +33,36 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+Writes spec **v0.20** (`zpf.SPEC_VERSION == (0, 20)`), up from `0.19`.
+Requires a `zpf` that implements it — python-zipline `main` after 0.3.0
+(`0.4.0.dev0`), until the next release; the dependency floor says so.
+
 ### Changed
+
+**Spec `0.20`.** A repair-and-vector release upstream: no option and no block
+was added, no body layout moved, and every `.zpf` this tree writes is
+byte-identical to `0.2.0`'s for the same input and options, apart from the
+version stamp in the File Header — which is the `0.x` rule: a `0.19` reader
+refuses these files, and a `0.20` reader refuses `0.2.0`'s.  The port is the
+stamp, the Specification URL, and one definition:
+
+- **`retransmit` names the sender's act, not the reassembler's**
+  ([zipline#142](https://github.com/adamkjonsson/zipline/issues/142), filed
+  from [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17)).
+  A copy of one transmission — a mirror port, a two-interface capture — is
+  not a retransmission and does not set the flag; what the reassembler
+  discarded, retransmitted or duplicated, is the `Undecoded` block it always
+  was.  This reassembler does not read the TCP Timestamps option and so cannot
+  tell the two apart; `0.20` says such a producer SHOULD treat every repeat as
+  a retransmission, which is exactly what it did before and does now, so no
+  flag moves.  The documentation now states the flag's meaning and that this
+  tree is on the fallback; leaving the fallback is #17, and is a `Breaking:`
+  change when it comes, since the flag will clear on a duplicated capture.
+- The other three `0.20` items do not reach a capture-sourced producer: the
+  pass-through hole obligation (zipline#133) binds files that cite a `.zpf`
+  input, the vector byte repairs (zipline#141) fix files this project never
+  vendored, and the manifest's `extents` key (zipline#140) is a suite
+  mechanism the siblings consume.
 
 **Python 3.10 is now supported** — `requires-python` is `>=3.10`, down from
 `>=3.11` ([#20](https://github.com/adamkjonsson/python-zipline-wire/issues/20)).
@@ -42,8 +71,7 @@ which lowered its own in
 [python-zipline#67](https://github.com/adamkjonsson/python-zipline/issues/67).
 The one 3.11-ism here was `tomllib` in a test, which now falls back to `tomli`
 below 3.11 (a dev-only dependency; the runtime dependencies are unchanged).
-CI runs the suite on 3.10 as well.  Requires a `zpf` built from that change —
-python-zipline `main` after 0.3.0, until the next release.
+CI runs the suite on 3.10 as well.
 
 ## [0.2.0] - 2026-09-12
 

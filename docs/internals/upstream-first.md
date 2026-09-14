@@ -66,7 +66,7 @@ release waits on.
 
 | Issue | Gap | Resolution |
 |-------|-----|-----------|
-| #142 | The `retransmit` flag's "retransmission/overlap" carries two readings — the sender resent, or the reassembler discarded — and a duplicated capture tells them apart | **Open** — what #17's first rule waits on |
+| #142 | The `retransmit` flag's "retransmission/overlap" carries two readings — the sender resent, or the reassembler discarded — and a duplicated capture tells them apart | Spec `0.20`: the flag names the sender's act; a producer that cannot tell a copy from a resend SHOULD treat it as one, which is what this tree does until #17 |
 
 Two of packeteer's fixes went further than asked — #73 added `iter_packets`
 in response to the composition problem, and #76 put the tick rate on the

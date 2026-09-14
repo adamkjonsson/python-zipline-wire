@@ -61,13 +61,20 @@ retransmission or the same transmission seen twice (a mirror port doubles
 every packet, and today each copy sets `retransmit`); whether late bytes were
 a delayed original or a loss recovered after the gap was committed; and, as
 PAWS, whether a segment that looks 2³¹ behind is really from after a sequence
-wrap.  This is [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
-held until a real capture exists of a retransmission carrying the option —
-none does, here or in packeteer's corpus
-([packeteer#149](https://github.com/adamkjonsson/packeteer/issues/149)) —
-and until the format says whether `retransmit` means the sender resent or
-the reassembler discarded
-([zipline#142](https://github.com/adamkjonsson/zipline/issues/142)).
+wrap.  This is [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17).
+It was held on two things, and both have since arrived: a real capture of a
+retransmission carrying the option
+([packeteer#149](https://github.com/adamkjonsson/packeteer/issues/149),
+`tcp_lossy_ts.pcap` and its duplicated twin `tcp_dup_ts.pcap` in packeteer
+0.15.0), and the format saying whether `retransmit` means the sender resent
+or the reassembler discarded
+([zipline#142](https://github.com/adamkjonsson/zipline/issues/142)).  Spec
+`0.20` answered the second: the flag names the **sender's** act, a copy of one
+transmission does not set it, and a producer that cannot tell the two apart
+SHOULD treat the repeat as a retransmission.  That last clause is what this
+reassembler does today, so its output is conformant — but the flag on a
+duplicated capture overstates what happened, and reading TSval is what stops
+it.
 
 **A fourth thing the option could settle needs a different reassembler:**
 which copy of disagreeing bytes the *receiver* kept, read from the TSval its

@@ -25,13 +25,13 @@ classifiers = [
 ]
 # Floors, not ranges: neither sibling is on PyPI, so these document what this
 # release was built against as much as they resolve anything.  Both are
-# required — the tree writes spec 0.19, which zpf 0.2.0 refuses at the version
-# gate, and asks packeteer whether a link type is decodable
-# (`supports_link_type`, new in 0.14.0) on top of the truncation and loopback
-# support it read since 0.12.0.
+# required — the tree writes spec 0.20, which zpf 0.3.0 does not implement
+# (python-zipline ported on `main` after 0.3.0, as 0.4.0.dev0), and asks
+# packeteer whether a link type is decodable (`supports_link_type`, new in
+# 0.14.0) on top of the truncation and loopback support it read since 0.12.0.
 dependencies = [
     "packeteer>=0.14.0",
-    "zpf>=0.3.0",
+    "zpf>=0.4.0.dev0",
 ]
 
 [tool.setuptools]
@@ -53,4 +53,4 @@ zpfwire = "zpfwire.__main__:main"
 
 [project.urls]
 Repository = "https://github.com/adamkjonsson/python-zipline-wire.git"
-Specification = "https://github.com/adamkjonsson/zipline/blob/v0.19/docs/zipline-payload-format.md"
+Specification = "https://github.com/adamkjonsson/zipline/blob/v0.20/docs/zipline-payload-format.md"
