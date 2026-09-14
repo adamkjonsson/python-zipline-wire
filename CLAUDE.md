@@ -7,7 +7,7 @@ It is glue: it owns no file format and no packet parser of its own.
 
 - **packeteer** (`../packeteer`) parses captures and packets.
 - **zpf** (`../python-zipline`, import name `zpf`) reads and writes `.zpf`
-  against **spec v0.19** — `zpf.SPEC_VERSION` is the single source of truth.
+  against **spec v0.20** — `zpf.SPEC_VERSION` is the single source of truth.
 - The specification itself lives in `../zipline/docs/zipline-payload-format.md`.
 
 The output of a capture conversion is a **capture-sourced, transport-layer**

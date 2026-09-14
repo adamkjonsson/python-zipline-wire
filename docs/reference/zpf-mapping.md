@@ -88,7 +88,7 @@ One per run of contiguous stream bytes, or one per datagram for UDP.
 | `payload` | The stream bytes |
 | `seq_start` | The absolute wire sequence number of the first payload byte (TCP) |
 | `ack` | The serial **maximum** of the acknowledgement numbers on the packets that contributed bytes (TCP) — acks are cumulative, so it is the strongest statement the run can make that is certainly true |
-| `flags` | `PSH` / `FIN` / `RST` / `URG` as seen; `RETRANSMIT` when overlap was resolved inside the record; `MESSAGE` for a UDP datagram |
+| `flags` | `PSH` / `FIN` / `RST` / `URG` as seen; `RETRANSMIT` when a repeated segment was discarded while the record was accumulating — see below; `MESSAGE` for a UDP datagram |
 | `decoder` | The reassembly decoder |
 
 One record is not a byte run: the **handshake record**, written once per
@@ -105,6 +105,18 @@ direction when its SYN was captured.
 The timestamp rule is the specification's, not a choice: a retransmit
 contributing no accepted bytes does not move it, because an acknowledgement
 can never precede arrival of what it acknowledges.
+
+`RETRANSMIT` is defined by the specification as the **sender's** act: the
+sender resent bytes of the record's range.  A copy of one transmission — a
+mirror port, a two-interface capture — is not a retransmission and does not
+set it.  This reassembler does not read the TCP Timestamps option, so it
+cannot tell the two apart, and it takes the specification's fallback for a
+producer in that position: every discarded repeat is treated as a
+retransmission, and sets the flag on whichever record was accumulating when
+it was discarded.  What was discarded is cited either way, as an `Undecoded`
+block naming the bytes in the capture — see {doc}`../guide/provenance`.
+Telling a duplicate from a resend is
+[#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17).
 
 ### Fields deliberately absent
 

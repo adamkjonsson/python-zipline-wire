@@ -16,7 +16,7 @@ It is glue, and deliberately so:
   mapping onto the specification's model.
 
 **Status: early.** The format itself is `0.x` and says it is not ready for
-production; this is a first implementation against `0.19`.
+production; this is a first implementation against `0.20`.
 
 Full documentation lives in `docs/` — build it with `cd docs && make html`.
 This README is the short version.
@@ -161,9 +161,11 @@ is why it is opt-in in a format whose point is streaming.
 - **Reading the TCP options.** They are parsed and carried on each packet,
   but the reassembler does not yet use them — neither SACK for loss inference
   nor the Timestamps option, which would tell a mirror port's duplicate from
-  a real retransmission. The second is
-  [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
-  held until a real capture exists to validate it against.
+  a real retransmission. Spec `0.20` defines `retransmit` as the sender's
+  act, so a duplicate should not set it; until the option is read, every
+  discarded repeat is treated as a retransmission, which is the fallback the
+  specification allows. The second is
+  [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17).
 
 `docs/reference/limits.md` tracks these, and says which are permanent.
 
