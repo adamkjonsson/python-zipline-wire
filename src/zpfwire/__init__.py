@@ -30,6 +30,7 @@ from zpfwire.flow import (
     END_CAPTURE_END,
     END_TIMEOUT,
     REASON_CHECKSUM,
+    REASON_DUPLICATE,
     REASON_LATE,
     REASON_OVERLAP,
     FlowKey,
@@ -45,7 +46,7 @@ from zpfwire.options import (
 )
 from zpfwire.stats import ConversionStats
 from zpfwire.survey import FlowSummary, survey
-from zpfwire.tcp import END_FIN, END_RST, TcpFlow
+from zpfwire.tcp import END_FIN, END_RST, TS_ABSENT, TS_STALE, TcpFlow
 from zpfwire.udp import UdpFlow
 
 __version__ = tool_version()
@@ -59,10 +60,13 @@ __all__ = [
     "END_TIMEOUT",
     "OVERLAP_POLICIES",
     "REASON_CHECKSUM",
+    "REASON_DUPLICATE",
     "REASON_LATE",
     "REASON_OVERLAP",
     "TICK_HZ_NS",
     "TICK_HZ_US",
+    "TS_ABSENT",
+    "TS_STALE",
     "CaptureReader",
     "ConversionStats",
     "FlowKey",

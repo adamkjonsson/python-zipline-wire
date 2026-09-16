@@ -41,6 +41,32 @@ def test_convert_writes_a_valid_file(tmp_path: pathlib.Path, monkeypatch: pytest
     assert "sessions" in capsys.readouterr().out
 
 
+def test_the_summary_says_how_much_of_a_capture_was_doubled(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A mirrored capture is worth one line to the user, and its shape is the figure."""
+    out = tmp_path / "out.zpf"
+    run(monkeypatch, "convert", str(CAPTURES / "tcp_dup_ts.pcap"), "-o", str(out))
+
+    text = capsys.readouterr().out
+    assert "duplicates   10 of 154 packets were copies, 5092 bytes (discarded)" in text
+    assert "ts fallback" not in text
+
+
+def test_the_summary_says_when_a_flag_rests_on_the_fallback(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    out = tmp_path / "out.zpf"
+    run(monkeypatch, "convert", str(CAPTURES / "retransmission.pcap"), "-o", str(out))
+
+    text = capsys.readouterr().out
+    assert "overlap      8875 bytes (retransmitted, discarded)" in text
+    assert "ts fallback  12 repeat(s) treated as retransmitted without timestamp evidence" in text
+    assert "(absent: 12)" in text
+
+
 def test_convert_is_quiet_on_request(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
                                      capsys: pytest.CaptureFixture[str]):
     out = tmp_path / "out.zpf"

@@ -196,19 +196,70 @@ ReassemblyOptions(flush_timeout=-1)
 
 The accepted policies are in `OVERLAP_POLICIES` and `CHECKSUM_POLICIES`.
 
-## Reading what a policy cost
+## What the Timestamps option decides
 
-Three counters report what the policy threw away:
+None of the settings above is an option for this: the reassembler reads the
+TCP Timestamps option (RFC 7323) whenever a connection negotiated it, and
+falls back to the conservative reading when it did not.  The option puts the
+sender's clock on every segment, and the property reassembly cares about is
+that **every transmission of a byte range gets its own value, and a copy of
+one transmission does not**.
+
+**A repeated segment is a copy, not a resend**, when it carries the same
+TSval as the transmission it repeats and nothing from the peer arrived
+between the two.  That is what a mirror port, a two-interface capture or a
+veth pair produces: every packet twice, a microsecond apart, the sender
+having sent once.  Such a copy is discarded and cited as
+`duplicate-discarded`, counted in `stats.duplicates`, and — the part that
+reaches the file — **does not set `retransmit`** on the record covering its
+bytes.  The specification names that flag as the sender's act, and a mirror
+is not the sender.
+
+A repeat with a **later** TSval is a retransmission, cited
+`overlap-discarded` and flagged as before.  So is a repeat with the *same*
+TSval that has a packet from the peer between it and its original: a fast
+retransmit is triggered by the peer's duplicate ACKs, and on a stack whose
+timestamp tick is coarser than its round trip the resend can land inside the
+original's tick — the ACKs between them are what tells it from a copy.
+
+A repeat that **cannot be judged** is treated as a retransmission, which is
+what the specification asks of a producer that cannot tell, and the reason
+it could not be judged is counted:
 
 ```python
-stats.gaps           # records written past bytes that never arrived
-stats.late_bytes     # bytes that arrived after their gap had closed
-stats.overlap_bytes  # retransmits discarded as already-accepted
+stats.ts_fallback["absent"]  # one side, or both, carried no option
+stats.ts_fallback["stale"]   # the original had aged out of the reassembler's memory
+```
+
+The memory is bounded by `reorder_window` bytes, so a copy of something
+older than that is `stale`; the newest transmission is never forgotten, so
+the copy that follows its original is always judged.  A non-zero
+`ts_fallback` means some `retransmit` flags in the file rest on the fallback
+rather than on evidence — which is exactly what every file written before
+this option was read rested on.
+
+The one shape this cannot separate is a **one-way capture of a coarse-tick
+stack**: with the peer's ACKs absent from the file and the resend inside its
+original's tick, a fast retransmit looks like a copy.  See
+{doc}`../reference/limits`.
+
+## Reading what a policy cost
+
+Four counters report what the policy threw away:
+
+```python
+stats.gaps             # records written past bytes that never arrived
+stats.late_bytes       # bytes that arrived after their gap had closed
+stats.overlap_bytes    # retransmits discarded as already-accepted
+stats.duplicate_bytes  # copies of one transmission, seen twice by the capture point
 ```
 
 `overlap_bytes` is normal — it is what reassembly is *for*, and those bytes
-did reach the output the first time they were seen.  `gaps` and `late_bytes`
-are the ones to watch: they mean the policy stopped waiting.
+did reach the output the first time they were seen.  `duplicate_bytes` says
+something about the capture rather than the connection: set
+`stats.duplicates` beside `stats.packets` and it says how much of the file
+is doubled.  `gaps` and `late_bytes` are the ones to watch: they mean the
+policy stopped waiting.
 
 ```python
 if not stats.lossless:

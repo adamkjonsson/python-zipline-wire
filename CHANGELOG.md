@@ -51,7 +51,56 @@ Requires a `zpf` that implements it — python-zipline `main` after 0.3.0
 (`0.4.0.dev0`), until the next release; the dependency floor says so.
 Requires packeteer **0.15.0**, up from `0.14.0`.
 
+### Added
+
+- **The TCP Timestamps option is read to tell a duplicate from a
+  retransmission**
+  ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
+  item 1).  A repeated segment is a *duplicate* — the same transmission seen
+  twice by the capture point, as a mirror port, a two-interface capture or a
+  veth pair shows every packet — when it carries the same TSval as the
+  transmission it repeats and nothing from the peer arrived between the two.
+  It is discarded like any repeat, but cited as `duplicate-discarded`
+  (`REASON_DUPLICATE`), counted in the new `ConversionStats.duplicates`
+  (segments) and `duplicate_bytes`, and does **not** set `retransmit` on the
+  record covering its bytes.  A repeat with a later TSval, or with a peer
+  packet between the copies — a fast retransmit is triggered by the peer's
+  duplicate ACKs, which is what separates it from a copy on a stack whose
+  timestamp tick is coarser than its round trip — is a retransmission, as
+  before.  Measured on packeteer's real corpus: the 10 mirror duplicates in
+  `tcp_dup_ts.pcap` are all duplicates, and the 36 real resends across
+  `tcp_lossy_ts`, `tcp_reorder_ts`, `tcp_corrupt_ts` and `tcp_wrap_ts` are
+  all retransmissions, none ambiguous.
+- **`ConversionStats.ts_fallback`**, a `Counter` of how often a repeat could
+  *not* be judged and was treated as a retransmission — the conservative
+  reading spec `0.20` asks of a producer that cannot tell — keyed by why:
+  `TS_ABSENT` when either side carried no option, `TS_STALE` when the
+  transmission it repeated had aged out of the reassembler's memory, which
+  is bounded by `reorder_window` bytes (and never emptied, so the copy that
+  follows its original is always judged).  Non-zero means some `retransmit`
+  flags in the file rest on the fallback rather than on evidence; every
+  file written before this release rested on it entirely.
+- The summary prints a `duplicates` line — `10 of 154 packets were copies,
+  5092 bytes (discarded)` — since a doubled capture is worth one line to the
+  user, and a `ts fallback` line when any repeat went unjudged.  The
+  `overlap` line now says `retransmitted`.
+
 ### Changed
+
+- **Breaking: `retransmit` clears on a duplicated capture.**  A `.zpf`
+  written from a capture in which the same transmission appears twice with
+  the Timestamps option — a mirror port's file — carries `retransmit` on no
+  record that only a copy touched, where `0.2.0` set it on every such
+  record; the `Undecoded` blocks for the copies read `duplicate-discarded`
+  rather than `overlap-discarded`.  Of the twenty-two fixtures exactly one
+  moves, `tcp_dup_ts.pcap` (3 of 7 records flagged → 0); the sixteen that
+  predate the Timestamps work are pinned and byte-for-byte unchanged, and
+  the five other real Timestamps captures keep every flag they had, since
+  every repeat in them is a real resend.  A caller reproducing a `0.2.0`
+  file of a mirror capture will see the flag gone and the reason renamed —
+  and the file is now what the specification says such a file should be.
+  `ReassemblyOptions` gains no field, so `params_digest()` is unchanged; the
+  Decoder Descriptor's version is what says the rule moved.
 
 **The packeteer floor is `0.15.0`**, up from `0.14.0`.  Nothing at runtime
 needs it — the option has been parsed onto every `PacketView` since `0.14.0`
@@ -75,10 +124,10 @@ stamp, the Specification URL, and one definition:
   discarded, retransmitted or duplicated, is the `Undecoded` block it always
   was.  This reassembler does not read the TCP Timestamps option and so cannot
   tell the two apart; `0.20` says such a producer SHOULD treat every repeat as
-  a retransmission, which is exactly what it did before and does now, so no
-  flag moves.  The documentation now states the flag's meaning and that this
-  tree is on the fallback; leaving the fallback is #17, and is a `Breaking:`
-  change when it comes, since the flag will clear on a duplicated capture.
+  a retransmission, which is exactly what it did before, so the port itself
+  moved no flag.  Leaving the fallback is #17, and it lands in this same
+  release — see the **Breaking** entry below, which is where the flag does
+  move.
 - The other three `0.20` items do not reach a capture-sourced producer: the
   pass-through hole obligation (zipline#133) binds files that cite a `.zpf`
   input, the vector byte repairs (zipline#141) fix files this project never

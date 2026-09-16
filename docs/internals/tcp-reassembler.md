@@ -39,11 +39,22 @@ One `_Stream` per direction, keyed by the sender's endpoint:
 | `pending_bytes`, `oldest_pending_ts` | What the flush policy measures |
 | `run` | The record currently being accumulated |
 | `committed_gaps` | Ranges we gave up on, so late arrivals can be told from retransmits |
+| `recent`, `recent_bytes` | The transmissions accepted most recently, as `(seq, end, TSval, peer_count)`, bounded by `reorder_window` bytes but never emptied |
+| `peer_count` | Packets seen from the other direction, whatever they carried |
+| `ts_recent` | RFC 7323's `TS.Recent`: the TSval of the last segment accepted *in order at arrival* |
 
 `committed_gaps` is the one that earns its keep.  Without it, bytes arriving
 after their gap closed would be counted as ordinary duplicates — and a loss
 caused by our own timeout would be indistinguishable from a harmless
 retransmit.
+
+`recent` is what lets a repeat be judged: the entry covering its range says
+what TSval the bytes were first sent with and how many peer packets had been
+seen by then.  It is bounded by `reorder_window` so memory is bounded by the
+same number the hold is, and it never drops its newest entry, so the copy
+that lands a microsecond after its original — the mirror-port shape — can
+always be judged whatever the window.  A repeat of something older is
+`stale`.
 
 ## Accepting a segment
 
@@ -72,6 +83,31 @@ makes `Undecoded` blocks possible — see {doc}`writer-mapping`.
 
 `_drain` then absorbs any held segments the new bytes made contiguous, which
 is where reordering is actually undone.
+
+### Judging a repeat
+
+Every discard of already-seen bytes — cases 1 and 2 above, a repeat of a
+held segment in `_hold`, and the trim of a held segment in `_drain` — goes
+through `_judge`, which returns one of four verdicts:
+
+| Verdict | When | Counted as | Cited as | Flags the run |
+|---------|------|------------|----------|---------------|
+| duplicate | both carried the option, same TSval, `peer_count` unchanged, range fully covered by `recent` | `duplicate_bytes` | `duplicate-discarded` | no |
+| retransmit | option on both, and either a different TSval or a peer packet between | `overlap_bytes` | `overlap-discarded` | yes |
+| `absent` | either side without the option | `overlap_bytes`, `ts_fallback["absent"]` | `overlap-discarded` | yes |
+| `stale` | option on both, but the range is not covered by `recent` | `overlap_bytes`, `ts_fallback["stale"]` | `overlap-discarded` | yes |
+
+The third clause of *duplicate* is the one that answers the coarse-tick
+objection: a fast retransmit is triggered by the peer's duplicate ACKs, which
+sit in the capture between the original and the resend, so `peer_count`
+differs; a mirror copy follows its original with nothing between.  Content
+is not compared — a resend carries the same bytes as its original unless one
+was corrupted in flight, and corruption is the checksum policy's business.
+
+`_judge` is the only place the Timestamps option is *consulted*; `_tsval` is
+the only place it is *read*.  A repeat of a held segment is judged against
+the `_Pending` directly rather than through `recent`, since the held segment
+is the transmission the repeat may be a copy of.
 
 ## Committing a gap
 
@@ -156,7 +192,20 @@ nothing.
 
 ## Where to be careful
 
-**Sequence comparisons.**  Use `_delta`, never `<`.
+**Sequence comparisons.**  Use `_delta`, never `<`.  TSvals too: they are
+32-bit and wrap, and `_delta` is the comparison for both.
+
+**`ts_recent` moves only on in-order arrival.**  It is updated in `_accept`
+when `seq == stream.next_seq` *as the segment arrives*, and never from a
+segment drained out of the hold.  That is the receiver's rule (RFC 7323
+§4.3, `SEG.SEQ <= Last.ACK.sent`): while a hole is open the receiver keeps
+acknowledging the same byte, so `TS.Recent` stays at the last in-order
+segment, and a delayed original that finally fills the hole — with a TSval
+older than the segments that passed it — is *not* rejected.  A real receiver
+kept exactly those segments in `tcp_reorder_ts.pcap` and D-SACKed their
+resends; a reassembler that updated `ts_recent` from out-of-order data would
+disagree with the stack it emulates.  Nothing reads `ts_recent` yet; PAWS
+will, and this is the invariant it rests on.
 
 **The `_stamp` helper.**  Draining a held segment appends it with the *held*
 packet's timestamp, flags and ack, not the arriving packet's, so a run's

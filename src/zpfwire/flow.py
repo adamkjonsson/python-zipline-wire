@@ -18,6 +18,7 @@ __all__ = [
     "END_CAPTURE_END",
     "END_TIMEOUT",
     "REASON_CHECKSUM",
+    "REASON_DUPLICATE",
     "REASON_LATE",
     "REASON_OVERLAP",
     "FlowKey",
@@ -26,7 +27,19 @@ __all__ = [
 ]
 
 REASON_OVERLAP = "overlap-discarded"
-"""Undecoded reason for bytes dropped because that range was already accepted."""
+"""Undecoded reason for retransmitted bytes dropped because the range was already accepted.
+
+The sender resent; the record covering the range carries ``retransmit``.
+"""
+
+REASON_DUPLICATE = "duplicate-discarded"
+"""Undecoded reason for a copy of a transmission already accepted.
+
+The capture point saw one packet twice — a mirror port, a two-interface
+capture — and the sender resent nothing, so no record carries ``retransmit``
+on its account.  Told apart from :data:`REASON_OVERLAP` by the TCP Timestamps
+option; see :class:`~zpfwire.tcp.TcpFlow`.
+"""
 
 REASON_LATE = "late-arrival"
 """Undecoded reason for bytes that arrived after their gap had been committed."""
@@ -143,7 +156,8 @@ def cite_undecoded(
             name.
         length: How many bytes the region covers.
         reason: Why the region went undecoded; see :data:`REASON_OVERLAP`,
-            :data:`REASON_LATE` and :data:`REASON_CHECKSUM`.
+            :data:`REASON_DUPLICATE`, :data:`REASON_LATE` and
+            :data:`REASON_CHECKSUM`.
         decoder: The stage that discarded the bytes.
         stats: Tally to record the block, or the failure to place it, in.
 
@@ -217,8 +231,8 @@ class FlowTracker(ABC):
             off_start: Byte offset of the region in the capture file, or
                 ``None`` when it cannot be located.
             length: How many bytes the region covers.
-            reason: Why the region went undecoded; see :data:`REASON_OVERLAP`
-                and :data:`REASON_LATE`.
+            reason: Why the region went undecoded; see :data:`REASON_OVERLAP`,
+                :data:`REASON_DUPLICATE` and :data:`REASON_LATE`.
 
         """
         cite_undecoded(

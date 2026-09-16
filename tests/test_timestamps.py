@@ -10,16 +10,55 @@ against a baseline rather than a hope.
 
 from __future__ import annotations
 
+import io
 import pathlib
 
 import pytest
+import zpf
 from helpers import CAPTURES, to_zpf
+from packeteer.generate.tcp_stream import TCPStreamConfig, generate_tcp_stream
+from packeteer.pcap import write_pcap
 
-from zpfwire import ReassemblyOptions
+from zpfwire import CaptureReader, ReassemblyOptions
 
 NO_HOLD = ReassemblyOptions(reorder_window=0)
 """Give up on every hole at once — the policy that makes a receiver-side
 capture show its gaps, since the default window absorbs all of them."""
+
+REAL = [
+    "tcp_corrupt_ts.pcap",
+    "tcp_dup_ts.pcap",
+    "tcp_gap_ts.pcap",
+    "tcp_lossy_ts.pcap",
+    "tcp_reorder_ts.pcap",
+    "tcp_wrap_ts.pcap",
+]
+
+
+def flagged(out: object) -> int:
+    """How many records across the file carry ``retransmit``."""
+    return sum(
+        1 for s in out.sessions for r in s.records  # type: ignore[attr-defined]
+        if r.flags & zpf.RecordFlags.RETRANSMIT
+    )
+
+
+def generated(tmp_path: pathlib.Path, **impairments: float) -> object:
+    """Convert a seeded 40-segment stream under the given impairments.
+
+    Every connection packeteer generates negotiates the option, a resend is
+    rebuilt with the clock at resend time, and a duplicate is the packet
+    again with only its capture time moved — so the generator produces both
+    shapes on demand, reproducibly.
+    """
+    stream = generate_tcp_stream(
+        client_ip="10.0.0.1", server_ip="10.0.0.2", num_data_packets=40,
+        config=TCPStreamConfig(seed=7, **impairments),
+    )
+    buf = io.BytesIO()
+    write_pcap(stream.to_pcap_tuples(), file_object=buf)
+    buf.seek(0)
+    return to_zpf(buf, tmp_path)
 
 
 @pytest.mark.parametrize("options", [None, NO_HOLD], ids=["default", "no-hold"])
@@ -56,3 +95,93 @@ def test_a_stream_that_wraps_is_placeable(
     transferred = 65536 if options is None else 65536 - 4 * 524
     assert len(session.stream(server.participant_id)) == transferred
     assert out.stats.late_bytes == (0 if options is None else 8 * 524)
+
+
+# ── duplicate or retransmission ─────────────────────────────────────────
+
+
+def test_a_mirrored_capture_sets_no_retransmit_flag(tmp_path: pathlib.Path):
+    """``tcp_dup_ts``: 10 segments seen twice, identical TSval, nothing between.
+
+    Before the option was read every one set ``retransmit`` on its record —
+    3 of 7 records — for a session in which the sender resent nothing.
+    """
+    out = to_zpf(CAPTURES / "tcp_dup_ts.pcap", tmp_path)
+
+    assert flagged(out) == 0
+    assert out.stats.duplicates == 10
+    assert out.stats.duplicate_bytes == 5092
+    assert out.stats.overlap_bytes == 0
+    assert [u.reason for u in out.undecoded] == ["duplicate-discarded"] * 10
+    assert out.stats.ts_fallback == {}
+
+
+@pytest.mark.parametrize(("name", "flags", "overlap"), [
+    ("tcp_lossy_ts.pcap", 7, 8384),
+    ("tcp_reorder_ts.pcap", 4, 5240),
+    ("tcp_corrupt_ts.pcap", 2, 2620),
+    ("tcp_wrap_ts.pcap", 1, 2096),
+])
+def test_a_real_resend_keeps_its_flag(
+    tmp_path: pathlib.Path, name: str, flags: int, overlap: int,
+):
+    """Every resend in the corpus carries a later TSval, and none is a duplicate.
+
+    ``tcp_reorder_ts`` is the guard against over-correcting: its resends are
+    *spurious* — the originals arrived, late — but the sender did resend, and
+    that is what the flag says.
+    """
+    out = to_zpf(CAPTURES / name, tmp_path)
+
+    assert flagged(out) == flags
+    assert out.stats.duplicates == 0
+    assert out.stats.overlap_bytes == overlap
+    assert out.stats.ts_fallback == {}
+
+
+@pytest.mark.parametrize("name", REAL)
+def test_every_repeat_in_the_real_corpus_is_judged_by_evidence(
+    tmp_path: pathlib.Path, name: str,
+):
+    """Both sides captured, every segment carrying the option: no fallback."""
+    out = to_zpf(CAPTURES / name, tmp_path)
+
+    assert out.stats.ts_fallback == {}
+
+
+@pytest.mark.parametrize("name", REAL)
+def test_the_accounting_identity_holds_with_duplicates(tmp_path: pathlib.Path, name: str):
+    observed = sum(len(p.payload) for p in CaptureReader(path=CAPTURES / name))
+    out = to_zpf(CAPTURES / name, tmp_path)
+    stats = out.stats
+
+    assert (
+        stats.payload_bytes + stats.overlap_bytes + stats.duplicate_bytes + stats.late_bytes
+        == observed
+    )
+
+
+def test_generated_duplicates_are_all_duplicates(tmp_path: pathlib.Path):
+    out = generated(tmp_path, duplicate_probability=0.3)
+
+    assert out.stats.duplicates == 18
+    assert out.stats.overlap_bytes == 0
+    assert flagged(out) == 0
+    assert out.stats.ts_fallback == {}
+
+
+def test_generated_retransmissions_are_all_retransmissions(tmp_path: pathlib.Path):
+    out = generated(tmp_path, retransmission_probability=0.3)
+
+    assert out.stats.duplicates == 0
+    assert out.stats.overlap_bytes == 12028
+    assert out.stats.ts_fallback == {}
+
+
+def test_a_duplicated_retransmission_is_both(tmp_path: pathlib.Path):
+    """``DUP[RETRANS[n]]``: the resend is a resend, its copy is a copy."""
+    out = generated(tmp_path, retransmission_probability=0.3, duplicate_probability=0.3)
+
+    assert out.stats.duplicates == 16
+    assert out.stats.overlap_bytes == 13369
+    assert out.stats.ts_fallback == {}

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import zpf
 from packeteer.generate import PacketBuilder
-from packeteer.generate.tcp import TCP_ACK, TCP_FIN, TCP_PSH, TCP_RST, TCP_SYN
+from packeteer.generate.tcp import TCP_ACK, TCP_FIN, TCP_PSH, TCP_RST, TCP_SYN, TCPOptions
 from packeteer.pcap import LINKTYPE_ETHERNET, SNAPLEN_UNLIMITED, write_pcap
 
 from zpfwire import ConversionStats, capture_to_zpf
@@ -64,18 +64,21 @@ def tcp_packet(
     flags: int = TCP_ACK,
     payload: bytes = b"",
     checksum: int | None = None,
+    timestamps: tuple[int, int] | None = None,
 ) -> bytes:
     """Build one Ethernet/IPv4/TCP frame.
 
     *checksum* overrides the computed value, which is the only way to write a
-    segment that was corrupted on the wire.
+    segment that was corrupted on the wire.  *timestamps* is the ``(TSval,
+    TSecr)`` pair of the Timestamps option, absent by default.
     """
+    options = None if timestamps is None else TCPOptions(timestamps=timestamps)
     builder = (
         PacketBuilder()
         .ethernet(src_mac="00:00:00:00:00:01", dst_mac="00:00:00:00:00:02")
         .ip(src=src, dst=dst)
         .tcp(src_port=src_port, dst_port=dst_port, seq=seq, ack=ack, flags=flags,
-             checksum=checksum)
+             checksum=checksum, options=options)
     )
     if payload:
         builder = builder.payload(data=payload)
@@ -180,6 +183,7 @@ class Seg:
         data: Payload bytes.
         flags: TCP flags to set in addition to ACK.
         from_client: Direction the segment travels.
+        timestamps: The ``(TSval, TSecr)`` pair, or ``None`` for no option.
 
     """
 
@@ -190,11 +194,13 @@ class Seg:
         *,
         flags: int = TCP_ACK,
         from_client: bool = True,
+        timestamps: tuple[int, int] | None = None,
     ) -> None:
         self.seq = seq
         self.data = data
         self.flags = flags
         self.from_client = from_client
+        self.timestamps = timestamps
 
     def frame(self, *, ack: int = 0) -> bytes:
         """Render this segment as a frame."""
@@ -203,11 +209,13 @@ class Seg:
                 src=CLIENT_IP, dst=SERVER_IP,
                 src_port=CLIENT_PORT, dst_port=SERVER_PORT,
                 seq=self.seq, ack=ack, flags=self.flags, payload=self.data,
+                timestamps=self.timestamps,
             )
         return tcp_packet(
             src=SERVER_IP, dst=CLIENT_IP,
             src_port=SERVER_PORT, dst_port=CLIENT_PORT,
             seq=self.seq, ack=ack, flags=self.flags, payload=self.data,
+            timestamps=self.timestamps,
         )
 
 

@@ -162,7 +162,12 @@ def test_every_observed_byte_is_written_or_counted(tmp_path: pathlib.Path):
     ]), tmp_path)
 
     observed = 4 + 4 + 4 + 8
-    accounted = out.stats.payload_bytes + out.stats.overlap_bytes + out.stats.late_bytes
+    accounted = (
+        out.stats.payload_bytes
+        + out.stats.overlap_bytes
+        + out.stats.duplicate_bytes
+        + out.stats.late_bytes
+    )
     assert accounted == observed
     assert out.only.stream(0) == b"aaaabbbbcc"
 
@@ -385,3 +390,185 @@ def test_a_fin_carried_with_data_flags_the_record(tmp_path: pathlib.Path):
     out = to_zpf(tcp_segments([Seg(1, b"last", flags=TCP_FIN | TCP_PSH)]), tmp_path)
 
     assert out.only.by(0)[0].flags & zpf.RecordFlags.FIN
+
+
+# ── the Timestamps option: copy or resend ───────────────────────────────
+#
+# A repeat is a *duplicate* — the same transmission seen twice by the capture
+# point — only when both copies carry the option, their TSvals are equal, and
+# nothing from the peer arrived in between.  Anything else is a
+# retransmission, which is what the specification asks a producer that cannot
+# tell to say.  One test per clause failing, one per site where a repeat is
+# judged, and the two fallbacks counted by name.
+
+
+def _flagged(out: object) -> list[bool]:
+    """Whether each record of the only session carries ``retransmit``."""
+    return [bool(r.flags & zpf.RecordFlags.RETRANSMIT) for r in out.only.records]  # type: ignore[attr-defined]
+
+
+def _reasons(out: object) -> list[str]:
+    return [u.reason for u in out.undecoded]  # type: ignore[attr-defined]
+
+
+def test_a_copy_with_the_same_tsval_and_nothing_between_is_a_duplicate(
+    tmp_path: pathlib.Path,
+):
+    """The mirror-port shape: the sender resent nothing, so no flag."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path)
+
+    assert out.only.stream(0) == b"aaaabbbb"
+    assert out.stats.duplicates == 1
+    assert out.stats.duplicate_bytes == 4
+    assert out.stats.overlap_bytes == 0
+    assert _reasons(out) == ["duplicate-discarded"]
+    assert _flagged(out) == [False]
+    assert out.stats.ts_fallback == {}
+
+
+def test_a_peer_packet_between_the_copies_makes_it_a_retransmission(
+    tmp_path: pathlib.Path,
+):
+    """Same TSval, but the peer's ACK sits between: a fast retransmit inside one tick."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"", from_client=False, timestamps=(500, 100)),
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path)
+
+    assert out.stats.duplicates == 0
+    assert out.stats.overlap_bytes == 4
+    assert _reasons(out) == ["overlap-discarded"]
+    assert _flagged(out) == [True]
+    assert out.stats.ts_fallback == {}
+
+
+def test_a_later_tsval_is_a_retransmission_however_close_it_follows(
+    tmp_path: pathlib.Path,
+):
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(140, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(141, 0)),
+    ]), tmp_path)
+
+    assert out.stats.duplicates == 0
+    assert out.stats.overlap_bytes == 4
+    assert _flagged(out) == [True]
+    assert out.stats.ts_fallback == {}
+
+
+def test_a_repeat_without_the_option_falls_back_and_says_so(tmp_path: pathlib.Path):
+    """Neither side carries it: the conservative reading, counted as ``absent``."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa"),
+        Seg(1, b"aaaa"),
+        Seg(5, b"bbbb", flags=TCP_PSH),
+    ]), tmp_path)
+
+    assert out.stats.overlap_bytes == 4
+    assert _flagged(out) == [True]
+    assert out.stats.ts_fallback == {"absent": 1}
+
+
+def test_a_repeat_with_the_option_on_one_side_only_is_absent_too(tmp_path: pathlib.Path):
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa"),
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path)
+
+    assert out.stats.overlap_bytes == 4
+    assert out.stats.ts_fallback == {"absent": 1}
+
+
+def test_a_repeat_of_something_forgotten_falls_back_as_stale(tmp_path: pathlib.Path):
+    """The memory of accepted transmissions is bounded by ``reorder_window``.
+
+    With a four-byte window the first segment is forgotten once the second is
+    accepted, so a copy of it — same TSval, nothing between — cannot be
+    judged and is treated as a retransmission, counted as ``stale``.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", timestamps=(101, 0)),
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", flags=TCP_PSH, timestamps=(102, 0)),
+    ]), tmp_path, options=ReassemblyOptions(reorder_window=4))
+
+    assert out.only.stream(0) == b"aaaabbbbcccc"
+    assert out.stats.duplicates == 0
+    assert out.stats.overlap_bytes == 4
+    assert out.stats.ts_fallback == {"stale": 1}
+
+
+def test_the_newest_transmission_is_never_forgotten(tmp_path: pathlib.Path):
+    """Even at ``reorder_window=0`` the copy that follows its original is judged."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path, options=ReassemblyOptions(reorder_window=0))
+
+    assert out.stats.duplicates == 1
+    assert out.stats.ts_fallback == {}
+
+
+def test_a_leading_trim_is_judged_too(tmp_path: pathlib.Path):
+    """Site two: a segment that re-covers accepted bytes and adds new ones."""
+    resend = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(3, b"aabb", flags=TCP_PSH, timestamps=(140, 0)),
+    ]), tmp_path / "resend")
+    copy = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(3, b"aabb", flags=TCP_PSH, timestamps=(100, 0)),
+    ]), tmp_path / "copy")
+
+    assert resend.only.stream(0) == copy.only.stream(0) == b"aaaabb"
+    assert resend.stats.overlap_bytes == 2 and _flagged(resend) == [True]
+    assert copy.stats.duplicate_bytes == 2 and _flagged(copy) == [False]
+
+
+def test_a_repeat_of_a_held_segment_is_judged_against_it(tmp_path: pathlib.Path):
+    """Site three: the copy arrives while its original waits behind a hole."""
+    copy = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", timestamps=(102, 0)),
+        Seg(9, b"cccc", timestamps=(102, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(103, 0)),
+    ]), tmp_path / "copy")
+    resend = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", timestamps=(102, 0)),
+        Seg(1, b"", from_client=False, timestamps=(500, 100)),
+        Seg(9, b"cccc", timestamps=(102, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(103, 0)),
+    ]), tmp_path / "resend")
+
+    assert copy.only.stream(0) == resend.only.stream(0) == b"aaaabbbbcccc"
+    assert copy.stats.duplicates == 1 and _flagged(copy) == [False]
+    assert resend.stats.overlap_bytes == 4 and _flagged(resend) == [True]
+
+
+def test_a_trim_while_draining_is_judged_against_the_fill(tmp_path: pathlib.Path):
+    """Site four: the fill re-covers the head of a held segment."""
+    resend = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(7, b"bbcc", timestamps=(101, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(140, 0)),
+    ]), tmp_path / "resend")
+    copy = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(7, b"bbcc", timestamps=(101, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path / "copy")
+
+    assert resend.only.stream(0) == copy.only.stream(0) == b"aaaabbbbcc"
+    assert resend.stats.overlap_bytes == 2 and _flagged(resend) == [True]
+    assert copy.stats.duplicate_bytes == 2 and _flagged(copy) == [False]

@@ -14,8 +14,9 @@ class ConversionStats:
 
     Everything a capture contains is either converted or counted here.  The
     loss-bearing fields — :attr:`skipped`, :attr:`gaps`, :attr:`late_bytes`,
-    :attr:`overlap_bytes` — exist so that a conversion never drops data
-    silently; a caller is expected to surface them.
+    :attr:`overlap_bytes`, :attr:`duplicate_bytes` — exist so that a
+    conversion never drops data silently; a caller is expected to surface
+    them.
 
     Attributes:
         packets: Packets in the capture, including those skipped.
@@ -31,7 +32,25 @@ class ConversionStats:
         late_bytes: Bytes that arrived after their gap had been committed and
             so had to be dropped.
         overlap_bytes: Retransmitted bytes discarded because the same range
-            had already been accepted.
+            had already been accepted — the sender sent them again, and the
+            record covering them says so with ``retransmit``.  A repeat the
+            TCP Timestamps option cannot judge lands here too, as the
+            conservative reading; :attr:`ts_fallback` says how often.
+        duplicates: Segments that were a copy of a transmission already
+            accepted — the same packet seen twice by the capture point, as a
+            mirror port or a two-interface capture shows it.  The sender
+            resent nothing, so no record carries ``retransmit`` on their
+            account.  A count of segments rather than bytes because it is a
+            statement about the capture: set it beside :attr:`packets` and
+            it says how much of the file is doubled.
+        duplicate_bytes: Payload bytes those copies carried, all discarded.
+        ts_fallback: How often a repeat could not be judged by the Timestamps
+            option and was treated as a retransmission, keyed by why —
+            :data:`~zpfwire.tcp.TS_ABSENT` when either side lacked the
+            option, :data:`~zpfwire.tcp.TS_STALE` when the transmission it
+            repeated had aged out of the reassembler's memory.  Non-zero
+            means some ``retransmit`` flags in the file rest on the
+            specification's conservative reading rather than on evidence.
         undecoded_regions: Undecoded blocks written, each naming a range of
             the capture that reached no record.
         bad_checksum: Packets whose transport checksum did not verify.
@@ -65,6 +84,9 @@ class ConversionStats:
     gaps: int = 0
     late_bytes: int = 0
     overlap_bytes: int = 0
+    duplicates: int = 0
+    duplicate_bytes: int = 0
+    ts_fallback: Counter[str] = field(default_factory=Counter)
     bad_checksum: int = 0
     checksum_dropped_bytes: int = 0
     truncated: int = 0
@@ -100,7 +122,18 @@ class ConversionStats:
         if self.late_bytes:
             lines.append(f"late bytes   {self.late_bytes} (dropped)")
         if self.overlap_bytes:
-            lines.append(f"overlap      {self.overlap_bytes} bytes (discarded)")
+            lines.append(f"overlap      {self.overlap_bytes} bytes (retransmitted, discarded)")
+        if self.duplicates:
+            lines.append(
+                f"duplicates   {self.duplicates} of {self.packets} packets were copies, "
+                f"{self.duplicate_bytes} bytes (discarded)",
+            )
+        if self.ts_fallback:
+            why = ", ".join(f"{key}: {count}" for key, count in sorted(self.ts_fallback.items()))
+            lines.append(
+                f"ts fallback  {sum(self.ts_fallback.values())} repeat(s) treated as "
+                f"retransmitted without timestamp evidence ({why})",
+            )
         if self.bad_checksum:
             lines.append(f"bad cksum    {self.bad_checksum} packet(s)")
         if self.checksum_dropped_bytes:

@@ -15,13 +15,24 @@ thrown away, so it is a declared option
 (:class:`~zpfwire.options.ReassemblyOptions`) whose digest is recorded on the
 Decoder Descriptor.
 
-Everything discarded is counted — overlapping retransmits as
-``overlap_bytes``, bytes that arrived after their gap was committed as
-``late_bytes`` — so a conversion never loses data quietly.
+Everything discarded is counted — retransmitted bytes as ``overlap_bytes``,
+copies of one transmission as ``duplicate_bytes``, bytes that arrived after
+their gap was committed as ``late_bytes`` — so a conversion never loses data
+quietly.
+
+The TCP Timestamps option (RFC 7323) is read where it can settle something
+the reassembler would otherwise have to assume.  Every transmission of a byte
+range carries its own TSval; a copy of one transmission does not.  That is
+what separates a mirror port's duplicate from a retransmission, and the
+specification's ``retransmit`` flag names the sender's act, so the
+distinction reaches the file.  Where the option is absent the rule degrades
+to the conservative reading the specification asks for — every repeat is a
+retransmission — and says so in the stats.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 
 import zpf
@@ -32,12 +43,13 @@ from zpfwire.capture import PacketView
 from zpfwire.flow import (
     END_CAPTURE_END,
     END_TIMEOUT,
+    REASON_DUPLICATE,
     REASON_LATE,
     REASON_OVERLAP,
     FlowTracker,
 )
 
-__all__ = ["END_FIN", "END_RST", "TcpFlow"]
+__all__ = ["END_FIN", "END_RST", "TS_ABSENT", "TS_STALE", "TcpFlow"]
 
 _SEQ_MOD = 1 << 32
 _SEQ_HALF = _SEQ_MOD >> 1
@@ -47,6 +59,15 @@ END_FIN = "fin"
 
 END_RST = "rst"
 """Session End reason when either direction reset the connection."""
+
+TS_ABSENT = "absent"
+"""Fallback key: a repeat could not be judged because one side lacked the option."""
+
+TS_STALE = "stale"
+"""Fallback key: a repeat could not be judged because its original had aged out."""
+
+_DUPLICATE = "duplicate"
+_RETRANSMIT = "retransmit"
 
 _FLAG_MAP = (
     (TCP_PSH, RecordFlags.PSH),
@@ -71,6 +92,18 @@ def _delta(a: int, b: int) -> int:
     return diff - _SEQ_MOD if diff >= _SEQ_HALF else diff
 
 
+def _tsval(pkt: PacketView) -> int | None:
+    """Return the segment's TSval, or ``None`` when it carries no Timestamps option.
+
+    The one place the option is read, so every rule that consults it degrades
+    through the same door when it is absent.
+    """
+    options = pkt.tcp_options
+    if options is None or options.timestamps is None:
+        return None
+    return options.timestamps[0]
+
+
 @dataclass
 class _Pending:
     """A segment held back because earlier bytes have not arrived."""
@@ -80,6 +113,27 @@ class _Pending:
     ack: int
     ts: int
     payload_offset: int | None = None
+    tsval: int | None = None
+    # The peer packets seen when it arrived; see _Sent.
+    peer_count: int = 0
+
+
+@dataclass(frozen=True)
+class _Sent:
+    """One transmission this direction accepted, remembered to judge its repeats.
+
+    A repeat of ``[seq, end)`` is a copy of *this* transmission — the same
+    packet seen twice by the capture point — when it carries the same TSval
+    and nothing from the peer arrived in between.  A fast retransmit is
+    triggered by the peer's duplicate ACKs, which sit in the capture between
+    the original and the resend, and a mirror copy follows its original with
+    nothing between them; ``peer_count`` is what makes that comparable.
+    """
+
+    seq: int
+    end: int
+    tsval: int | None
+    peer_count: int
 
 
 @dataclass
@@ -122,6 +176,21 @@ class _Stream:
     oldest_pending_ts: int | None = None
     run: _Run | None = None
     committed_gaps: list[tuple[int, int]] = field(default_factory=list)
+    # The transmissions accepted most recently, oldest first, bounded by
+    # `reorder_window` bytes — but never emptied, so the copy that lands a
+    # microsecond after its original can always be judged.  A repeat of
+    # something older than the deque cannot be, and is counted as such.
+    recent: deque[_Sent] = field(default_factory=deque)
+    recent_bytes: int = 0
+    # Packets seen from the other direction, whatever they carried.
+    peer_count: int = 0
+    # RFC 7323 §4.3's TS.Recent: the TSval of the last segment accepted *in
+    # order* at arrival, never one drained from the hold.  That is the
+    # receiver's own rule (SEG.SEQ <= Last.ACK.sent): while a hole is open the
+    # value stays at the last in-order segment, which is why a delayed
+    # original behind the hole, with an older TSval, is not rejected — a real
+    # receiver kept it, and D-SACKed the resend.
+    ts_recent: int | None = None
 
 
 class TcpFlow(FlowTracker):
@@ -137,10 +206,16 @@ class TcpFlow(FlowTracker):
         """Take one segment of this conversation."""
         self.last_ts = pkt.ts_ticks
         stream = self._stream(pkt.src_endpoint)
+        for other in self._streams.values():
+            if other is not stream:
+                other.peer_count += 1
 
         syn = bool(pkt.tcp_flags & TCP_SYN)
         if syn:
             self._handshake(stream, pkt)
+            tsval = _tsval(pkt)
+            if tsval is not None and stream.ts_recent is None:
+                stream.ts_recent = tsval
         self._declare(stream)
         if syn:
             self._syn_record(stream, pkt)
@@ -275,30 +350,47 @@ class TcpFlow(FlowTracker):
             stream.next_seq = seq
 
         end = _advance(seq, len(data))
+        tsval = _tsval(pkt)
         if _delta(end, stream.next_seq) <= 0:
-            self._count_repeat(stream, seq, end, pkt.payload_offset)
+            self._count_repeat(stream, seq, end, pkt.payload_offset,
+                               tsval=tsval, peer_count=stream.peer_count)
             return
 
         if _delta(seq, stream.next_seq) < 0:
             overlap = _delta(stream.next_seq, seq)
             # Only ever a leading trim, so the discarded bytes start where the
             # segment's payload starts.
-            self._count_repeat(stream, seq, stream.next_seq, pkt.payload_offset)
+            self._count_repeat(stream, seq, stream.next_seq, pkt.payload_offset,
+                               tsval=tsval, peer_count=stream.peer_count)
             data = data[overlap:]
             seq = stream.next_seq
-            self._mark_retransmit(stream)
 
         if seq == stream.next_seq:
-            self._append(stream, seq, data, pkt)
+            # In order at arrival: the one case that moves TS.Recent.
+            if tsval is not None and (
+                stream.ts_recent is None or _delta(tsval, stream.ts_recent) >= 0
+            ):
+                stream.ts_recent = tsval
+            self._append(stream, seq, data, pkt, tsval=tsval, peer_count=stream.peer_count)
             self._drain(stream, pkt)
         else:
-            self._hold(stream, seq, data, pkt)
+            self._hold(stream, seq, data, pkt, tsval=tsval)
             self._maybe_commit_gap(stream, pkt)
 
-    def _append(self, stream: _Stream, seq: int, data: bytes, pkt: PacketView) -> None:
+    def _append(
+        self,
+        stream: _Stream,
+        seq: int,
+        data: bytes,
+        pkt: PacketView,
+        *,
+        tsval: int | None,
+        peer_count: int,
+    ) -> None:
         if stream.run is None:
             stream.run = _Run(seq_start=seq, ts=pkt.ts_ticks, ts_first=pkt.ts_ticks)
         stream.run.data.extend(data)
+        self._remember(stream, seq, _advance(seq, len(data)), tsval, peer_count)
         # All three hints are extremes over the run's contributing packets, not
         # the packet that happened to be appended last: a segment held out of
         # order arrives *before* the one that made it contiguous but is
@@ -324,15 +416,29 @@ class TcpFlow(FlowTracker):
         self._attach_flags(stream, pkt)
         stream.next_seq = _advance(seq, len(data))
 
-    def _hold(self, stream: _Stream, seq: int, data: bytes, pkt: PacketView) -> None:
+    def _hold(
+        self, stream: _Stream, seq: int, data: bytes, pkt: PacketView, *, tsval: int | None,
+    ) -> None:
         if seq in stream.pending:
-            # A duplicate of something already waiting.
-            self._stats.overlap_bytes += len(data)
-            self.undecoded(pkt.payload_offset, len(data), reason=REASON_OVERLAP)
-            self._mark_retransmit(stream)
+            # A repeat of something already waiting.  The held segment is the
+            # transmission this one may be a copy of, so it is judged against
+            # that directly rather than through `recent`.
+            held = stream.pending[seq]
+            if tsval is None or held.tsval is None:
+                verdict = TS_ABSENT
+            elif (
+                tsval == held.tsval
+                and stream.peer_count == held.peer_count
+                and len(data) == len(held.data)
+            ):
+                verdict = _DUPLICATE
+            else:
+                verdict = _RETRANSMIT
+            self._discard(stream, verdict, pkt.payload_offset, 0, len(data))
             return
         stream.pending[seq] = _Pending(data=data, flags=pkt.tcp_flags, ack=pkt.ack,
-                                       ts=pkt.ts_ticks, payload_offset=pkt.payload_offset)
+                                       ts=pkt.ts_ticks, payload_offset=pkt.payload_offset,
+                                       tsval=tsval, peer_count=stream.peer_count)
         stream.pending_bytes += len(data)
         if stream.oldest_pending_ts is None:
             stream.oldest_pending_ts = pkt.ts_ticks
@@ -344,23 +450,29 @@ class TcpFlow(FlowTracker):
             held = stream.pending[seq]
             end = _advance(seq, len(held.data))
             if _delta(end, stream.next_seq) <= 0:
+                # Wholly superseded by what filled the hole.  The fill is the
+                # later arrival, so the held segment is the original and the
+                # fill the repeat; the verdict is the same either way round,
+                # and this site never set the flag, so it still does not.
                 self._release(stream, seq)
-                self._stats.overlap_bytes += len(held.data)
-                self.undecoded(held.payload_offset, len(held.data), reason=REASON_OVERLAP)
+                verdict = self._judge(stream, seq, end, held.tsval, held.peer_count)
+                self._discard(stream, verdict, held.payload_offset, 0, len(held.data),
+                              mark=False)
                 continue
             if _delta(seq, stream.next_seq) > 0:
                 return
             trim = _delta(stream.next_seq, seq)
             self._release(stream, seq)
             if trim:
-                self._stats.overlap_bytes += trim
-                self.undecoded(held.payload_offset, trim, reason=REASON_OVERLAP)
-                self._mark_retransmit(stream)
+                verdict = self._judge(stream, seq, stream.next_seq, held.tsval, held.peer_count)
+                self._discard(stream, verdict, held.payload_offset, 0, trim)
             self._append(
                 stream,
                 stream.next_seq,
                 held.data[trim:],
                 _stamp(pkt, held),
+                tsval=held.tsval,
+                peer_count=held.peer_count,
             )
         stream.oldest_pending_ts = None
 
@@ -419,6 +531,8 @@ class TcpFlow(FlowTracker):
                     src="", dst="", src_port=0, dst_port=0,
                     payload=b"", seq=target, ack=held.ack, tcp_flags=held.flags,
                 ),
+                tsval=held.tsval,
+                peer_count=held.peer_count,
             )
 
     def _count_repeat(
@@ -427,18 +541,23 @@ class TcpFlow(FlowTracker):
         seq: int,
         end: int,
         payload_offset: int | None,
+        *,
+        tsval: int | None,
+        peer_count: int,
     ) -> None:
-        """Attribute already-seen bytes to overlap, or to a committed gap.
+        """Attribute already-seen bytes to a committed gap, a copy, or a resend.
 
         Bytes that fall inside a gap this stream already gave up on are not
-        retransmits — they are data the policy caused us to lose, and the
+        repeats — they are data the policy caused us to lose, and the
         specification forbids writing them now. They are counted separately so
         that a loss caused by our own timeouts is never mistaken for a
         harmless duplicate.
 
-        Both kinds exist in the capture and reach no record, so both are cited
-        as Undecoded regions; only the reason differs. The ranges are taken
-        relative to *seq*, which is where this segment's payload begins.
+        What remains repeats bytes this direction accepted, and is judged by
+        the Timestamps option — see :meth:`_judge`.  Every kind exists in the
+        capture and reaches no record, so every kind is cited as an Undecoded
+        region; only the reason differs. The ranges are taken relative to
+        *seq*, which is where this segment's payload begins.
         """
         length = _delta(end, seq)
         if length <= 0:
@@ -452,41 +571,111 @@ class TcpFlow(FlowTracker):
                 self._cite(payload_offset, _delta(gap_start, seq) + overlap_start,
                            overlap_end - overlap_start, REASON_LATE)
         self._stats.late_bytes += late
-        self._stats.overlap_bytes += length - late
-        if length - late:
-            self._cite_remainder(stream, seq, end, payload_offset)
-            self._mark_retransmit(stream)
+        for start, stop in self._unclaimed(stream, seq, end):
+            verdict = self._judge(stream, _advance(seq, start), _advance(seq, stop),
+                                  tsval, peer_count)
+            self._discard(stream, verdict, payload_offset, start, stop - start)
 
     def _cite(self, payload_offset: int | None, skip: int, length: int, reason: str) -> None:
         """Declare a sub-range of one segment's payload as undecoded."""
         start = None if payload_offset is None else payload_offset + skip
         self.undecoded(start, length, reason=reason)
 
-    def _cite_remainder(
-        self,
-        stream: _Stream,
-        seq: int,
-        end: int,
-        payload_offset: int | None,
-    ) -> None:
-        """Cite the parts of ``[seq, end)`` that no committed gap claimed."""
+    def _unclaimed(self, stream: _Stream, seq: int, end: int) -> list[tuple[int, int]]:
+        """Return the parts of ``[seq, end)`` no committed gap claimed, relative to *seq*."""
         length = _delta(end, seq)
         claimed = sorted(
             (max(_delta(gap_start, seq), 0), min(_delta(gap_end, seq), length))
             for gap_start, gap_end in stream.committed_gaps
         )
+        parts: list[tuple[int, int]] = []
         cursor = 0
         for start, stop in claimed:
             if stop <= cursor or start >= length:
                 continue
             if start > cursor:
-                self._cite(payload_offset, cursor, start - cursor, REASON_OVERLAP)
+                parts.append((cursor, start))
             cursor = max(cursor, stop)
         if cursor < length:
-            self._cite(payload_offset, cursor, length - cursor, REASON_OVERLAP)
+            parts.append((cursor, length))
+        return parts
 
-    def _mark_retransmit(self, stream: _Stream) -> None:
-        if stream.run is not None:
+    # ── repeats ─────────────────────────────────────────────────────────
+
+    def _remember(
+        self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
+    ) -> None:
+        """Record an accepted transmission so a later repeat of it can be judged."""
+        stream.recent.append(_Sent(seq=seq, end=end, tsval=tsval, peer_count=peer_count))
+        stream.recent_bytes += _delta(end, seq)
+        while len(stream.recent) > 1 and stream.recent_bytes > self._options.reorder_window:
+            oldest = stream.recent.popleft()
+            stream.recent_bytes -= _delta(oldest.end, oldest.seq)
+
+    def _judge(
+        self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
+    ) -> str:
+        """Say whether a repeat of ``[seq, end)`` is a copy or a resend.
+
+        A **duplicate** is the same transmission seen twice — a mirror port, a
+        two-interface capture, a veth pair — and takes all three of: both it
+        and the transmission it repeats carried the option; the TSvals are
+        equal; and no packet from the peer arrived between the two.  The
+        third clause is what separates a copy from a fast retransmit on a
+        stack whose timestamp tick is coarser than its round trip: the
+        resend is triggered by the peer's duplicate ACKs, and they sit in the
+        capture between original and resend, while a copy follows its
+        original with nothing between.
+
+        Anything else is a **retransmission** — the reading RFC 7323 supports
+        and the one the specification asks a producer to fall back to.  The
+        two fallbacks are named so they can be counted: :data:`TS_ABSENT`
+        when either side lacks the option, :data:`TS_STALE` when the
+        transmission repeated has aged out of ``recent``.
+
+        The one case this cannot separate is a one-way capture of a
+        coarse-tick stack: with the peer's ACKs absent from the file and the
+        resend inside its original's tick, a fast retransmit looks exactly like
+        a copy.  The rule then calls it a duplicate, which is the wrong way
+        round for the specification's SHOULD, and is recorded as a limit.
+        """
+        if tsval is None:
+            return TS_ABSENT
+        covered = 0
+        length = _delta(end, seq)
+        for sent in stream.recent:
+            lo = max(_delta(sent.seq, seq), 0)
+            hi = min(_delta(sent.end, seq), length)
+            if hi <= lo:
+                continue
+            if sent.tsval is None:
+                return TS_ABSENT
+            if sent.tsval != tsval or sent.peer_count != peer_count:
+                return _RETRANSMIT
+            covered += hi - lo
+        return _DUPLICATE if covered >= length else TS_STALE
+
+    def _discard(
+        self,
+        stream: _Stream,
+        verdict: str,
+        payload_offset: int | None,
+        skip: int,
+        length: int,
+        *,
+        mark: bool = True,
+    ) -> None:
+        """Count and cite a repeated range under its verdict, and flag the run if a resend."""
+        if verdict == _DUPLICATE:
+            self._stats.duplicate_bytes += length
+            self._stats.duplicates += 1
+            self._cite(payload_offset, skip, length, REASON_DUPLICATE)
+            return
+        if verdict != _RETRANSMIT:
+            self._stats.ts_fallback[verdict] += 1
+        self._stats.overlap_bytes += length
+        self._cite(payload_offset, skip, length, REASON_OVERLAP)
+        if mark and stream.run is not None:
             stream.run.retransmit = True
 
     # ── emission ────────────────────────────────────────────────────────

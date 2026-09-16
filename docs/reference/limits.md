@@ -55,26 +55,31 @@ which ranges the receiver actually got — but the reassembler does not consult
 them.  It infers loss from arrival order and its timeouts alone, so a capture
 with SACK information available is analysed as though it had none.
 
-**The TCP Timestamps option is not read either**, and it could settle three
-things the reassembler currently assumes: whether a repeated segment is a
-retransmission or the same transmission seen twice (a mirror port doubles
-every packet, and today each copy sets `retransmit`); whether late bytes were
-a delayed original or a loss recovered after the gap was committed; and, as
-PAWS, whether a segment that looks 2³¹ behind is really from after a sequence
-wrap.  This is [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17).
-It was held on two things, and both have since arrived: a real capture of a
-retransmission carrying the option
-([packeteer#149](https://github.com/adamkjonsson/packeteer/issues/149),
-`tcp_lossy_ts.pcap` and its duplicated twin `tcp_dup_ts.pcap` in packeteer
-0.15.0), and the format saying whether `retransmit` means the sender resent
-or the reassembler discarded
-([zipline#142](https://github.com/adamkjonsson/zipline/issues/142)).  Spec
-`0.20` answered the second: the flag names the **sender's** act, a copy of one
-transmission does not set it, and a producer that cannot tell the two apart
-SHOULD treat the repeat as a retransmission.  That last clause is what this
-reassembler does today, so its output is conformant — but the flag on a
-duplicated capture overstates what happened, and reading TSval is what stops
-it.
+**A one-way capture of a coarse-tick stack cannot tell a fast retransmit
+from a mirror copy.**  The reassembler reads the TCP Timestamps option to
+separate the two — see {doc}`../guide/reassembly` — and the signal that
+separates them on a stack whose timestamp tick is coarser than its round
+trip (historically ~100 ms on some stacks, against a LAN round trip of well
+under a millisecond) is the peer's duplicate ACKs sitting between the
+original and the resend.  In a capture that holds only one direction those
+ACKs are not in the file, and a fast retransmit that landed inside its
+original's tick carries the same TSval with nothing visible between: the
+rule calls it a duplicate and clears `retransmit` on a record whose bytes
+the sender did in fact resend.  Linux ticks at 1 ms and a resend after a
+dup-ACK round trip is safely apart, so the six real captures the rule was
+built against never show the shape; it is recorded because the shape exists.
+The Timestamps option itself is only present when both ends negotiated it,
+and every rule that reads it degrades to the specification's conservative
+reading — every repeat is a retransmission — when it is absent, and counts
+that it did (`stats.ts_fallback`).
+
+**Late bytes are one number, and PAWS is not applied.**  The option could
+also say whether a late byte was a delayed original or a loss recovered after
+its gap was committed, and whether a segment that looks 2³¹ behind is really
+from after a sequence wrap.  Both are on the way in this release
+([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17), items
+3 and 4); until they land, `late_bytes` bundles the two causes and placement
+rests on the half-space heuristic alone.
 
 **A fourth thing the option could settle needs a different reassembler:**
 which copy of disagreeing bytes the *receiver* kept, read from the TSval its
