@@ -23,6 +23,7 @@ __all__ = [
     "REASON_LATE_REORDERED",
     "REASON_LATE_RETRANSMITTED",
     "REASON_OVERLAP",
+    "REASON_PAWS",
     "FlowKey",
     "FlowTracker",
     "cite_undecoded",
@@ -65,6 +66,16 @@ REASON_LATE_RETRANSMITTED = "late-retransmitted"
 Its TSval is newer than everything committed past its gap: the original was
 lost and the sender recovered it after the hole had been given up on.  A
 fact about the network, which no policy of ours could have changed.
+"""
+
+REASON_PAWS = "paws-rejected"
+"""Undecoded reason for a segment whose timestamp says it is from before a wrap.
+
+RFC 7323 §5.3: a segment carrying a TSval older than the last one the
+receiver accepted in order is an old segment whose sequence numbers have
+come round again, and a receiver drops it whole.  Applied only to segments
+that would otherwise contribute bytes; a repeat of accepted bytes is judged
+as a repeat, whatever its clock.
 """
 
 REASON_CHECKSUM = "bad-checksum"
@@ -180,7 +191,7 @@ def cite_undecoded(
         length: How many bytes the region covers.
         reason: Why the region went undecoded; see :data:`REASON_OVERLAP`,
             :data:`REASON_DUPLICATE`, :data:`REASON_LATE` and its two
-            refinements, and :data:`REASON_CHECKSUM`.
+            refinements, :data:`REASON_PAWS` and :data:`REASON_CHECKSUM`.
         decoder: The stage that discarded the bytes.
         stats: Tally to record the block, or the failure to place it, in.
 
@@ -283,6 +294,23 @@ class FlowTracker(ABC):
     def time_out(self) -> None:
         """Record that this flow is being closed by the idle timeout."""
         self.timed_out = True
+
+    def splits_before(self, pkt: PacketView) -> bool:
+        """Report whether *pkt* must open a new session rather than join this one.
+
+        The base tracker never splits; a transport whose session cannot
+        represent what comes next says so here.  When it answers ``True`` the
+        caller closes this flow and begins another, and *pkt* is the new
+        flow's first packet.
+
+        Args:
+            pkt: The packet about to be delivered.
+
+        Returns:
+            ``True`` to end this session before *pkt*.
+
+        """
+        return False
 
     @abstractmethod
     def packet(self, pkt: PacketView) -> None:

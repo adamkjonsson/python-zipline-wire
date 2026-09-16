@@ -243,6 +243,28 @@ stack**: with the peer's ACKs absent from the file and the resend inside its
 original's tick, a fast retransmit looks like a copy.  See
 {doc}`../reference/limits`.
 
+**An old segment from before a wrap is rejected**, as a receiver rejects it:
+RFC 7323's PAWS.  A segment that would contribute bytes but carries a TSval
+older than the last one accepted in order is not new data — its sequence
+numbers have come round again — and it is dropped whole, cited
+`paws-rejected` and counted in `stats.paws_bytes`.  The clock it is compared
+against moves only on in-order arrival, which is the receiver's own rule and
+the reason a delayed original that finally fills a hole is *not* rejected
+however many newer segments passed it.  A repeat of accepted bytes is never
+judged by PAWS — it is a repeat, and judged as one above.
+
+**A segment from the far side of a hole wider than 2³¹ bytes is recognised
+as such.**  Serial arithmetic places anything more than 2³¹ away on the near
+side, so without the option such a segment reads as old data, is discarded as
+a retransmission the sender never made, and the rest of the direction is lost
+behind it.  With it, a segment further behind than the largest window TCP can
+advertise (2³⁰ bytes) whose TSval is *newer* than the last accepted in order
+is from ahead.  It cannot join the session it belongs to — the format stores
+records in serial order, and one that far past its predecessor precedes it —
+so the session ends for `capture-gap` and the segment opens the next; see
+{doc}`converting`.  Counted in `stats.wrap_resolved`, since a file that
+needed the rule is a file with a hole worth knowing about.
+
 ## Reading what a policy cost
 
 Four counters report what the policy threw away:

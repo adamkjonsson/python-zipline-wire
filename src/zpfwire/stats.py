@@ -55,6 +55,19 @@ class ConversionStats:
             statement about the capture: set it beside :attr:`packets` and
             it says how much of the file is doubled.
         duplicate_bytes: Payload bytes those copies carried, all discarded.
+        paws_bytes: Payload bytes discarded because the segment's TSval was
+            older than the last accepted in order — an old segment from
+            before a sequence wrap, which a receiver drops whole (RFC 7323
+            §5.3).  Like :attr:`checksum_dropped_bytes` these reached no
+            receiver either.
+        wrap_resolved: Times a segment that serial arithmetic placed more
+            than 2**30 bytes *behind* was recognised as being from ahead,
+            because its TSval was newer than the last accepted in order: the
+            far side of a hole in the capture too wide for one session to
+            span, which without the option would have been miscounted as a
+            retransmission and the rest of the direction lost.  Each ends
+            the session for ``capture-gap`` and opens another, so each is
+            also a session.
         ts_fallback: How often a repeat could not be judged by the Timestamps
             option and was treated as a retransmission, keyed by why —
             :data:`~zpfwire.tcp.TS_ABSENT` when either side lacked the
@@ -99,6 +112,8 @@ class ConversionStats:
     overlap_bytes: int = 0
     duplicates: int = 0
     duplicate_bytes: int = 0
+    paws_bytes: int = 0
+    wrap_resolved: int = 0
     ts_fallback: Counter[str] = field(default_factory=Counter)
     bad_checksum: int = 0
     checksum_dropped_bytes: int = 0
@@ -150,6 +165,13 @@ class ConversionStats:
             lines.append(
                 f"duplicates   {self.duplicates} of {self.packets} packets were copies, "
                 f"{self.duplicate_bytes} bytes (discarded)",
+            )
+        if self.paws_bytes:
+            lines.append(f"paws         {self.paws_bytes} bytes rejected (older than the clock)")
+        if self.wrap_resolved:
+            lines.append(
+                f"wrap         {self.wrap_resolved} hole(s) wider than 2^30 bytes; "
+                "the session was split there",
             )
         if self.ts_fallback:
             why = ", ".join(f"{key}: {count}" for key, count in sorted(self.ts_fallback.items()))

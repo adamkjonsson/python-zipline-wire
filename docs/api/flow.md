@@ -76,6 +76,10 @@ Every session carries one.  See {doc}`../guide/converting`.
 .. autodata:: zpfwire.flow.END_CAPTURE_END
 ```
 
+```{eval-rst}
+.. autodata:: zpfwire.tcp.END_CAPTURE_GAP
+```
+
 ---
 
 ## Undecoded reasons
@@ -102,6 +106,10 @@ follow the reference to fetch them.  See {doc}`../guide/provenance`.
 
 ```{eval-rst}
 .. autodata:: zpfwire.flow.REASON_LATE_RETRANSMITTED
+```
+
+```{eval-rst}
+.. autodata:: zpfwire.flow.REASON_PAWS
 ```
 
 When a repeat could not be judged by the Timestamps option it is cited as

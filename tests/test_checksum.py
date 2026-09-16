@@ -200,6 +200,7 @@ def test_dropped_bytes_are_accounted_for(tmp_path: pathlib.Path, name: str):
         + out.stats.overlap_bytes
         + out.stats.duplicate_bytes
         + out.stats.late_bytes
+        + out.stats.paws_bytes
         + out.stats.checksum_dropped_bytes
     )
 

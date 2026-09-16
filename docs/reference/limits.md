@@ -30,6 +30,19 @@ specification's rule, and it is why the policy is a declared, hashed option.
 Bytes lost this way are counted as `late_bytes` and cited as `late-arrival`
 regions.
 
+**A hole wider than 2³¹ bytes in one direction splits the session.**  The
+offset space is modular over 2³² and records are stored in serial order, so
+two records of one participant cannot be more than 2³¹ apart with nothing
+between them.  A segment from the far side of a hole that wide is recognised
+by the Timestamps option — further behind than any window and carrying a
+newer clock — and opens a new session, the old one ending for
+`capture-gap`.  Without the option the shape is invisible: serial arithmetic
+calls the segment old, it is discarded as a retransmission, and the rest of
+the direction goes with it.  The zone between a window's width and 2³¹
+behind is where a resend cannot be, so the rule is safe there; a hole
+between 2³⁰ and 2³¹ wide is placed by serial arithmetic alone and needs no
+rule, and is held and then committed as any gap is.
+
 **Filtering below the flow level breaks streams.** A predicate that drops
 segments from the middle of a connection produces gaps exactly as packet loss
 would.  Filtering by address or port keeps whole conversations and is safe.
@@ -72,12 +85,6 @@ The Timestamps option itself is only present when both ends negotiated it,
 and every rule that reads it degrades to the specification's conservative
 reading — every repeat is a retransmission — when it is absent, and counts
 that it did (`stats.ts_fallback`).
-
-**PAWS is not applied.**  The option could also say whether a segment that
-looks 2³¹ behind is really from after a sequence wrap.  That is on the way
-in this release
-([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17), item
-4); until it lands, placement rests on the half-space heuristic alone.
 
 **A late byte in the same tick as the segment that overtook it is not
 classified.**  A delayed original that was a burst-mate of the passer shares

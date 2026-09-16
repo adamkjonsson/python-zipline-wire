@@ -35,6 +35,7 @@ from zpfwire.flow import (
     REASON_LATE_REORDERED,
     REASON_LATE_RETRANSMITTED,
     REASON_OVERLAP,
+    REASON_PAWS,
     FlowKey,
     FlowTracker,
     cite_undecoded,
@@ -48,7 +49,7 @@ from zpfwire.options import (
 )
 from zpfwire.stats import ConversionStats
 from zpfwire.survey import FlowSummary, survey
-from zpfwire.tcp import END_FIN, END_RST, TS_ABSENT, TS_STALE, TcpFlow
+from zpfwire.tcp import END_CAPTURE_GAP, END_FIN, END_RST, TS_ABSENT, TS_STALE, TcpFlow
 from zpfwire.udp import UdpFlow
 
 __version__ = tool_version()
@@ -57,6 +58,7 @@ __all__ = [
     "CHECKSUM_POLICIES",
     "DECODER_NAME",
     "END_CAPTURE_END",
+    "END_CAPTURE_GAP",
     "END_FIN",
     "END_RST",
     "END_TIMEOUT",
@@ -67,6 +69,7 @@ __all__ = [
     "REASON_LATE_REORDERED",
     "REASON_LATE_RETRANSMITTED",
     "REASON_OVERLAP",
+    "REASON_PAWS",
     "TICK_HZ_NS",
     "TICK_HZ_US",
     "TS_ABSENT",

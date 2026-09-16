@@ -170,7 +170,13 @@ Every session carries a reason:
 | `END_RST` | `"rst"` | Either direction reset the connection |
 | `END_TIMEOUT` | `"timeout"` | Silence longer than `session_timeout` |
 | `END_CAPTURE_END` | `"capture-end"` | The capture ran out first |
+| `END_CAPTURE_GAP` | `"capture-gap"` | The capture skipped more than 2³¹ bytes of one direction — further than a session can span |
 
 A timed-out conversation is closed and a later packet between the same
-endpoints starts a *new* session, so one flow can produce several.  UDP has no
-close, so a UDP session ends with `timeout` or `capture-end`.
+endpoints starts a *new* session, so one flow can produce several.  So does a
+`capture-gap`: a segment from the far side of a hole that wide cannot be
+placed in the session it belongs to — records are stored in serial order,
+and one that far past its predecessor *precedes* it — so the session ends
+there and the segment opens the next.  Only the TCP Timestamps option can
+recognise the shape; see {doc}`reassembly`.  UDP has no close, so a UDP
+session ends with `timeout` or `capture-end`.

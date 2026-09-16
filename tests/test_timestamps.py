@@ -15,11 +15,11 @@ import pathlib
 
 import pytest
 import zpf
-from helpers import CAPTURES, to_zpf
+from helpers import CAPTURES, decode_digest, to_zpf
 from packeteer.generate.tcp_stream import TCPStreamConfig, generate_tcp_stream
 from packeteer.pcap import write_pcap
 
-from zpfwire import CaptureReader, ReassemblyOptions
+from zpfwire import CaptureReader, ReassemblyOptions, capture_to_zpf
 
 NO_HOLD = ReassemblyOptions(reorder_window=0)
 """Give up on every hole at once — the policy that makes a receiver-side
@@ -156,7 +156,8 @@ def test_the_accounting_identity_holds_with_duplicates(tmp_path: pathlib.Path, n
     stats = out.stats
 
     assert (
-        stats.payload_bytes + stats.overlap_bytes + stats.duplicate_bytes + stats.late_bytes
+        stats.payload_bytes + stats.overlap_bytes + stats.duplicate_bytes
+        + stats.late_bytes + stats.paws_bytes
         == observed
     )
 
@@ -242,3 +243,37 @@ def test_the_split_holds_across_the_wrap(tmp_path: pathlib.Path):
     assert out.stats.late_reordered_bytes == 4 * 524
     assert out.stats.late_retransmitted_bytes == 4 * 524
     assert late_reasons(out) == {"late-reordered": 4, "late-retransmitted": 4}
+
+
+# ── PAWS and the wrap ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("name", REAL)
+@pytest.mark.parametrize("options", [None, NO_HOLD], ids=["default", "no-hold"])
+def test_neither_wrap_rule_fires_on_real_traffic(
+    tmp_path: pathlib.Path, name: str, options: ReassemblyOptions | None,
+):
+    """A rule that emulates the receiver must agree with what the receiver did.
+
+    Every delayed original in the corpus — including the four in
+    ``tcp_wrap_ts`` that arrive after post-wrap data with an older clock —
+    was kept by the real receiver, whose D-SACKs of their resends say so.
+    PAWS keeps them too, because ``TS.Recent`` moves only on in-order
+    arrival; and no real capture has a hole wider than a window.
+    """
+    kwargs = {} if options is None else {"options": options}
+    out = to_zpf(CAPTURES / name, tmp_path, **kwargs)
+
+    assert out.stats.paws_bytes == 0
+    assert out.stats.wrap_resolved == 0
+    assert all(s.end_reason != "capture-gap" for s in out.sessions)
+
+
+def test_the_stream_that_wraps_is_untouched_by_the_wrap_rules(tmp_path: pathlib.Path):
+    """``tcp_wrap_ts`` under defaults decodes exactly as it did before any rule read the option."""
+    out = tmp_path / "wrap.zpf"
+    capture_to_zpf(CAPTURES / "tcp_wrap_ts.pcap", out)
+
+    assert decode_digest(out) == (
+        "sha256:1b7cb603bfa511d1495a579d38540b9ee319b63f395ed90d3719a5b9a1f7eb1e"
+    )

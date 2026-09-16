@@ -48,19 +48,38 @@ from zpfwire.flow import (
     REASON_LATE_REORDERED,
     REASON_LATE_RETRANSMITTED,
     REASON_OVERLAP,
+    REASON_PAWS,
     FlowTracker,
 )
 
-__all__ = ["END_FIN", "END_RST", "TS_ABSENT", "TS_STALE", "TcpFlow"]
+__all__ = ["END_CAPTURE_GAP", "END_FIN", "END_RST", "TS_ABSENT", "TS_STALE", "TcpFlow"]
 
 _SEQ_MOD = 1 << 32
 _SEQ_HALF = _SEQ_MOD >> 1
+# The largest receive window TCP can advertise — a 16-bit window scaled by
+# the maximum shift of 14 (RFC 7323 §2.3) — and so the furthest behind the
+# next expected byte any retransmission can be.  A segment further behind
+# than that is not a resend of anything; if its clock is newer than ours, it
+# is from *ahead*, past the half-space edge serial arithmetic cannot cross.
+_MAX_WINDOW = 1 << 30
 
 END_FIN = "fin"
 """Session End reason when both directions closed cleanly."""
 
 END_RST = "rst"
 """Session End reason when either direction reset the connection."""
+
+END_CAPTURE_GAP = "capture-gap"
+"""Session End reason when the capture skipped further than a session can span.
+
+The offset space is modular over 2**32 and records are ordered serially, so
+two records of one participant cannot be more than 2**31 apart with nothing
+between them.  A segment from that far ahead — the far side of a hole in the
+capture — therefore opens a new session, and this reason on the old one says
+the connection did not end: the file merely could not follow it across the
+hole.  Recognised by the TCP Timestamps option; see
+:meth:`TcpFlow.splits_before`.
+"""
 
 TS_ABSENT = "absent"
 """Fallback key: a repeat could not be judged because one side lacked the option."""
@@ -214,6 +233,7 @@ class TcpFlow(FlowTracker):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
         self._streams: dict[str, _Stream] = {}
+        self._split = False
 
     # ── driving ─────────────────────────────────────────────────────────
 
@@ -266,6 +286,8 @@ class TcpFlow(FlowTracker):
             return END_RST
         if self._streams and all(s.fin for s in self._streams.values()) and len(self._streams) > 1:
             return END_FIN
+        if self._split:
+            return END_CAPTURE_GAP
         return END_TIMEOUT if self.timed_out else END_CAPTURE_END
 
     # ── participants ────────────────────────────────────────────────────
@@ -369,6 +391,21 @@ class TcpFlow(FlowTracker):
         if _delta(end, stream.next_seq) <= 0:
             self._count_repeat(stream, seq, end, pkt.payload_offset,
                                tsval=tsval, peer_count=stream.peer_count)
+            return
+
+        # PAWS (RFC 7323 §5.3): a segment that would contribute bytes but
+        # carries a clock older than the last one accepted in order is an old
+        # segment from before a wrap, and a receiver drops it whole.  Judged
+        # only here — a segment wholly behind is a repeat and has already been
+        # judged as one above, where the flag it may set is the sender's act
+        # whatever the receiver did with the copy.
+        if (
+            tsval is not None
+            and stream.ts_recent is not None
+            and _delta(tsval, stream.ts_recent) < 0
+        ):
+            self._stats.paws_bytes += len(data)
+            self.undecoded(pkt.payload_offset, len(data), reason=REASON_PAWS)
             return
 
         if _delta(seq, stream.next_seq) < 0:
@@ -500,6 +537,52 @@ class TcpFlow(FlowTracker):
         return min(stream.pending, key=lambda s: _delta(s, stream.next_seq))  # type: ignore[arg-type]
 
     # ── gaps ────────────────────────────────────────────────────────────
+
+    def splits_before(self, pkt: PacketView) -> bool:
+        """Say whether *pkt* is from past the wrap, where this session cannot follow.
+
+        ``_delta`` places anything more than 2**31 away on the near side, so a
+        segment from more than 2 GB further along the stream — the far side of
+        a hole in the capture that big — looks like old data and, as old data,
+        would be discarded as a repeat: counted as a retransmission the sender
+        never made, with the rest of the direction lost behind it.  Two facts
+        separate the two.  A resend is never further behind than the largest
+        window TCP can advertise, so a segment further behind than that is
+        not one.  And the Timestamps option is a per-sender clock that the
+        sequence number is not: a segment from ahead carries a TSval newer
+        than the last one accepted in order, which an old segment cannot.
+
+        Both together, and the segment is from ahead — but not somewhere this
+        session can put it.  Records are stored in serial order, so a record
+        more than 2**31 past its predecessor with nothing between *precedes*
+        it, and the writer refuses it.  What the format can say is that one
+        session ended here, for :data:`END_CAPTURE_GAP`, and another began.
+
+        Args:
+            pkt: The segment about to be delivered.
+
+        Returns:
+            ``True`` when the caller should close this session and open a
+            new one with *pkt*.
+
+        """
+        if not pkt.payload:
+            return False
+        stream = self._streams.get(pkt.src_endpoint)
+        tsval = _tsval(pkt)
+        if (
+            stream is None
+            or stream.next_seq is None
+            or stream.ts_recent is None
+            or tsval is None
+        ):
+            return False
+        behind = -_delta(pkt.seq, stream.next_seq)
+        if behind > _MAX_WINDOW and _delta(tsval, stream.ts_recent) > 0:
+            self._split = True
+            self._stats.wrap_resolved += 1
+            return True
+        return False
 
     def _maybe_commit_gap(self, stream: _Stream, pkt: PacketView) -> None:
         """Give up on missing bytes once the policy says to stop waiting."""

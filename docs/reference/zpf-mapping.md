@@ -151,6 +151,7 @@ range no record covers.
 | `rst` | Either direction reset |
 | `timeout` | Silence longer than `session_timeout` |
 | `capture-end` | The capture ran out first |
+| `capture-gap` | The capture skipped further than a session can span; the next session continues the connection |
 
 ## Blocks zpfwire never writes
 

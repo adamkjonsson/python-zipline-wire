@@ -96,6 +96,34 @@ Requires packeteer **0.15.0**, up from `0.14.0`.
   lossy conversion now says whether raising the window would have helped:
   it names the reordered bytes when there are any, and says outright that
   no window would have kept them when every late byte was a resend.
+- **PAWS**
+  ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
+  item 4).  A segment that would contribute bytes but carries a TSval older
+  than the last one accepted in order is an old segment from before a
+  sequence wrap, and is dropped whole as a receiver drops it (RFC 7323
+  §5.3): cited `paws-rejected` (`REASON_PAWS`), counted in the new
+  `ConversionStats.paws_bytes`, no flag.  The clock it is compared against
+  moves only on in-order arrival — the receiver's own rule — so a delayed
+  original that finally fills a hole is not rejected however many newer
+  segments passed it, which is what the real receivers in `tcp_reorder_ts`
+  and `tcp_wrap_ts` did and D-SACKed.  A repeat of accepted bytes is never
+  judged by PAWS.  Measured: the rule fires on none of the six real
+  captures under either policy.
+- **A segment from the far side of a hole wider than 2³¹ bytes is
+  recognised, and opens a new session** (#17, item 4).  Serial arithmetic
+  places anything more than 2³¹ away on the near side, so until now such a
+  segment was discarded as a retransmission the sender never made and the
+  rest of the direction was lost behind it.  A segment further behind than
+  the largest window TCP can advertise (2³⁰) whose TSval is newer than the
+  last accepted in order is from ahead — but the format stores records in
+  serial order, and a record that far past its predecessor *precedes* it,
+  so it cannot join the session: the session ends for the new reason
+  **`capture-gap`** (`END_CAPTURE_GAP`, beside `fin`/`rst`/`timeout`/
+  `capture-end`) and the segment opens the next, exactly as the idle
+  timeout splits a flow.  Counted in `ConversionStats.wrap_resolved`.
+  Without the option nothing changes.  `FlowTracker` gains a
+  `splits_before(pkt)` hook the conversion loop consults beside
+  `expired()`; the base answers no.
 - **`ConversionStats.ts_fallback`**, a `Counter` of how often a repeat could
   *not* be judged and was treated as a retransmission — the conservative
   reading spec `0.20` asks of a producer that cannot tell — keyed by why:
@@ -134,6 +162,13 @@ Requires packeteer **0.15.0**, up from `0.14.0`.
   `0.2.0` conversion of such a capture, reproduced now, differs in those
   reason strings and nowhere else.  A reader matching on `late-arrival`
   should match on the `late-` prefix, or on all three constants.
+- **Breaking: bytes move on a stream carrying the option that PAWS rejects
+  or that skips more than 2³¹ bytes.**  Neither shape exists in any fixture
+  — the sixteen pins hold, and `tcp_wrap_ts.pcap` under defaults decodes
+  identically to before any rule read the option, its wrap being one serial
+  arithmetic already crossed — so the break is stated for a capture this
+  tree has not seen: a `0.2.0` conversion of one would have written the
+  old segment as data, or the far side of the hole as overlap.
 
 **The packeteer floor is `0.15.0`**, up from `0.14.0`.  Nothing at runtime
 needs it — the option has been parsed onto every `PacketView` since `0.14.0`

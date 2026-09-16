@@ -115,7 +115,7 @@ def test_every_discarded_byte_is_either_cited_or_counted_as_unlocatable(
     assert stats.overlap_bytes > 0
     cited_bytes = sum(b.off_end - b.off_start for b in out.undecoded)
     assert cited_bytes + stats.unlocatable_bytes == (
-        stats.overlap_bytes + stats.duplicate_bytes + stats.late_bytes
+        stats.overlap_bytes + stats.duplicate_bytes + stats.late_bytes + stats.paws_bytes
     )
 
 

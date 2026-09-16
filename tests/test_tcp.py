@@ -167,6 +167,7 @@ def test_every_observed_byte_is_written_or_counted(tmp_path: pathlib.Path):
         + out.stats.overlap_bytes
         + out.stats.duplicate_bytes
         + out.stats.late_bytes
+        + out.stats.paws_bytes
     )
     assert accounted == observed
     assert out.only.stream(0) == b"aaaabbbbcc"
@@ -651,3 +652,104 @@ def test_the_reference_is_the_first_passer_not_the_latest_commit(tmp_path: pathl
 
     assert out.stats.late_retransmitted_bytes == 4
     assert _reasons(out) == ["late-retransmitted"]
+
+
+# ── the Timestamps option: PAWS and the wrap ────────────────────────────
+
+
+def test_a_segment_older_than_the_clock_is_rejected_whole(tmp_path: pathlib.Path):
+    """PAWS: new bytes with a TSval below ``TS.Recent`` are an old segment come round."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(90, 0)),
+        Seg(5, b"BBBB", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path)
+
+    assert out.only.stream(0) == b"aaaaBBBB"
+    assert out.stats.paws_bytes == 4
+    assert out.stats.overlap_bytes == 0
+    assert _reasons(out) == ["paws-rejected"]
+    assert _flagged(out) == [False, False]
+
+
+def test_a_delayed_original_behind_a_hole_passes_paws(tmp_path: pathlib.Path):
+    """The held segment's newer clock does not reject the original that fills the hole.
+
+    ``TS.Recent`` moves only on in-order arrival — which is what a real
+    receiver does, and what ``tcp_reorder_ts``'s D-SACKs prove.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", timestamps=(105, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(103, 0)),
+    ]), tmp_path)
+
+    assert out.only.stream(0) == b"aaaabbbbcccc"
+    assert out.stats.paws_bytes == 0
+
+
+def test_paws_does_not_apply_to_a_repeat(tmp_path: pathlib.Path):
+    """A repeat of accepted bytes is judged as a repeat, whatever its clock."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", timestamps=(101, 0)),
+        Seg(1, b"aaaa", timestamps=(90, 0)),
+        Seg(9, b"cccc", flags=TCP_PSH, timestamps=(102, 0)),
+    ]), tmp_path)
+
+    assert out.stats.paws_bytes == 0
+    assert out.stats.overlap_bytes == 4
+    assert _reasons(out) == ["overlap-discarded"]
+
+
+PAST_THE_WRAP = 1 + 4 + (1 << 31) + 100
+"""A segment this far on is more than any window behind, by serial arithmetic."""
+
+
+def test_a_segment_from_past_the_wrap_opens_a_new_session(tmp_path: pathlib.Path):
+    """A hole wider than 2**31: the clock says the segment is from ahead.
+
+    One session cannot hold both sides — records are stored in serial order,
+    and a record that far past its predecessor *precedes* it — so the first
+    ends for ``capture-gap`` and the second carries on.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)),
+        Seg(PAST_THE_WRAP, b"zzzz", flags=TCP_PSH, timestamps=(900, 0)),
+        Seg(PAST_THE_WRAP + 4, b"yyyy", flags=TCP_PSH, timestamps=(901, 0)),
+    ]), tmp_path)
+
+    assert [s.end_reason for s in out.sessions] == ["capture-gap", "capture-end"]
+    assert out.sessions[0].stream(0) == b"aaaa"
+    assert out.sessions[1].stream(0) == b"zzzzyyyy"
+    assert out.stats.wrap_resolved == 1
+    assert out.stats.sessions == 2
+    assert out.stats.overlap_bytes == 0
+
+
+@pytest.mark.parametrize("timestamps", [None, (90, 0)], ids=["no-option", "older-clock"])
+def test_without_a_newer_clock_the_far_side_of_a_hole_is_old_data(
+    tmp_path: pathlib.Path, timestamps: tuple[int, int] | None,
+):
+    """As before this release: serial arithmetic calls it behind, and it is dropped."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=None if timestamps is None else (100, 0)),
+        Seg(PAST_THE_WRAP, b"zzzz", flags=TCP_PSH, timestamps=timestamps),
+    ]), tmp_path)
+
+    assert len(out.sessions) == 1
+    assert out.only.stream(0) == b"aaaa"
+    assert out.stats.wrap_resolved == 0
+    assert out.stats.overlap_bytes == 4
+
+
+def test_a_resend_a_window_behind_is_not_mistaken_for_the_far_side(tmp_path: pathlib.Path):
+    """Behind by less than the largest window TCP allows is a repeat, clock or no clock."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)),
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(140, 0)),
+    ]), tmp_path)
+
+    assert len(out.sessions) == 1
+    assert out.stats.wrap_resolved == 0
+    assert out.stats.overlap_bytes == 4

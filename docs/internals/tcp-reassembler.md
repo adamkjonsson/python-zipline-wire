@@ -110,6 +110,37 @@ segment is judged against the `_Pending` directly rather than through
 `recent`, since the held segment is the transmission the repeat may be a
 copy of.
 
+### PAWS, and the far side of a hole
+
+Two rules from RFC 7323 read the option to decide *placement*, and neither
+fires on any of the six real captures — which is the point: a rule that
+emulates the receiver has to agree with what the receiver did.
+
+**PAWS** sits in `_accept` after the wholly-behind branch and before the
+trim: a segment that would contribute bytes, carrying a TSval older than
+`ts_recent`, is an old segment from before a wrap and is dropped whole —
+cited `paws-rejected`, counted `paws_bytes`, no flag.  It comes *after* the
+repeat branch deliberately: a repeat is judged as a repeat, whatever its
+clock, because the flag it may set is the sender's act and the receiver's
+reason for dropping the copy changes nothing about that.  Because
+`ts_recent` moves only on in-order arrival (below), a delayed original
+filling a hole passes — its clock is older than the held segments' but not
+older than the last in-order one — as it does on a real receiver.
+
+**The far side of a hole** is `splits_before`, consulted by the conversion
+loop before `packet()`, beside `expired()`.  `_delta` calls anything more
+than 2³¹ away *behind*, so a segment from the far side of a hole that wide
+would be discarded as a repeat and the direction lost.  Two facts identify
+it: it is further behind than the largest window TCP can advertise
+(`_MAX_WINDOW`, 2³⁰), so it is not a resend of anything; and its TSval is
+newer than `ts_recent`, which an old segment's cannot be.  What the rule
+*cannot* do is place it in this session — the writer stores records in
+serial order and refuses one that far past its predecessor, since serially
+it precedes — so the session ends for `capture-gap` and the segment opens
+the next.  `wrap_resolved` counts it.  The plan for this release had the
+segment "held as ahead"; that is not representable, in the buffer or in the
+format, and the split is what the format can say.
+
 ### Why a byte was late
 
 A byte that lands inside a committed gap is compared, by TSval, against the
@@ -223,8 +254,9 @@ segment, and a delayed original that finally fills the hole — with a TSval
 older than the segments that passed it — is *not* rejected.  A real receiver
 kept exactly those segments in `tcp_reorder_ts.pcap` and D-SACKed their
 resends; a reassembler that updated `ts_recent` from out-of-order data would
-disagree with the stack it emulates.  Nothing reads `ts_recent` yet; PAWS
-will, and this is the invariant it rests on.
+disagree with the stack it emulates.  PAWS and the far-side rule both read
+it, and this is the invariant they rest on; the test that catches an
+over-eager update is the delayed original behind a hole.
 
 **The `_stamp` helper.**  Draining a held segment appends it with the *held*
 packet's timestamp, flags and ack, not the arriving packet's, so a run's
