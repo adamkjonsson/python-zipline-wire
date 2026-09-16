@@ -124,6 +124,24 @@ Requires packeteer **0.15.0**, up from `0.14.0`.
   Without the option nothing changes.  `FlowTracker` gains a
   `splits_before(pkt)` hook the conversion loop consults beside
   `expired()`; the base answers no.
+- **A TCP direction longer than 2 GiB can now be converted** — as several
+  sessions, each ending for the new reason **`offset-limit`**
+  (`END_OFFSET_LIMIT`) and the next continuing the direction from its first
+  byte; `ConversionStats.offset_splits` counts them.  **This is a temporary
+  shim** for [zipline#146](https://github.com/adamkjonsson/zipline/issues/146),
+  found while measuring item 4: the format places a transport record by
+  `seq_start` against the origin with serial arithmetic, which cannot reach
+  past 2³¹, so python-zipline's writer refuses the record at 2 GiB and a
+  `0.2.0` conversion of any capture carrying more than that in one
+  direction — a large download — failed outright.  When the format unwraps
+  offsets along stored order the split, the reason and the counter go.  Two
+  more findings from the same measurement are filed upstream:
+  [zipline#147](https://github.com/adamkjonsson/zipline/issues/147), a hole
+  of 2³¹ or more between consecutive records having no representation (which
+  is why `capture-gap` above is a split and not a gap), and
+  [python-zipline#70](https://github.com/adamkjonsson/python-zipline/issues/70),
+  the reader zero-widthing records past 2 GiB on a stream without an `isn`
+  while reporting none of them unplaceable.
 - **`ConversionStats.ts_fallback`**, a `Counter` of how often a repeat could
   *not* be judged and was treated as a retransmission — the conservative
   reading spec `0.20` asks of a producer that cannot tell — keyed by why:

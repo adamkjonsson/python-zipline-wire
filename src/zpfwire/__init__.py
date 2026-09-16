@@ -49,7 +49,15 @@ from zpfwire.options import (
 )
 from zpfwire.stats import ConversionStats
 from zpfwire.survey import FlowSummary, survey
-from zpfwire.tcp import END_CAPTURE_GAP, END_FIN, END_RST, TS_ABSENT, TS_STALE, TcpFlow
+from zpfwire.tcp import (
+    END_CAPTURE_GAP,
+    END_FIN,
+    END_OFFSET_LIMIT,
+    END_RST,
+    TS_ABSENT,
+    TS_STALE,
+    TcpFlow,
+)
 from zpfwire.udp import UdpFlow
 
 __version__ = tool_version()
@@ -60,6 +68,7 @@ __all__ = [
     "END_CAPTURE_END",
     "END_CAPTURE_GAP",
     "END_FIN",
+    "END_OFFSET_LIMIT",
     "END_RST",
     "END_TIMEOUT",
     "OVERLAP_POLICIES",

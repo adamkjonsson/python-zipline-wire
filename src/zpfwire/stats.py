@@ -68,6 +68,12 @@ class ConversionStats:
             retransmission and the rest of the direction lost.  Each ends
             the session for ``capture-gap`` and opens another, so each is
             also a session.
+        offset_splits: Times a direction passed 2 GiB and was continued in a
+            new session, the old one ending for ``offset-limit``.
+            **Temporary** — a shim for
+            `zipline#146 <https://github.com/adamkjonsson/zipline/issues/146>`_,
+            the format's transport offset space reaching no further than
+            that from one origin; goes when it does.
         ts_fallback: How often a repeat could not be judged by the Timestamps
             option and was treated as a retransmission, keyed by why —
             :data:`~zpfwire.tcp.TS_ABSENT` when either side lacked the
@@ -114,6 +120,7 @@ class ConversionStats:
     duplicate_bytes: int = 0
     paws_bytes: int = 0
     wrap_resolved: int = 0
+    offset_splits: int = 0
     ts_fallback: Counter[str] = field(default_factory=Counter)
     bad_checksum: int = 0
     checksum_dropped_bytes: int = 0
@@ -172,6 +179,11 @@ class ConversionStats:
             lines.append(
                 f"wrap         {self.wrap_resolved} hole(s) wider than 2^30 bytes; "
                 "the session was split there",
+            )
+        if self.offset_splits:
+            lines.append(
+                f"offset       {self.offset_splits} direction(s) passed 2 GiB; "
+                "the session was split there (zipline#146)",
             )
         if self.ts_fallback:
             why = ", ".join(f"{key}: {count}" for key, count in sorted(self.ts_fallback.items()))

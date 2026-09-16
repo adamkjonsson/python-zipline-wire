@@ -30,6 +30,22 @@ specification's rule, and it is why the policy is a declared, hashed option.
 Bytes lost this way are counted as `late_bytes` and cited as `late-arrival`
 regions.
 
+**A direction longer than 2 GiB is written as several sessions.**  The
+format places a transport record by its `seq_start` against the stream
+origin with serial arithmetic, which is decidable only within 2³¹: a record
+further from the origin than that is "below" it, and python-zipline's writer
+refuses it — so without help a capture of any TCP direction carrying more
+than 2 GiB, an ordinary large download, could not be converted at all.
+Until the format unwraps offsets along stored order
+([zipline#146](https://github.com/adamkjonsson/zipline/issues/146)) zpfwire
+ends the session at that point for `offset-limit` and continues the
+direction in a new one, whose origin is its first byte; every record is
+then placed, and `stats.offset_splits` says it happened.  What it costs: a
+reader sees several sessions with one key where the wire had one
+connection, and a segment reordered across the boundary — sent below 2 GiB,
+arriving after the split — lands in the new session as a repeat rather than
+in the old one where it belonged.  Both go with the shim.
+
 **A hole wider than 2³¹ bytes in one direction splits the session.**  The
 offset space is modular over 2³² and records are stored in serial order, so
 two records of one participant cannot be more than 2³¹ apart with nothing

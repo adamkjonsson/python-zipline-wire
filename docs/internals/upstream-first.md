@@ -112,10 +112,16 @@ thing.
 
 ## Shims
 
-There are none right now.  When there is one, it looks like this: a comment
-naming the issue, and a note in the current release plan under `plans/`
-saying which phase is waiting.  When the fix lands, the shim is deleted in
-the same commit that records the version bump.
+One, right now:
+
+| Shim | Waiting on | Where |
+|------|------------|-------|
+| A TCP direction is split into a new session every 2 GiB, the old one ending for `offset-limit`, because the format places a record by `seq_start` against the origin with serial arithmetic and so cannot reach past 2³¹ | [zipline#146](https://github.com/adamkjonsson/zipline/issues/146) — offsets unwrapping along stored order | `tcp.py`: `_OFFSET_LIMIT`, `END_OFFSET_LIMIT`, `_Stream.origin`, the second branch of `splits_before`; `stats.offset_splits`; the tests under *SHIM* in `test_tcp.py` |
+
+A shim looks like this: a comment naming the issue, and a note in the
+current release plan under `plans/` saying which phase is waiting.  When the
+fix lands, the shim is deleted in the same commit that records the version
+bump.
 
 {doc}`capture-seam` is the worked example of a shim's whole lifecycle — five
 workarounds in one module, all now gone.

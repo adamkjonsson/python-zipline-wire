@@ -171,6 +171,7 @@ Every session carries a reason:
 | `END_TIMEOUT` | `"timeout"` | Silence longer than `session_timeout` |
 | `END_CAPTURE_END` | `"capture-end"` | The capture ran out first |
 | `END_CAPTURE_GAP` | `"capture-gap"` | The capture skipped more than 2³¹ bytes of one direction — further than a session can span |
+| `END_OFFSET_LIMIT` | `"offset-limit"` | One direction passed 2 GiB, the most the format can place from one origin; the next session carries on.  **Temporary**, for [zipline#146](https://github.com/adamkjonsson/zipline/issues/146) |
 
 A timed-out conversation is closed and a later packet between the same
 endpoints starts a *new* session, so one flow can produce several.  So does a

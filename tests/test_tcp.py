@@ -753,3 +753,75 @@ def test_a_resend_a_window_behind_is_not_mistaken_for_the_far_side(tmp_path: pat
     assert len(out.sessions) == 1
     assert out.stats.wrap_resolved == 0
     assert out.stats.overlap_bytes == 4
+
+
+# ── SHIM (zipline#146): a direction longer than 2 GiB ──────────────────
+#
+# The format places a transport record by its seq_start against the stream
+# origin with serial arithmetic, which reaches 2**31 and no further: the
+# writer refuses a record past that, and a reader zero-widths one.  Until the
+# format unwraps offsets along stored order, a direction is continued in a
+# new session every 2 GiB.  Delete this section with the shim.
+
+GIB = 1 << 30
+
+
+def _long_stream(samples: int) -> list[bytes]:
+    """Build the handshake, then one 4-byte segment per GiB of one direction."""
+    return handshake() + [
+        Seg((ISN + 1 + k * GIB) % (1 << 32), b"kkkk", flags=TCP_PSH,
+            timestamps=(100 + k, 0)).frame(ack=5001)
+        for k in range(samples)
+    ]
+
+
+def test_a_direction_past_2_gib_continues_in_a_new_session(tmp_path: pathlib.Path):
+    out = to_zpf(capture_of(_long_stream(4)), tmp_path,
+                 options=ReassemblyOptions(reorder_window=0))
+
+    assert [s.end_reason for s in out.sessions] == ["offset-limit", "capture-end"]
+    assert [r.seq_start for r in out.sessions[0].records if r.payload] == [
+        ISN + 1, ISN + 1 + GIB,
+    ]
+    assert [r.seq_start for r in out.sessions[1].records if r.payload] == [
+        ISN + 1 + 2 * GIB, ISN + 1 + 3 * GIB,
+    ]
+    assert out.stats.offset_splits == 1
+    assert out.diagnostics == [] and out.unplaceable == []
+
+
+def test_every_record_of_a_split_stream_is_placed(tmp_path: pathlib.Path):
+    """The point of the shim: no data record has a zero-width range, in any session."""
+    out = to_zpf(capture_of(_long_stream(5)), tmp_path,
+                 options=ReassemblyOptions(reorder_window=0))
+
+    with zpf.open(out.path) as reader:
+        for session in reader.sessions():
+            for participant in session.participants:
+                pid = participant.participant_id
+                for record, (start, end) in zip(session.stream(pid), session.ranges(pid),
+                                                strict=True):
+                    assert end - start == len(record.payload)
+    assert out.stats.offset_splits == 2
+    assert out.stats.sessions == 3
+
+
+def test_a_record_straddling_the_limit_stays_where_it_starts(tmp_path: pathlib.Path):
+    """Only the start is placed; a record beginning just under 2**31 is fine."""
+    out = to_zpf(capture_of(handshake() + [
+        Seg(ISN + 1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)).frame(ack=5001),
+        Seg(ISN + 1 + (1 << 31) - 2, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)).frame(ack=5001),
+    ]), tmp_path, options=ReassemblyOptions(reorder_window=0))
+
+    assert len(out.sessions) == 1
+    assert out.stats.offset_splits == 0
+    assert out.diagnostics == [] and out.unplaceable == []
+
+
+def test_a_split_stream_sequences_cleanly(tmp_path: pathlib.Path):
+    out = to_zpf(capture_of(_long_stream(4)), tmp_path,
+                 options=ReassemblyOptions(reorder_window=0), sequenced=True)
+
+    assert out.diagnostics == [] and out.unplaceable == []
+    for session in out.sessions:
+        zpf.verify_sequenced(session.records, participant_count=len(session.participants))
