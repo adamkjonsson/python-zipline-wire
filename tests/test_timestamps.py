@@ -277,3 +277,66 @@ def test_the_stream_that_wraps_is_untouched_by_the_wrap_rules(tmp_path: pathlib.
     assert decode_digest(out) == (
         "sha256:1b7cb603bfa511d1495a579d38540b9ee319b63f395ed90d3719a5b9a1f7eb1e"
     )
+
+
+# ── favor-acked ─────────────────────────────────────────────────────────
+
+ACKED = ReassemblyOptions(overlap="favor-acked")
+
+
+def streams(out: object) -> dict[int, bytes]:
+    (session,) = out.sessions  # type: ignore[attr-defined]
+    return {p.participant_id: session.stream(p.participant_id) for p in session.participants}
+
+
+def test_favor_acked_takes_the_bytes_the_receiver_kept(tmp_path: pathlib.Path):
+    """``tcp_corrupt_ts``: five segments corrupted in flight, each resent clean.
+
+    ``favor-old`` writes the corrupt copies.  ``favor-acked`` writes what the
+    receiver's echo says it kept — which is what ``checksum="drop"`` writes
+    too, arrived at from the other side: the checksum says which copy was
+    damaged, the echo says which copy the receiver accepted, and on real
+    traffic they agree at every one of the five offsets.
+    """
+    old = streams(to_zpf(CAPTURES / "tcp_corrupt_ts.pcap", tmp_path / "old"))
+    acked_out = to_zpf(CAPTURES / "tcp_corrupt_ts.pcap", tmp_path / "acked", options=ACKED)
+    acked = streams(acked_out)
+    dropped = streams(to_zpf(CAPTURES / "tcp_corrupt_ts.pcap", tmp_path / "drop",
+                             options=ReassemblyOptions(checksum="drop")))
+
+    server = next(pid for pid, data in old.items() if len(data) == 65536)
+    differing = [i for i in range(65536) if old[server][i] != acked[server][i]]
+    assert differing == [13393, 21537, 28435, 31668, 58959]
+    assert acked == dropped
+    assert acked_out.stats.acked_swaps == 5
+    assert acked_out.stats.acked_fallback_bytes == 0
+    assert acked_out.stats.overlap_bytes == 5 * 524          # the five losers
+    assert acked_out.diagnostics == [] and acked_out.unplaceable == []
+
+
+def test_favor_acked_without_the_reverse_direction_falls_back(tmp_path: pathlib.Path):
+    """The same capture with the receiver's packets filtered out: no evidence, counted."""
+    def only_server(p: object) -> bool:
+        return p.src_port == 8443  # type: ignore[attr-defined]
+
+    old = streams(to_zpf(CAPTURES / "tcp_corrupt_ts.pcap", tmp_path / "old",
+                         packet_filter=only_server))
+    acked_out = to_zpf(CAPTURES / "tcp_corrupt_ts.pcap", tmp_path / "acked",
+                       options=ACKED, packet_filter=only_server)
+
+    assert streams(acked_out) == old
+    assert acked_out.stats.acked_swaps == 0
+    assert acked_out.stats.acked_fallback_bytes == 5 * 524
+
+
+@pytest.mark.parametrize("name", [n for n in REAL if n != "tcp_corrupt_ts.pcap"])
+def test_favor_acked_costs_nothing_where_copies_agree(tmp_path: pathlib.Path, name: str):
+    """Every other resend in the corpus is byte-identical to its original."""
+    old_out = to_zpf(CAPTURES / name, tmp_path / "old")
+    acked_out = to_zpf(CAPTURES / name, tmp_path / "acked", options=ACKED)
+
+    assert streams(acked_out) == streams(old_out)
+    assert acked_out.stats.acked_swaps == 0
+    assert acked_out.stats.acked_fallback_bytes == 0
+    assert acked_out.stats.records == old_out.stats.records
+    assert acked_out.diagnostics == [] and acked_out.unplaceable == []

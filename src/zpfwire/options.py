@@ -18,13 +18,23 @@ __all__ = [
 DECODER_NAME = "tcp-reassembly"
 """Name recorded on the Decoder Descriptor for the reassembly stage."""
 
-OVERLAP_POLICIES = ("favor-old",)
+OVERLAP_POLICIES = ("favor-old", "favor-acked")
 """How to resolve bytes that arrive twice with differing content.
 
-One value, and deliberately so.  A ``favor-new`` was offered until 0.2.0 and
-never read: a single-pass writer cannot prefer a later copy against bytes it
-has already written, and a policy that held only while a run happened to be
-open would not have been a policy.  See :attr:`ReassemblyOptions.overlap`.
+``favor-old`` keeps the first copy seen, which is what a single-pass writer
+can always do.  ``favor-acked`` keeps the copy the *receiver* kept, read
+from the TSecr on the peer's first acknowledgement covering the range — the
+TCP Timestamps option echoes the TSval of the transmission that advanced
+the window.  That evidence arrives after both copies, so every run is held
+after it closes until the peer's ack covers it, bounded by ``flush_timeout``
+and ``reorder_window``; where the evidence never comes the run is written as
+``favor-old`` would have written it, and the fallback is counted.
+
+A ``favor-new`` was offered until 0.2.0 and never read, for the reason that
+makes ``favor-acked`` need the hold: a writer cannot prefer a later copy
+against bytes it has already written.  It stays withdrawn — "the later
+copy" is not a fact about the connection, and "the copy the receiver kept"
+is.  See :attr:`ReassemblyOptions.overlap`.
 """
 
 CHECKSUM_POLICIES = ("ignore", "drop")

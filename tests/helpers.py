@@ -184,6 +184,7 @@ class Seg:
         flags: TCP flags to set in addition to ACK.
         from_client: Direction the segment travels.
         timestamps: The ``(TSval, TSecr)`` pair, or ``None`` for no option.
+        ack: The acknowledgement number, or ``None`` to take :meth:`frame`'s.
 
     """
 
@@ -195,15 +196,19 @@ class Seg:
         flags: int = TCP_ACK,
         from_client: bool = True,
         timestamps: tuple[int, int] | None = None,
+        ack: int | None = None,
     ) -> None:
         self.seq = seq
         self.data = data
         self.flags = flags
         self.from_client = from_client
         self.timestamps = timestamps
+        self.ack = ack
 
     def frame(self, *, ack: int = 0) -> bytes:
         """Render this segment as a frame."""
+        if self.ack is not None:
+            ack = self.ack
         if self.from_client:
             return tcp_packet(
                 src=CLIENT_IP, dst=SERVER_IP,

@@ -142,6 +142,30 @@ Requires packeteer **0.15.0**, up from `0.14.0`.
   [python-zipline#70](https://github.com/adamkjonsson/python-zipline/issues/70),
   the reader zero-widthing records past 2 GiB on a stream without an `isn`
   while reporting none of them unplaceable.
+- **`overlap="favor-acked"`: keep the copy the receiver kept**
+  ([#18](https://github.com/adamkjonsson/python-zipline-wire/issues/18)).
+  When two copies of a range disagree — a segment corrupted in flight, then
+  resent clean — the peer's first acknowledgement covering the range echoes,
+  as TSecr, the TSval of the transmission that advanced its window, and
+  that copy is written.  The evidence arrives after both copies, so under
+  this policy every run is held after it closes until the peer's ack covers
+  it; the hold is bounded by `reorder_window` and `flush_timeout`, which
+  gain no companion field so `params_digest()` moves only for files that
+  choose the policy.  A run the bound releases or the session ends on, a
+  range whose copies lacked the option, or an ack that did, are decided as
+  `favor-old` and counted in the new `ConversionStats.acked_fallback_bytes`;
+  `acked_swaps` counts the ranges where the receiver's choice was not the
+  first copy.  Only disagreeing copies are held, so memory is bounded by
+  real disagreements.  The record covering a swapped range keeps
+  `retransmit` — the sender did resend — and its `timestamp` moves to the
+  resend; the loser is cited wherever it lay.  Measured on packeteer's
+  `tcp_corrupt_ts.pcap`: five swaps, no fallback, and a stream identical to
+  what `checksum="drop"` writes — the receiver's echo and our checksum
+  agreeing at every one of the five offsets, from opposite sides.  On the
+  other five real captures, where every resend is byte-identical to its
+  original, the policy writes the same bytes as `favor-old` with no
+  fallback.  `favor-new` stays withdrawn: this is the policy that can be
+  honoured, and that one is not.
 - **`ConversionStats.ts_fallback`**, a `Counter` of how often a repeat could
   *not* be judged and was treated as a retransmission — the conservative
   reading spec `0.20` asks of a producer that cannot tell — keyed by why:

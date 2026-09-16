@@ -213,6 +213,61 @@ once every peer record it acks has been emitted, so an understated ack delays
 a record for a reason that is not in the capture.  Serial, never `max()`: a
 32-bit wrap in the middle of a run is exactly where a naive maximum inverts.
 
+## The held run: `favor-acked`
+
+Under `overlap="favor-acked"` a run is not written when it closes.  `_flush`
+moves it onto `_Stream.unacked`, a deque in closing order — which is
+ascending `seq_start` — and it is written by one of three things:
+
+| Trigger | Where | Verdict for a contested range |
+|---------|-------|-------------------------------|
+| The peer's ack covers the run's end | `_settle`, from `packet()` on every peer packet carrying `ACK`, *before* that packet's own bytes are taken | the alternate's own evidence, below |
+| `flush_timeout` since the run closed, or `unacked_bytes > reorder_window` | `_settle_stale`, on every packet and at `_flush` | fallback: `favor-old`, counted |
+| Session end | `finish()`, after `_commit_remaining` and `_flush` | fallback: `favor-old`, counted |
+
+**What is held against a run.**  A repeat judged a *retransmission* whose
+bytes **differ** from what the run holds becomes an `_Alternate` on that run
+— `(seq, end, tsval, data, ts, ack, payload_offset)` — via `_contested`,
+which is consulted at every site `_discard` is, and answers *taken* (do not
+count or cite yet: which copy loses is not known) or *not taken* (discard as
+usual: the policy is `favor-old`, the verdict is a duplicate or a fallback —
+no second clock to match an echo against — or the copies agree, where the
+choice is moot).  A repeat of a *held* segment goes onto the `_Pending`'s
+own alternates and is carried into the run with it, clipped by any trim.
+Only disagreeing copies are kept, so memory is bounded by genuine
+disagreements rather than by repeats.
+
+**The evidence is per alternate, from the first ack covering *its* range**
+— not the ack that releases the run.  The receiver echoes the TSval of
+whatever *last* advanced its window, so by the time a coalesced run's end is
+acknowledged the echo names a later segment than the resend that filled this
+hole.  `_settle` therefore first walks every alternate of every held *and
+open* run and stamps `decided`/`evidence` on those the ack covers, and only
+then writes the runs whose end it covers.  The first implementation took the
+evidence from the releasing ack and got 3 of `tcp_corrupt_ts`'s 5; this gets
+all 5.
+
+**Writing** (`_write`) resolves each alternate: swap when it is decided, the
+echo equals the alternate's TSval and no kept contributor's — then the bytes
+are spliced in, the displaced contributor(s) are cited as the losers and cut
+out of `contributors` (`_without`), and the alternate joins them; otherwise
+the alternate is the loser, cited, and counted as a fallback if it was
+undecided or its ack carried no option.  The hints are then computed from
+the contributors as finally chosen (`_hints`), which is why they moved from
+incremental fields on `_Run` to a function: a swapped-in resend is the last
+contributor and takes `ts` with it, and the copy it displaced stops counting
+towards `ts_first`.  For `favor-old` the function returns exactly what the
+incremental fields did — the sixteen pins are the proof.
+
+**Interactions.**  `coalesce=False` closes a run per segment; each is held
+and settled by the same rule, just more of them.  `--sequenced` is
+unaffected: records still reach zpf in per-direction `seq_start` order, and
+the linearisation is zpf's own buffer of built blocks — which is also why
+the hold could not live there.  The idle `timeout` and the two `splits_before`
+reasons all go through `finish()`.  A one-way capture never acks, so every
+run waits out `flush_timeout` (measured by the packets that do arrive, or
+the session's end) and falls back, counted.
+
 ## Two things that produce no record
 
 **Pure acknowledgements.**  The specification permits zero-length ack-only

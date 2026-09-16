@@ -74,6 +74,18 @@ class ConversionStats:
             `zipline#146 <https://github.com/adamkjonsson/zipline/issues/146>`_,
             the format's transport offset space reaching no further than
             that from one origin; goes when it does.
+        acked_swaps: Under ``overlap="favor-acked"``, ranges where the copy
+            the receiver acknowledged — by the TSecr its ack echoed — was
+            not the first copy seen, and replaced it.  Each is a range the
+            ``favor-old`` policy would have written wrong.
+        acked_fallback_bytes: Under ``favor-acked``, bytes of disagreeing
+            copies decided as ``favor-old`` would decide them because the
+            evidence never came: no ack covered the run before
+            ``flush_timeout`` or ``reorder_window`` was reached, or the ack
+            that did carried no Timestamps option, or the session ended
+            first.  Non-zero means the file's overlap policy was, for those
+            bytes, not the one its Decoder Descriptor names — which is why
+            it is counted rather than silent.
         ts_fallback: How often a repeat could not be judged by the Timestamps
             option and was treated as a retransmission, keyed by why —
             :data:`~zpfwire.tcp.TS_ABSENT` when either side lacked the
@@ -120,6 +132,8 @@ class ConversionStats:
     duplicate_bytes: int = 0
     paws_bytes: int = 0
     wrap_resolved: int = 0
+    acked_swaps: int = 0
+    acked_fallback_bytes: int = 0
     offset_splits: int = 0
     ts_fallback: Counter[str] = field(default_factory=Counter)
     bad_checksum: int = 0
@@ -179,6 +193,15 @@ class ConversionStats:
             lines.append(
                 f"wrap         {self.wrap_resolved} hole(s) wider than 2^30 bytes; "
                 "the session was split there",
+            )
+        if self.acked_swaps:
+            lines.append(
+                f"acked        {self.acked_swaps} range(s) took the copy the receiver echoed",
+            )
+        if self.acked_fallback_bytes:
+            lines.append(
+                f"acked        {self.acked_fallback_bytes} contested bytes decided as favor-old "
+                "(no ack evidence)",
             )
         if self.offset_splits:
             lines.append(

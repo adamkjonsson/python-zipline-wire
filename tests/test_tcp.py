@@ -825,3 +825,198 @@ def test_a_split_stream_sequences_cleanly(tmp_path: pathlib.Path):
     assert out.diagnostics == [] and out.unplaceable == []
     for session in out.sessions:
         zpf.verify_sequenced(session.records, participant_count=len(session.participants))
+
+
+# ── overlap="favor-acked": the copy the receiver kept ───────────────────
+#
+# Two copies of a range disagree — a segment corrupted in flight, then resent
+# clean.  favor-old keeps the first seen.  favor-acked keeps the one whose
+# TSval the peer's first covering ack echoed as TSecr: the receiver's own
+# word on which copy advanced its window.  The evidence arrives after both
+# copies, so a run is held after it closes until the peer acks it.
+
+ACKED = ReassemblyOptions(overlap="favor-acked")
+
+
+def _ack(ack: int, tsecr: int | None, tsval: int = 500) -> Seg:
+    """Build a bare acknowledgement from the server, echoing *tsecr*."""
+    return Seg(1, b"", from_client=False, ack=ack,
+               timestamps=None if tsecr is None else (tsval, tsecr))
+
+
+def _corrupt_then_resent(*, echo: int | None, ack: bool = True) -> list[Seg]:
+    """Build a corrupted original, its clean resend, more data, and the server's ack."""
+    segs = [
+        Seg(1, b"XXXX", timestamps=(100, 0)),                  # corrupted in flight
+        Seg(1, b"aaaa", timestamps=(140, 0)),                  # resent clean
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(141, 0)),   # closes the run
+    ]
+    if ack:
+        segs.append(_ack(9, echo))
+    return segs
+
+
+def test_favor_acked_keeps_the_copy_the_receiver_echoed(tmp_path: pathlib.Path):
+    old = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path / "old")
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path / "acked",
+                   options=ACKED)
+
+    assert old.only.stream(0) == b"XXXXbbbb"
+    assert acked.only.stream(0) == b"aaaabbbb"
+    assert acked.stats.acked_swaps == 1
+    assert acked.stats.acked_fallback_bytes == 0
+    assert acked.stats.overlap_bytes == 4          # the loser, whichever it was
+    assert _reasons(acked) == ["overlap-discarded"]
+    assert _flagged(acked) == [True]               # the sender did resend
+    assert acked.diagnostics == [] and acked.unplaceable == []
+
+
+def test_favor_acked_keeps_the_first_copy_when_the_receiver_echoed_it(
+    tmp_path: pathlib.Path,
+):
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=100)), tmp_path, options=ACKED)
+
+    assert acked.only.stream(0) == b"XXXXbbbb"
+    assert acked.stats.acked_swaps == 0
+    assert acked.stats.acked_fallback_bytes == 0
+
+
+def test_the_loser_is_cited_wherever_it_lies(tmp_path: pathlib.Path):
+    """The Undecoded block names the copy that lost, not the one that arrived second."""
+    buf = tcp_segments(_corrupt_then_resent(echo=140))
+    capture = buf.getvalue()
+    acked = to_zpf(buf, tmp_path, options=ACKED)
+
+    (loser,) = acked.undecoded
+    assert capture[loser.off_start:loser.off_end] == b"XXXX"
+
+
+def test_a_swap_moves_the_timestamp_to_the_resend(tmp_path: pathlib.Path):
+    """The record's time is its last contributing packet, and the resend is one now."""
+    old = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path / "old")
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path / "acked",
+                   options=ACKED)
+
+    assert old.only.records[0].timestamp == acked.only.records[0].timestamp
+    assert old.only.records[0].ts_first is not None
+    assert acked.only.records[0].ts_first is not None
+    assert acked.only.records[0].ts_first > old.only.records[0].ts_first
+
+
+@pytest.mark.parametrize("echo", [None], ids=["ack-without-option"])
+def test_an_ack_without_the_option_is_no_evidence(tmp_path: pathlib.Path, echo: int | None):
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=echo)), tmp_path, options=ACKED)
+
+    assert acked.only.stream(0) == b"XXXXbbbb"
+    assert acked.stats.acked_fallback_bytes == 4
+
+
+def test_a_one_way_capture_falls_back_at_the_end(tmp_path: pathlib.Path):
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=140, ack=False)), tmp_path,
+                   options=ACKED)
+
+    assert acked.only.stream(0) == b"XXXXbbbb"
+    assert acked.stats.acked_fallback_bytes == 4
+    assert acked.stats.records == 1
+
+
+def test_a_run_held_past_flush_timeout_falls_back(tmp_path: pathlib.Path):
+    """The evidence came, but too late: something else arrived first, past the bound."""
+    segs = _corrupt_then_resent(echo=140, ack=False) + [
+        Seg(9, b"cccc", flags=TCP_PSH, timestamps=(150, 0)),   # 2 s later; the bound expires
+        _ack(13, 140),                                         # covers everything, now
+    ]
+    acked = to_zpf(tcp_segments(segs, step_us=2_000_000), tmp_path,
+                   options=ReassemblyOptions(overlap="favor-acked", flush_timeout=1.0))
+
+    assert acked.only.stream(0) == b"XXXXbbbbcccc"
+    assert acked.stats.acked_fallback_bytes == 4
+    assert acked.stats.acked_swaps == 0
+
+
+def test_the_hold_is_bounded_by_reorder_window(tmp_path: pathlib.Path):
+    """Closed runs held beyond the window are written oldest first, on the fallback."""
+    segs = _corrupt_then_resent(echo=140, ack=False) + [
+        Seg(9, b"cccc", flags=TCP_PSH, timestamps=(142, 0)),   # a second closed run: 12 > 8
+        _ack(13, 140),
+    ]
+    acked = to_zpf(tcp_segments(segs), tmp_path,
+                   options=ReassemblyOptions(overlap="favor-acked", reorder_window=8))
+
+    assert acked.only.stream(0) == b"XXXXbbbbcccc"
+    assert acked.stats.acked_fallback_bytes == 4
+
+
+def test_the_evidence_is_the_first_ack_covering_the_range_not_the_run(
+    tmp_path: pathlib.Path,
+):
+    """The receiver echoes what last advanced its window, so a later ack names later data."""
+    segs = [
+        Seg(1, b"XXXX", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(140, 0)),
+        _ack(5, 140),                                          # covers the range: echoes the resend
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(160, 0)),
+        _ack(9, 160),                                          # covers the run: echoes bbbb
+    ]
+    acked = to_zpf(tcp_segments(segs), tmp_path, options=ACKED)
+
+    assert acked.only.stream(0) == b"aaaabbbb"
+    assert acked.stats.acked_swaps == 1
+
+
+def test_a_disagreeing_copy_of_a_held_segment_is_contested_too(tmp_path: pathlib.Path):
+    """Site three: both copies wait behind the hole, and the run takes the echoed one."""
+    segs = [
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"XXXX", timestamps=(102, 0)),                  # held, corrupted
+        Seg(9, b"cccc", timestamps=(140, 0)),                  # its clean resend, held too
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(141, 0)),   # fills; the run closes
+        _ack(13, 140),
+    ]
+    acked = to_zpf(tcp_segments(segs), tmp_path, options=ACKED)
+
+    assert acked.only.stream(0) == b"aaaabbbbcccc"
+    assert acked.stats.acked_swaps == 1
+
+
+def test_a_held_segments_trimmed_head_is_contested_against_the_fill(tmp_path: pathlib.Path):
+    """Site four: the fill re-covers the head of a held segment with different bytes."""
+    def convert(echo: int) -> bytes:
+        segs = [
+            Seg(1, b"aaaa", timestamps=(100, 0)),
+            Seg(7, b"XXcc", timestamps=(101, 0)),              # held; its head disagrees with..
+            Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(140, 0)),  # ..the fill's tail
+            _ack(11, echo),
+        ]
+        return to_zpf(tcp_segments(segs), tmp_path / str(echo), options=ACKED).only.stream(0)
+
+    assert convert(140) == b"aaaabbbbcc"   # the receiver kept the fill
+    assert convert(101) == b"aaaabbXXcc"   # the receiver kept the held segment
+
+
+def test_agreeing_copies_are_not_held_against_the_run(tmp_path: pathlib.Path):
+    """Where the copies agree the choice is moot; it is discarded at once, as favor-old does."""
+    segs = [
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(140, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(141, 0)),
+        _ack(9, 140),
+    ]
+    acked = to_zpf(tcp_segments(segs), tmp_path, options=ACKED)
+
+    assert acked.stats.overlap_bytes == 4
+    assert acked.stats.acked_swaps == 0
+    assert acked.stats.acked_fallback_bytes == 0
+
+
+def test_favor_acked_sequences_cleanly(tmp_path: pathlib.Path):
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path,
+                   options=ACKED, sequenced=True)
+
+    assert acked.only.stream(0) == b"aaaabbbb"
+    assert acked.diagnostics == [] and acked.unplaceable == []
+    zpf.verify_sequenced(acked.only.records, participant_count=len(acked.only.participants))
+
+
+def test_favor_acked_is_recorded_in_the_policy_digest():
+    assert ACKED.params_digest() != ReassemblyOptions().params_digest()

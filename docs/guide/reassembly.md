@@ -82,20 +82,53 @@ convert a capture live or five years later.
 ### `overlap` — which copy wins
 
 When retransmitted bytes disagree with bytes already accepted, `"favor-old"`
-keeps what was seen first, as most receiving stacks do.  It is the only
-policy, and the reason is structural rather than a gap: the converter writes
-in one pass, so once a record is out, a later copy of its bytes cannot replace
-them.  Any rule that prefers a later copy — the retransmission, or the copy
-the peer's acknowledgement turns out to echo — means holding every run until
-the choice can be made, which is a different reassembler.  (A `"favor-new"`
-was offered until 0.2.0; it was never read, and was withdrawn rather than
-left to put a policy in the digest that no code applied.)
+keeps what was seen first.  That is what a single-pass writer can always do,
+and it is the default.
+
+`"favor-acked"` keeps the copy the **receiver** kept.  The evidence is the
+TCP Timestamps option: the peer's acknowledgement echoes, as TSecr, the TSval
+of the transmission that advanced its window, and every transmission carries
+its own TSval — so the first ack covering a range says which copy of it the
+receiver accepted, in the receiver's own words.  A segment corrupted in
+flight and resent clean is the case: the receiver drops the damaged copy on
+its checksum and acks the resend, echoing the resend's clock.  On packeteer's
+real capture of exactly that (`tcp_corrupt_ts.pcap`, five corruptions),
+`favor-acked` writes the same bytes `checksum="drop"` writes — arrived at
+from the receiver's side rather than ours, which matters because a capture
+taken on a host with checksum offload has every checksum wrong and `"drop"`
+would discard the whole stream.
+
+What it costs, and why it could not be the default: the evidence arrives
+*after* both copies, so every run is **held after it closes until the peer's
+ack covers it**, and only then written.  The hold is bounded by the two
+bounds the policy already has — `reorder_window` bytes of closed runs per
+direction, `flush_timeout` seconds since a run closed — and a run the bound
+releases, or that the session ends on, is written as `favor-old` would have
+written it.  So is a range whose copies both lacked the option, or whose
+covering ack did.  Every such byte is counted in
+`stats.acked_fallback_bytes`, so a file's digest never names a rule the file
+silently did not follow; `stats.acked_swaps` counts the ranges where the
+receiver's choice was *not* the first copy.  A one-way capture, with no acks
+in it at all, falls back on every contested byte and says so.  Only
+*disagreeing* copies are held against a run, so memory is bounded by real
+disagreements, not by repeats.
+
+The record covering a swapped range carries `retransmit` either way — the
+flag is the sender's act — and its `timestamp` moves to the resend, which is
+now the packet that completed it.  The loser is cited as an `Undecoded`
+region wherever it lay in the capture.
+
+A `"favor-new"` was offered until 0.2.0 and never read, for the reason that
+makes `"favor-acked"` need the hold: a writer cannot prefer a later copy
+against bytes already written.  It stays withdrawn — "the later copy" is not
+a fact about the connection, and "the copy the receiver kept" is.
 
 Disagreeing retransmits are rare in healthy traffic and are a classic evasion
 technique in unhealthy traffic: a sender that knows a monitor prefers one copy
 can hide bytes in the other.  If you are analysing traffic adversarially, this
-is the setting to know about, and the digest is what lets you prove which rule
-the file was built under — even while there is only one.
+is the setting to know about — `"favor-acked"` is the one that follows the
+receiver rather than a rule the sender can predict — and the digest is what
+lets you prove which rule the file was built under.
 
 ### `session_timeout` — when a conversation is over
 

@@ -111,12 +111,14 @@ traffic with realistic delay this is the minority — 6 of 18 late regions in
 `tcp_reorder_ts.pcap`, none in `tcp_gap_ts.pcap` — and it is the option's
 granularity, not the tool's.
 
-**A fourth thing the option could settle needs a different reassembler:**
-which copy of disagreeing bytes the *receiver* kept, read from the TSval its
-acknowledgement echoes.  That evidence arrives after the data it settles, by
-which time the first copy has been written, so acting on it means holding
-every run until the peer acknowledges it.  It is the same reason `overlap`
-has one policy — see {doc}`../guide/reassembly`.
+**`favor-acked` is evidence, not proof.**  RFC 7323 §4.3 lets a receiver's
+`TS.Recent` advance from an old duplicate that lands inside its delayed-ACK
+window, so a copy arriving there can steal the echo from the copy the
+receiver actually kept.  It is nonetheless the receiver's own word, and
+independent of the capture point, which the order copies arrived in is not.
+And it needs both directions in the capture and the option negotiated;
+without either, every contested byte is decided as `favor-old` and counted
+as such — see {doc}`../guide/reassembly`.
 
 **Byte ranges for discarded fragments.** A datagram reassembled from several
 IP fragments occupies several discontiguous ranges of the capture, and an

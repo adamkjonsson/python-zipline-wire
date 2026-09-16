@@ -12,8 +12,9 @@ converted    219
 sessions     1
 records      32
 payload      78901 bytes
-overlap      8875 bytes (discarded)
+overlap      8875 bytes (retransmitted, discarded)
 undecoded    12 region(s) cited
+ts fallback  12 repeat(s) treated as retransmitted without timestamp evidence (absent: 12)
 ```
 
 The output is one session per conversation, two participants per session, and
@@ -75,7 +76,7 @@ they turn up later.  These settings are what decide when that happens.
 |------|---------|-----------------|
 | `--reorder-window BYTES` | `262144` | How much out-of-order data a direction may hold before the oldest gap is committed. `0` disables buffering entirely. |
 | `--flush-timeout SECONDS` | `5.0` | How long a gap may stay unfilled, measured in capture time, before it is committed |
-| `--overlap {favor-old}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted.  One policy: a single-pass writer cannot prefer a copy against bytes already written — see {doc}`../guide/reassembly` |
+| `--overlap {favor-old,favor-acked}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted: the first seen, or the one the receiver's acknowledgement echoed — see {doc}`../guide/reassembly` |
 | `--session-timeout SECONDS` | `300.0` | Silence after which a conversation is closed and a later packet starts a new session |
 | `--no-coalesce` | off | Emit one record per segment instead of one per contiguous byte run |
 | `--checksum {ignore,drop}` | `ignore` | What to do with a packet whose transport checksum does not verify. `drop` discards it as a receiver would, leaving the retransmission to supply the bytes |
@@ -118,7 +119,15 @@ the output:
 | `skipped N (reason)` | Packets that carried no convertible stream, by reason |
 | `gaps` | Places where a record was written past bytes that never arrived |
 | `late bytes` | Bytes that arrived after their gap had been committed, so could not be written |
+| `  reordered` | Of those, originals the network delayed — a wider window would have kept them |
+| `  resent` | Of those, resends of a loss, recovered after the gap closed — nothing would have |
 | `overlap` | Retransmitted bytes discarded because that range was already accepted |
+| `duplicates` | Segments that were copies of an earlier transmission — the capture point saw them twice — and how much of the file that is |
+| `paws` | Bytes rejected because their clock was older than the last accepted in order: an old segment from before a wrap |
+| `wrap` | Holes wider than 2³⁰ bytes crossed by the clock, each splitting the session |
+| `acked` | Under `--overlap favor-acked`: ranges that took the receiver's copy, and contested bytes decided without ack evidence |
+| `offset` | Directions split every 2 GiB, the most the format can place from one origin (temporary; zipline#146) |
+| `ts fallback` | Repeats treated as retransmissions because the Timestamps option could not judge them, and why |
 | `bad cksum` | Packets whose transport checksum did not verify, whether or not they were dropped |
 | `dropped` | Payload bytes discarded under `--checksum drop` |
 | `undecoded` | Regions of the capture cited as reaching no record |

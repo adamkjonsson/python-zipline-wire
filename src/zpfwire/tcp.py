@@ -28,6 +28,13 @@ specification's ``retransmit`` flag names the sender's act, so the
 distinction reaches the file.  Where the option is absent the rule degrades
 to the conservative reading the specification asks for — every repeat is a
 retransmission — and says so in the stats.
+
+Under ``overlap="favor-acked"`` the option decides one more thing: which of
+two *disagreeing* copies of a range the receiver kept.  The evidence is the
+TSecr on the peer's first acknowledgement covering the range — the TSval of
+the transmission that advanced its window — and it arrives after both
+copies.  So every run is held after it closes until the peer's ack covers
+it, and only then written; see :meth:`TcpFlow._settle`.
 """
 
 from __future__ import annotations
@@ -117,6 +124,7 @@ TS_STALE = "stale"
 
 _DUPLICATE = "duplicate"
 _RETRANSMIT = "retransmit"
+_FAVOR_ACKED = "favor-acked"
 
 _FLAG_MAP = (
     (TCP_PSH, RecordFlags.PSH),
@@ -165,6 +173,46 @@ class _Pending:
     tsval: int | None = None
     # The peer packets seen when it arrived; see _Sent.
     peer_count: int = 0
+    # Disagreeing copies that arrived while it waited (favor-acked only).
+    alternates: list[_Alternate] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _Contribution:
+    """One transmission whose bytes are in a run, with what the hints need of it."""
+
+    seq: int
+    end: int
+    tsval: int | None
+    ts: int
+    ack: int
+    payload_offset: int | None
+
+
+@dataclass
+class _Alternate:
+    """A copy of part of a run that arrived with different bytes (favor-acked only).
+
+    Only a *disagreeing* copy is kept — where two copies agree the choice is
+    moot — so memory is bounded by genuine disagreements, not by repeats.
+
+    The evidence is taken from the **first peer ack covering this range**,
+    not the ack that releases the run: the receiver echoes the TSval of what
+    *last* advanced its window, so by the time a coalesced run's end is
+    acknowledged the echo may name a later segment than the one that filled
+    this hole.  ``decided`` says an ack covered the range; ``evidence`` is
+    what it echoed, ``None`` when it carried no option.
+    """
+
+    seq: int
+    end: int
+    tsval: int
+    data: bytes
+    ts: int
+    ack: int
+    payload_offset: int | None
+    decided: bool = False
+    evidence: int | None = None
 
 
 @dataclass(frozen=True)
@@ -200,21 +248,22 @@ class _Run:
 
     seq_start: int
     data: bytearray = field(default_factory=bytearray)
-    # The specification stamps a reassembled record with the time of the LAST
-    # packet that contributed bytes, in capture order — the moment the unit
-    # became complete — because an ack can never precede arrival of what it
-    # acknowledges.  Both stamps are set from the first packet appended and
-    # widened from there; see _append.
-    ts: int = 0
-    # When a run coalesces several segments, the time it *began* is otherwise
-    # unrecoverable: spans could carry it, but they must reference a zpf-input
-    # source and ours is a capture, so ts_first is the only place it fits.
-    ts_first: int = 0
-    # The serial maximum over the run's contributing packets — the strongest
-    # true statement the run can make, acks being cumulative; see _append.
-    ack: int | None = None
+    # The transmissions whose bytes these are, in the order appended.  The
+    # three hints are computed from them when the run is written — see
+    # _hints — so that a copy swapped in under favor-acked, or the one it
+    # displaced, moves them the way the specification's rules say.
+    contributors: list[_Contribution] = field(default_factory=list)
+    # Disagreeing copies of parts of this run, awaiting the peer's verdict.
+    alternates: list[_Alternate] = field(default_factory=list)
     flags: int = 0
     retransmit: bool = False
+    # Capture time when the run closed; what the favor-acked hold is timed from.
+    closed_ts: int = 0
+
+    @property
+    def end(self) -> int:
+        """Return one past the run's last sequence number."""
+        return _advance(self.seq_start, len(self.data))
 
 
 @dataclass
@@ -256,6 +305,10 @@ class _Stream:
     # original behind the hole, with an older TSval, is not rejected — a real
     # receiver kept it, and D-SACKed the resend.
     ts_recent: int | None = None
+    # favor-acked: runs that have closed and wait for the peer's ack to cover
+    # them, oldest first — so records still reach the writer in seq order.
+    unacked: deque[_Run] = field(default_factory=deque)
+    unacked_bytes: int = 0
 
 
 class TcpFlow(FlowTracker):
@@ -265,6 +318,7 @@ class TcpFlow(FlowTracker):
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
         self._streams: dict[str, _Stream] = {}
         self._split_reason: str | None = None
+        self._acked = self._options.overlap == _FAVOR_ACKED
 
     # ── driving ─────────────────────────────────────────────────────────
 
@@ -275,6 +329,14 @@ class TcpFlow(FlowTracker):
         for other in self._streams.values():
             if other is not stream:
                 other.peer_count += 1
+                # This packet's ack settles the peer's held runs — before its
+                # own bytes are taken, since what it acknowledges arrived
+                # before it was sent.
+                if self._acked and pkt.tcp_flags & TCP_ACK:
+                    self._settle(other, pkt.ack, _tsecr(pkt))
+        if self._acked:
+            for held_stream in self._streams.values():
+                self._settle_stale(held_stream, pkt.ts_ticks)
 
         syn = bool(pkt.tcp_flags & TCP_SYN)
         if syn:
@@ -311,6 +373,10 @@ class TcpFlow(FlowTracker):
         for stream in self._streams.values():
             self._commit_remaining(stream)
             self._flush(stream)
+            # Whatever the peer never acknowledged is written on the
+            # fallback: the evidence did not arrive, and that is counted.
+            while stream.unacked:
+                self._write(stream, self._release_run(stream))
         self._declare_silent_peer()
 
         if any(s.rst for s in self._streams.values()):
@@ -422,8 +488,8 @@ class TcpFlow(FlowTracker):
         end = _advance(seq, len(data))
         tsval = _tsval(pkt)
         if _delta(end, stream.next_seq) <= 0:
-            self._count_repeat(stream, seq, end, pkt.payload_offset,
-                               tsval=tsval, peer_count=stream.peer_count)
+            self._count_repeat(stream, seq, end, pkt.payload_offset, data,
+                               tsval=tsval, peer_count=stream.peer_count, pkt=pkt)
             return
 
         # PAWS (RFC 7323 §5.3): a segment that would contribute bytes but
@@ -441,14 +507,17 @@ class TcpFlow(FlowTracker):
             self.undecoded(pkt.payload_offset, len(data), reason=REASON_PAWS)
             return
 
+        payload_offset = pkt.payload_offset
         if _delta(seq, stream.next_seq) < 0:
             overlap = _delta(stream.next_seq, seq)
             # Only ever a leading trim, so the discarded bytes start where the
             # segment's payload starts.
-            self._count_repeat(stream, seq, stream.next_seq, pkt.payload_offset,
-                               tsval=tsval, peer_count=stream.peer_count)
+            self._count_repeat(stream, seq, stream.next_seq, pkt.payload_offset, data[:overlap],
+                               tsval=tsval, peer_count=stream.peer_count, pkt=pkt)
             data = data[overlap:]
             seq = stream.next_seq
+            if payload_offset is not None:
+                payload_offset += overlap
 
         if seq == stream.next_seq:
             # In order at arrival: the one case that moves TS.Recent.
@@ -456,7 +525,8 @@ class TcpFlow(FlowTracker):
                 stream.ts_recent is None or _delta(tsval, stream.ts_recent) >= 0
             ):
                 stream.ts_recent = tsval
-            self._append(stream, seq, data, pkt, tsval=tsval, peer_count=stream.peer_count)
+            self._append(stream, seq, data, pkt, tsval=tsval, peer_count=stream.peer_count,
+                         payload_offset=payload_offset)
             self._drain(stream, pkt)
         else:
             self._hold(stream, seq, data, pkt, tsval=tsval)
@@ -471,35 +541,23 @@ class TcpFlow(FlowTracker):
         *,
         tsval: int | None,
         peer_count: int,
+        payload_offset: int | None,
+        alternates: list[_Alternate] | None = None,
     ) -> None:
         if stream.run is None:
-            stream.run = _Run(seq_start=seq, ts=pkt.ts_ticks, ts_first=pkt.ts_ticks)
+            stream.run = _Run(seq_start=seq)
+        end = _advance(seq, len(data))
         stream.run.data.extend(data)
-        self._remember(stream, seq, _advance(seq, len(data)), tsval, peer_count)
-        # All three hints are extremes over the run's contributing packets, not
-        # the packet that happened to be appended last: a segment held out of
-        # order arrives *before* the one that made it contiguous but is
-        # appended after it, and taking its time would stamp the run as
-        # complete before its last packet arrived — and leave ts_first, set
-        # from the earlier append, later than ts.
-        stream.run.ts = max(stream.run.ts, pkt.ts_ticks)
-        stream.run.ts_first = min(stream.run.ts_first, pkt.ts_ticks)
-        # The ack is the serial MAXIMUM rather than the last arrival's, which
-        # for a drained run is the earlier packet's and for any other the later
-        # one's — a value taken from no rule.  Acks are cumulative, so one
-        # observed on any contributor is still true when the run completes, and
-        # the maximum is therefore the strongest statement the run can make
-        # that is certainly true.  Taking the ack of the packet that supplies
-        # `ts` would keep the two hints on one packet at the cost of throwing
-        # away a real edge whenever the last contributor's ack is the lower
-        # one, which a delayed ack makes common.  It matters most under
-        # `sequenced`: the linearization releases a record once every peer
-        # record it acks has been emitted, so understating one delays a record
-        # for a reason that is not in the capture.
-        if stream.run.ack is None or _delta(pkt.ack, stream.run.ack) > 0:
-            stream.run.ack = pkt.ack
+        stream.run.contributors.append(_Contribution(
+            seq=seq, end=end, tsval=tsval, ts=pkt.ts_ticks, ack=pkt.ack,
+            payload_offset=payload_offset,
+        ))
+        if alternates:
+            stream.run.alternates.extend(alternates)
+            stream.run.retransmit = True
+        self._remember(stream, seq, end, tsval, peer_count)
         self._attach_flags(stream, pkt)
-        stream.next_seq = _advance(seq, len(data))
+        stream.next_seq = end
 
     def _hold(
         self, stream: _Stream, seq: int, data: bytes, pkt: PacketView, *, tsval: int | None,
@@ -519,6 +577,21 @@ class TcpFlow(FlowTracker):
                 verdict = _DUPLICATE
             else:
                 verdict = _RETRANSMIT
+            if (
+                self._acked
+                and verdict == _RETRANSMIT
+                and len(data) == len(held.data)
+                and data != held.data
+            ):
+                # A disagreeing copy of something not yet in a run: it waits
+                # with the held segment and is carried into the run with it.
+                # Both TSvals are known, since the verdict needed them.
+                assert tsval is not None
+                held.alternates.append(_Alternate(
+                    seq=seq, end=_advance(seq, len(data)), tsval=tsval, data=data,
+                    ts=pkt.ts_ticks, ack=pkt.ack, payload_offset=pkt.payload_offset,
+                ))
+                return
             self._discard(stream, verdict, pkt.payload_offset, 0, len(data))
             return
         stream.pending[seq] = _Pending(data=data, flags=pkt.tcp_flags, ack=pkt.ack,
@@ -541,8 +614,9 @@ class TcpFlow(FlowTracker):
                 # and this site never set the flag, so it still does not.
                 self._release(stream, seq)
                 verdict = self._judge(stream, seq, end, held.tsval, held.peer_count)
-                self._discard(stream, verdict, held.payload_offset, 0, len(held.data),
-                              mark=False)
+                if not self._contested(stream, verdict, seq, end, held.data, held):
+                    self._discard(stream, verdict, held.payload_offset, 0, len(held.data),
+                                  mark=False)
                 continue
             if _delta(seq, stream.next_seq) > 0:
                 return
@@ -550,7 +624,9 @@ class TcpFlow(FlowTracker):
             self._release(stream, seq)
             if trim:
                 verdict = self._judge(stream, seq, stream.next_seq, held.tsval, held.peer_count)
-                self._discard(stream, verdict, held.payload_offset, 0, trim)
+                if not self._contested(stream, verdict, seq, stream.next_seq,
+                                       held.data[:trim], held):
+                    self._discard(stream, verdict, held.payload_offset, 0, trim)
             self._append(
                 stream,
                 stream.next_seq,
@@ -558,6 +634,8 @@ class TcpFlow(FlowTracker):
                 _stamp(pkt, held),
                 tsval=held.tsval,
                 peer_count=held.peer_count,
+                payload_offset=None if held.payload_offset is None else held.payload_offset + trim,
+                alternates=_clip(held.alternates, stream.next_seq, end),
             )
         stream.oldest_pending_ts = None
 
@@ -680,6 +758,9 @@ class TcpFlow(FlowTracker):
                 ),
                 tsval=held.tsval,
                 peer_count=held.peer_count,
+                payload_offset=None if held.payload_offset is None else held.payload_offset + trim,
+                alternates=_clip(held.alternates, stream.next_seq,
+                                 _advance(target, len(held.data))),
             )
 
     def _count_repeat(
@@ -688,9 +769,11 @@ class TcpFlow(FlowTracker):
         seq: int,
         end: int,
         payload_offset: int | None,
+        data: bytes,
         *,
         tsval: int | None,
         peer_count: int,
+        pkt: PacketView,
     ) -> None:
         """Attribute already-seen bytes to a committed gap, a copy, or a resend.
 
@@ -730,8 +813,11 @@ class TcpFlow(FlowTracker):
                 self._cite(payload_offset, _delta(gap_start, seq) + overlap_start,
                            late, late_reason)
         for start, stop in self._unclaimed(stream, seq, end):
-            verdict = self._judge(stream, _advance(seq, start), _advance(seq, stop),
-                                  tsval, peer_count)
+            lo, hi = _advance(seq, start), _advance(seq, stop)
+            verdict = self._judge(stream, lo, hi, tsval, peer_count)
+            if self._contested(stream, verdict, lo, hi, data[start:stop], pkt,
+                               skip=start):
+                continue
             self._discard(stream, verdict, payload_offset, start, stop - start)
 
     def _cite(self, payload_offset: int | None, skip: int, length: int, reason: str) -> None:
@@ -813,6 +899,67 @@ class TcpFlow(FlowTracker):
             covered += hi - lo
         return _DUPLICATE if covered >= length else TS_STALE
 
+    def _contested(
+        self,
+        stream: _Stream,
+        verdict: str,
+        seq: int,
+        end: int,
+        data: bytes,
+        source: PacketView | _Pending,
+        *,
+        skip: int = 0,
+    ) -> bool:
+        """Under favor-acked, hold a disagreeing resend against the runs it repeats.
+
+        Returns ``True`` when the range was taken up as an alternate — and so
+        must not be counted or cited now, since which copy loses is not yet
+        known — and ``False`` when the caller should discard it as usual:
+        the policy is ``favor-old``, the verdict is not a retransmission (a
+        duplicate or an unjudgeable repeat has no second clock to match an
+        echo against), or the copies agree byte-for-byte, where the choice is
+        moot.  A part of the range that no open or held run covers has
+        already been settled by the peer's ack, and is discarded too.
+        """
+        if not self._acked or verdict != _RETRANSMIT:
+            return False
+        tsval = source.tsval if isinstance(source, _Pending) else _tsval(source)
+        assert tsval is not None  # a retransmission verdict needed it
+        ts = source.ts if isinstance(source, _Pending) else source.ts_ticks
+        payload_offset = source.payload_offset
+        if payload_offset is not None:
+            payload_offset += skip
+        taken = False
+        for run in self._covering_runs(stream, seq, end):
+            offset = _delta(run.seq_start, seq)
+            a, b = max(offset, 0), min(offset + len(run.data), len(data))
+            if b <= a:
+                continue
+            kept = bytes(run.data[a - offset:b - offset])
+            copy = data[a:b]
+            run.retransmit = True
+            if kept == copy:
+                self._stats.overlap_bytes += b - a
+                self._cite(payload_offset, a, b - a, REASON_OVERLAP)
+            else:
+                run.alternates.append(_Alternate(
+                    seq=_advance(seq, a), end=_advance(seq, b), tsval=tsval, data=copy,
+                    ts=ts, ack=source.ack,
+                    payload_offset=None if payload_offset is None else payload_offset + a,
+                ))
+            taken = True
+        return taken
+
+    def _covering_runs(self, stream: _Stream, seq: int, end: int) -> list[_Run]:
+        """Return the open and held runs of *stream* that overlap ``[seq, end)``."""
+        runs = [*stream.unacked]
+        if stream.run is not None:
+            runs.append(stream.run)
+        return [
+            run for run in runs
+            if _delta(end, run.seq_start) > 0 and _delta(run.end, seq) > 0
+        ]
+
     def _discard(
         self,
         stream: _Stream,
@@ -843,11 +990,107 @@ class TcpFlow(FlowTracker):
             stream.run.flags |= pkt.tcp_flags
 
     def _flush(self, stream: _Stream) -> None:
-        """Write the accumulated run as one record."""
+        """Close the accumulated run: write it, or hold it for the peer's ack."""
         run = stream.run
         stream.run = None
         if run is None or not run.data:
             return
+        if self._acked:
+            run.closed_ts = self.last_ts
+            stream.unacked.append(run)
+            stream.unacked_bytes += len(run.data)
+            # The byte bound is checked the moment it can be exceeded, so the
+            # hold never holds more than the window between two packets.
+            self._settle_stale(stream, self.last_ts)
+            return
+        self._write(stream, run)
+
+    def _settle(self, stream: _Stream, ack: int, tsecr: int | None) -> None:
+        """Write every held run of *stream* that the peer's *ack* covers.
+
+        The peer's TSecr is the TSval of the transmission that advanced its
+        window — the copy it kept — and each alternate on a covered run is
+        judged against it: an alternate whose TSval the peer echoed, where no
+        kept contributor's was, is swapped in.  Runs are written in the order
+        they closed, which is ascending ``seq_start``.
+
+        The evidence is strong, not proof: RFC 7323 §4.3 also lets
+        ``TS.Recent`` advance from an old duplicate landing inside the
+        delayed-ACK window (``SEG.TSval >= TS.Recent`` and ``SEG.SEQ <=
+        Last.ACK.sent``), so a copy arriving there can steal the echo from
+        the copy the receiver actually kept.  It is nonetheless evidence from
+        the receiver itself, and independent of the capture point, which the
+        order copies arrived in is not.
+        """
+        runs = [*stream.unacked]
+        if stream.run is not None:
+            runs.append(stream.run)
+        for run in runs:
+            for alt in run.alternates:
+                if not alt.decided and _delta(ack, alt.end) >= 0:
+                    alt.decided = True
+                    alt.evidence = tsecr
+        while stream.unacked and _delta(ack, stream.unacked[0].end) >= 0:
+            self._write(stream, self._release_run(stream))
+
+    def _settle_stale(self, stream: _Stream, now: int) -> None:
+        """Write held runs the bounds say have waited long enough, on the fallback.
+
+        The two bounds are the policy's own: a run whose ack has not come
+        within ``flush_timeout`` of its closing, or the oldest run once the
+        hold exceeds ``reorder_window`` bytes, is written as ``favor-old``
+        would have written it, and every contested byte in it is counted as a
+        fallback.  A one-way capture, where no ack ever comes, writes every
+        run this way.
+        """
+        while stream.unacked and (
+            (now - stream.unacked[0].closed_ts) / self._tick_hz > self._options.flush_timeout
+            or stream.unacked_bytes > self._options.reorder_window
+        ):
+            self._write(stream, self._release_run(stream))
+
+    def _release_run(self, stream: _Stream) -> _Run:
+        run = stream.unacked.popleft()
+        stream.unacked_bytes -= len(run.data)
+        return run
+
+    def _write(self, stream: _Stream, run: _Run) -> None:
+        """Resolve a run's alternates and write it as one record.
+
+        Each alternate carries its own verdict, taken from the first peer ack
+        that covered its range (see :class:`_Alternate`).  One with no
+        verdict — the run is being written because a bound expired or the
+        session ended — or whose ack carried no option loses on the
+        fallback, and is counted as such.
+        """
+        for alt in run.alternates:
+            kept = _within(run.contributors, alt.seq, alt.end)
+            evidence = alt.evidence
+            swap = (
+                alt.decided
+                and evidence is not None
+                and alt.tsval == evidence
+                and all(c.tsval != evidence for c in kept)
+            )
+            if swap:
+                offset = _delta(alt.seq, run.seq_start)
+                run.data[offset:offset + len(alt.data)] = alt.data
+                for c in kept:
+                    a = max(_delta(alt.seq, c.seq), 0)
+                    b = min(_delta(alt.end, c.seq), _delta(c.end, c.seq))
+                    self._stats.overlap_bytes += b - a
+                    self._cite(c.payload_offset, a, b - a, REASON_OVERLAP)
+                run.contributors = _without(run.contributors, alt.seq, alt.end)
+                run.contributors.append(_Contribution(
+                    seq=alt.seq, end=alt.end, tsval=alt.tsval, ts=alt.ts, ack=alt.ack,
+                    payload_offset=alt.payload_offset,
+                ))
+                self._stats.acked_swaps += 1
+            else:
+                if not alt.decided or evidence is None:
+                    self._stats.acked_fallback_bytes += len(alt.data)
+                self._stats.overlap_bytes += len(alt.data)
+                self._cite(alt.payload_offset, 0, len(alt.data), REASON_OVERLAP)
 
         flags = RecordFlags(0)
         for tcp_bit, record_bit in _FLAG_MAP:
@@ -856,19 +1099,105 @@ class TcpFlow(FlowTracker):
         if run.retransmit:
             flags |= RecordFlags.RETRANSMIT
 
+        ts, ts_first, ack = _hints(run)
         self.session.record(
             self.participant(stream.endpoint),
-            ts=run.ts,
+            ts=ts,
             payload=bytes(run.data),
-            hints=zpf.Hints(seq_start=run.seq_start, ack=run.ack),
+            hints=zpf.Hints(seq_start=run.seq_start, ack=ack),
             flags=flags,
             decoded=zpf.Decoded(decoder=self._decoder),
             # Only worth stating when the run coalesced more than one packet;
             # for a single segment it would repeat `ts`.
-            ts_first=run.ts_first if run.ts_first != run.ts else None,
+            ts_first=ts_first if ts_first != ts else None,
         )
         self._stats.records += 1
         self._stats.payload_bytes += len(run.data)
+
+
+def _tsecr(pkt: PacketView) -> int | None:
+    """Return the segment's TSecr, or ``None`` when it carries no Timestamps option."""
+    options = pkt.tcp_options
+    if options is None or options.timestamps is None:
+        return None
+    return options.timestamps[1]
+
+
+def _hints(run: _Run) -> tuple[int, int, int | None]:
+    """Return a run's ``(ts, ts_first, ack)`` from the transmissions that made it.
+
+    All three are extremes over the run's contributing packets, not the
+    packet that happened to be appended last: a segment held out of order
+    arrives *before* the one that made it contiguous but is appended after
+    it, and taking its time would stamp the run as complete before its last
+    packet arrived — and leave ``ts_first`` later than ``ts``.
+
+    ``ts`` is the specification's rule — the time of the LAST packet that
+    contributed bytes, the moment the unit became complete — and ``ts_first``
+    the time it began, which spans could carry but ours cannot since they
+    must reference a zpf-input source.  The ack is the serial MAXIMUM rather
+    than the last arrival's, which for a drained run is the earlier packet's
+    and for any other the later one's — a value taken from no rule.  Acks are
+    cumulative, so one observed on any contributor is still true when the run
+    completes, and the maximum is the strongest statement the run can make
+    that is certainly true.  Taking the ack of the packet that supplies
+    ``ts`` would keep the two hints on one packet at the cost of throwing
+    away a real edge whenever the last contributor's ack is the lower one,
+    which a delayed ack makes common.  It matters most under ``sequenced``:
+    the linearization releases a record once every peer record it acks has
+    been emitted, so understating one delays a record for a reason that is
+    not in the capture.
+
+    Computed at write time so that a copy swapped in under favor-acked — a
+    resend, later than the copy it displaces — moves ``ts`` the way the rule
+    says, and the displaced copy stops counting.
+    """
+    ts = max(c.ts for c in run.contributors)
+    ts_first = min(c.ts for c in run.contributors)
+    ack: int | None = None
+    for c in run.contributors:
+        if ack is None or _delta(c.ack, ack) > 0:
+            ack = c.ack
+    return ts, ts_first, ack
+
+
+def _within(contributors: list[_Contribution], seq: int, end: int) -> list[_Contribution]:
+    """Return the contributors overlapping ``[seq, end)``."""
+    return [c for c in contributors if _delta(end, c.seq) > 0 and _delta(c.end, seq) > 0]
+
+
+def _without(contributors: list[_Contribution], seq: int, end: int) -> list[_Contribution]:
+    """Return *contributors* with ``[seq, end)`` cut out of each, splitting where needed."""
+    kept: list[_Contribution] = []
+    for c in contributors:
+        if _delta(end, c.seq) <= 0 or _delta(c.end, seq) <= 0:
+            kept.append(c)
+            continue
+        if _delta(seq, c.seq) > 0:
+            kept.append(_Contribution(c.seq, seq, c.tsval, c.ts, c.ack, c.payload_offset))
+        if _delta(c.end, end) > 0:
+            offset = _delta(end, c.seq)
+            kept.append(_Contribution(
+                end, c.end, c.tsval, c.ts, c.ack,
+                None if c.payload_offset is None else c.payload_offset + offset,
+            ))
+    return kept
+
+
+def _clip(alternates: list[_Alternate], seq: int, end: int) -> list[_Alternate]:
+    """Return the parts of *alternates* that fall inside ``[seq, end)``."""
+    clipped: list[_Alternate] = []
+    for alt in alternates:
+        a = max(_delta(seq, alt.seq), 0)
+        b = min(_delta(end, alt.seq), len(alt.data))
+        if b <= a:
+            continue
+        clipped.append(_Alternate(
+            seq=_advance(alt.seq, a), end=_advance(alt.seq, b), tsval=alt.tsval,
+            data=alt.data[a:b], ts=alt.ts, ack=alt.ack,
+            payload_offset=None if alt.payload_offset is None else alt.payload_offset + a,
+        ))
+    return clipped
 
 
 def _late_reason(tsval: int | None, passer_tsval: int | None) -> str:
