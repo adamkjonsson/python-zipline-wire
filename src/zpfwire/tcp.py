@@ -45,6 +45,8 @@ from zpfwire.flow import (
     END_TIMEOUT,
     REASON_DUPLICATE,
     REASON_LATE,
+    REASON_LATE_REORDERED,
+    REASON_LATE_RETRANSMITTED,
     REASON_OVERLAP,
     FlowTracker,
 )
@@ -119,6 +121,15 @@ class _Pending:
 
 
 @dataclass(frozen=True)
+class _Gap:
+    """A range this direction gave up on, and the clock of what overtook it."""
+
+    start: int
+    end: int
+    passer_tsval: int | None
+
+
+@dataclass(frozen=True)
 class _Sent:
     """One transmission this direction accepted, remembered to judge its repeats.
 
@@ -175,7 +186,11 @@ class _Stream:
     pending_bytes: int = 0
     oldest_pending_ts: int | None = None
     run: _Run | None = None
-    committed_gaps: list[tuple[int, int]] = field(default_factory=list)
+    # (start, end, passer) — the third is the TSval of the first segment past
+    # the gap when it was committed: the clock reading of what overtook the
+    # missing bytes, against which a late arrival says whether it was sent
+    # before them (the original, delayed) or after (a resend).
+    committed_gaps: list[_Gap] = field(default_factory=list)
     # The transmissions accepted most recently, oldest first, bounded by
     # `reorder_window` bytes — but never emptied, so the copy that lands a
     # microsecond after its original can always be judged.  A repeat of
@@ -503,7 +518,12 @@ class TcpFlow(FlowTracker):
         if _delta(target, stream.next_seq) <= 0:  # pragma: no cover - drained already
             return
         self._flush(stream)
-        stream.committed_gaps.append((stream.next_seq, target))
+        # The lowest-numbered held segment is the first the sender put on the
+        # wire past the hole, so its TSval is the earliest clock reading among
+        # everything that overtook the missing bytes.
+        stream.committed_gaps.append(
+            _Gap(stream.next_seq, target, stream.pending[target].tsval),
+        )
         stream.next_seq = target
         self._stats.gaps += 1
         stream.oldest_pending_ts = None
@@ -517,7 +537,7 @@ class TcpFlow(FlowTracker):
             held = stream.pending[target]
             if _delta(target, stream.next_seq) > 0:
                 self._flush(stream)
-                stream.committed_gaps.append((stream.next_seq, target))
+                stream.committed_gaps.append(_Gap(stream.next_seq, target, held.tsval))
                 stream.next_seq = target
                 self._stats.gaps += 1
             self._release(stream, target)
@@ -551,7 +571,13 @@ class TcpFlow(FlowTracker):
         repeats — they are data the policy caused us to lose, and the
         specification forbids writing them now. They are counted separately so
         that a loss caused by our own timeouts is never mistaken for a
-        harmless duplicate.
+        harmless duplicate — and, where the option allows, by *why* they were
+        late: a TSval older than everything committed past the gap is the
+        original transmission, delayed, which a wider ``reorder_window`` or a
+        longer ``flush_timeout`` would have saved; a newer one is a resend
+        that recovered the loss after the hole was given up on, which no
+        policy of ours could have kept.  Same discard, different story, and
+        only the first is about us.
 
         What remains repeats bytes this direction accepted, and is judged by
         the Timestamps option — see :meth:`_judge`.  Every kind exists in the
@@ -562,15 +588,20 @@ class TcpFlow(FlowTracker):
         length = _delta(end, seq)
         if length <= 0:
             return
-        late = 0
-        for gap_start, gap_end in stream.committed_gaps:
+        for gap in stream.committed_gaps:
+            gap_start, gap_end = gap.start, gap.end
             overlap_start = max(_delta(seq, gap_start), 0)
             overlap_end = min(_delta(end, gap_start), _delta(gap_end, gap_start))
             if overlap_end > overlap_start:
-                late += overlap_end - overlap_start
+                late = overlap_end - overlap_start
+                late_reason = _late_reason(tsval, gap.passer_tsval)
+                self._stats.late_bytes += late
+                if late_reason == REASON_LATE_REORDERED:
+                    self._stats.late_reordered_bytes += late
+                elif late_reason == REASON_LATE_RETRANSMITTED:
+                    self._stats.late_retransmitted_bytes += late
                 self._cite(payload_offset, _delta(gap_start, seq) + overlap_start,
-                           overlap_end - overlap_start, REASON_LATE)
-        self._stats.late_bytes += late
+                           late, late_reason)
         for start, stop in self._unclaimed(stream, seq, end):
             verdict = self._judge(stream, _advance(seq, start), _advance(seq, stop),
                                   tsval, peer_count)
@@ -585,8 +616,8 @@ class TcpFlow(FlowTracker):
         """Return the parts of ``[seq, end)`` no committed gap claimed, relative to *seq*."""
         length = _delta(end, seq)
         claimed = sorted(
-            (max(_delta(gap_start, seq), 0), min(_delta(gap_end, seq), length))
-            for gap_start, gap_end in stream.committed_gaps
+            (max(_delta(gap.start, seq), 0), min(_delta(gap.end, seq), length))
+            for gap in stream.committed_gaps
         )
         parts: list[tuple[int, int]] = []
         cursor = 0
@@ -711,6 +742,30 @@ class TcpFlow(FlowTracker):
         )
         self._stats.records += 1
         self._stats.payload_bytes += len(run.data)
+
+
+def _late_reason(tsval: int | None, passer_tsval: int | None) -> str:
+    """Say why a byte arriving inside a committed gap was late, if the option can.
+
+    The comparison is against the clock of the *first segment that overtook
+    the gap*, not against everything committed since: a resend can itself be
+    delayed on the way in — in ``tcp_reorder_ts.pcap`` it takes the same slow
+    path as the original it repeats — and by its arrival the sender has
+    committed plenty that is newer.  What the split asks is whether the byte
+    was *sent* before the bytes that passed it, which makes it the original,
+    or after, which makes it a response to their arrival.
+    """
+    if tsval is None or passer_tsval is None:
+        return REASON_LATE
+    order = _delta(tsval, passer_tsval)
+    if order < 0:
+        return REASON_LATE_REORDERED
+    if order > 0:
+        return REASON_LATE_RETRANSMITTED
+    # Inside one tick of the segment that overtook it: sent in the same burst,
+    # which only an original can be — but a fast retransmit on a path with no
+    # delay can share the tick too, so the option cannot say, and neither do we.
+    return REASON_LATE
 
 
 def _stamp(pkt: PacketView, held: _Pending) -> PacketView:

@@ -67,6 +67,37 @@ def test_the_summary_says_when_a_flag_rests_on_the_fallback(
     assert "(absent: 12)" in text
 
 
+def test_the_summary_and_the_note_say_why_bytes_were_late(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """``tcp_reorder_ts`` with no hold: some late bytes a window would have kept."""
+    out = tmp_path / "out.zpf"
+    run(monkeypatch, "convert", str(CAPTURES / "tcp_reorder_ts.pcap"), "-o", str(out),
+        "--reorder-window", "0")
+
+    captured = capsys.readouterr()
+    assert "late bytes   9432 (dropped)" in captured.out
+    assert "  reordered  1048 (originals the network delayed" in captured.out
+    assert "  resent     5240 (recovered after the gap closed" in captured.out
+    assert "1048 bytes were originals the network delayed" in captured.err
+
+
+def test_the_note_says_when_no_window_would_have_helped(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """``tcp_gap_ts`` with no hold: every late byte was a resend of a loss."""
+    out = tmp_path / "out.zpf"
+    run(monkeypatch, "convert", str(CAPTURES / "tcp_gap_ts.pcap"), "-o", str(out),
+        "--reorder-window", "0")
+
+    captured = capsys.readouterr()
+    assert "  reordered" not in captured.out
+    assert "  resent     6812" in captured.out
+    assert "no window would have kept" in captured.err
+
+
 def test_convert_is_quiet_on_request(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
                                      capsys: pytest.CaptureFixture[str]):
     out = tmp_path / "out.zpf"

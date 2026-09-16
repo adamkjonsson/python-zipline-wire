@@ -572,3 +572,82 @@ def test_a_trim_while_draining_is_judged_against_the_fill(tmp_path: pathlib.Path
     assert resend.only.stream(0) == copy.only.stream(0) == b"aaaabbbbcc"
     assert resend.stats.overlap_bytes == 2 and _flagged(resend) == [True]
     assert copy.stats.duplicate_bytes == 2 and _flagged(copy) == [False]
+
+
+# ── the Timestamps option: why a byte was late ──────────────────────────
+#
+# A byte that arrives inside a committed gap is compared against the clock of
+# the first segment that overtook it.  Older: the original, delayed by the
+# network — a wider window would have kept it.  Newer: a resend of bytes that
+# were lost — nothing of ours could have.  Same tick, or no option: late, and
+# no more is said.
+
+
+def _late(seq_tsval: int | None, passer_tsval: int | None, tmp_path: pathlib.Path) -> object:
+    """Commit a gap with ``reorder_window=0`` and land a byte in it afterwards."""
+    return to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)),
+        Seg(9, b"cccc", flags=TCP_PSH,
+            timestamps=None if passer_tsval is None else (passer_tsval, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH,
+            timestamps=None if seq_tsval is None else (seq_tsval, 0)),
+    ]), tmp_path, options=ReassemblyOptions(reorder_window=0))
+
+
+def test_a_late_byte_older_than_what_passed_it_was_reordered(tmp_path: pathlib.Path):
+    out = _late(seq_tsval=101, passer_tsval=105, tmp_path=tmp_path)
+
+    assert out.stats.late_bytes == 4
+    assert out.stats.late_reordered_bytes == 4
+    assert out.stats.late_retransmitted_bytes == 0
+    assert _reasons(out) == ["late-reordered"]
+
+
+def test_a_late_byte_newer_than_what_passed_it_was_resent(tmp_path: pathlib.Path):
+    out = _late(seq_tsval=150, passer_tsval=105, tmp_path=tmp_path)
+
+    assert out.stats.late_bytes == 4
+    assert out.stats.late_reordered_bytes == 0
+    assert out.stats.late_retransmitted_bytes == 4
+    assert _reasons(out) == ["late-retransmitted"]
+
+
+def test_a_late_byte_in_the_same_tick_as_what_passed_it_is_just_late(
+    tmp_path: pathlib.Path,
+):
+    out = _late(seq_tsval=105, passer_tsval=105, tmp_path=tmp_path)
+
+    assert out.stats.late_bytes == 4
+    assert out.stats.late_reordered_bytes == 0
+    assert out.stats.late_retransmitted_bytes == 0
+    assert _reasons(out) == ["late-arrival"]
+
+
+@pytest.mark.parametrize(("seq_tsval", "passer_tsval"), [(None, None), (101, None), (None, 105)])
+def test_a_late_byte_without_the_option_is_just_late(
+    tmp_path: pathlib.Path, seq_tsval: int | None, passer_tsval: int | None,
+):
+    out = _late(seq_tsval=seq_tsval, passer_tsval=passer_tsval, tmp_path=tmp_path)
+
+    assert out.stats.late_bytes == 4
+    assert out.stats.late_reordered_bytes == out.stats.late_retransmitted_bytes == 0
+    assert _reasons(out) == ["late-arrival"]
+
+
+def test_the_reference_is_the_first_passer_not_the_latest_commit(tmp_path: pathlib.Path):
+    """A resend can be slow to arrive too; it is still a resend.
+
+    By the time the resend lands, the sender has committed segments newer than
+    it — so compared against *everything* committed it would look older, and
+    read as reordered.  Compared against the segment that overtook the gap,
+    it was sent afterwards, which is what makes it a resend.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)),
+        Seg(9, b"cccc", flags=TCP_PSH, timestamps=(105, 0)),    # overtakes 5..8
+        Seg(13, b"dddd", flags=TCP_PSH, timestamps=(200, 0)),   # newer still
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(140, 0)),    # sent after 105
+    ]), tmp_path, options=ReassemblyOptions(reorder_window=0))
+
+    assert out.stats.late_retransmitted_bytes == 4
+    assert _reasons(out) == ["late-retransmitted"]

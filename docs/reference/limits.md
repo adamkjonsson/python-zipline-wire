@@ -73,13 +73,20 @@ and every rule that reads it degrades to the specification's conservative
 reading — every repeat is a retransmission — when it is absent, and counts
 that it did (`stats.ts_fallback`).
 
-**Late bytes are one number, and PAWS is not applied.**  The option could
-also say whether a late byte was a delayed original or a loss recovered after
-its gap was committed, and whether a segment that looks 2³¹ behind is really
-from after a sequence wrap.  Both are on the way in this release
-([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17), items
-3 and 4); until they land, `late_bytes` bundles the two causes and placement
-rests on the half-space heuristic alone.
+**PAWS is not applied.**  The option could also say whether a segment that
+looks 2³¹ behind is really from after a sequence wrap.  That is on the way
+in this release
+([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17), item
+4); until it lands, placement rests on the half-space heuristic alone.
+
+**A late byte in the same tick as the segment that overtook it is not
+classified.**  A delayed original that was a burst-mate of the passer shares
+its TSval, and so does a fast retransmit on a path whose round trip is
+shorter than a tick; the option cannot tell them apart and the reassembler
+leaves such a byte as plain `late-arrival` rather than guess.  On real
+traffic with realistic delay this is the minority — 6 of 18 late regions in
+`tcp_reorder_ts.pcap`, none in `tcp_gap_ts.pcap` — and it is the option's
+granularity, not the tool's.
 
 **A fourth thing the option could settle needs a different reassembler:**
 which copy of disagreeing bytes the *receiver* kept, read from the TSval its

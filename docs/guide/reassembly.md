@@ -261,14 +261,40 @@ something about the capture rather than the connection: set
 is doubled.  `gaps` and `late_bytes` are the ones to watch: they mean the
 policy stopped waiting.
 
+A non-zero `late_bytes` says the bytes did arrive, just after the
+reassembler had given up — but that is two different stories, and where the
+Timestamps option is present it tells them apart:
+
 ```python
-if not stats.lossless:
-    print(f"{stats.gaps} gaps; raise reorder_window or flush_timeout")
+stats.late_reordered_bytes      # the original, delayed by the network
+stats.late_retransmitted_bytes  # a resend of an original that was lost
 ```
 
-A non-zero `late_bytes` is the specific signal that you were nearly patient
-enough: the bytes did arrive, just after the reassembler had given up.
-Raising `flush_timeout` will usually recover them.
+A late byte is compared against the clock of the first segment that overtook
+its gap.  **Older** means it was sent *before* the bytes that passed it: the
+original transmission, reordered on the way — and a wider `reorder_window`
+or a longer `flush_timeout` would have kept it.  That is the tuning signal.
+**Newer** means it was sent *after* them: the original never arrived and the
+sender recovered it once the receiver's duplicate ACKs said so, by which time
+the gap had been given up on.  No policy of ours could have kept those; they
+are a fact about the network.  The comparison is against the *first* segment
+past the gap rather than everything committed since, because a resend can be
+slow to arrive too, and by then the sender has moved on.
+
+What remains of `late_bytes` after both is late for a reason the option could
+not name: no option on one side, or an arrival inside the same clock tick as
+the segment that overtook it — which is what a delayed original that was a
+burst-mate of the passer looks like, and on a path with no delay what a fast
+retransmit can look like too, so nothing more is said.  Each late region's
+`Undecoded` block carries the same verdict as its reason: `late-reordered`,
+`late-retransmitted`, or plain `late-arrival`.
+
+```python
+if stats.late_reordered_bytes:
+    print("raise reorder_window or flush_timeout")
+elif stats.late_bytes:
+    print("the late bytes were resends of losses; no window would have kept them")
+```
 
 ## Where the policy is recorded
 

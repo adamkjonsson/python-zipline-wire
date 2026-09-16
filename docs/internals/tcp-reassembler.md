@@ -38,7 +38,7 @@ One `_Stream` per direction, keyed by the sender's endpoint:
 | `pending` | Segments held because earlier bytes have not arrived, keyed by sequence |
 | `pending_bytes`, `oldest_pending_ts` | What the flush policy measures |
 | `run` | The record currently being accumulated |
-| `committed_gaps` | Ranges we gave up on, so late arrivals can be told from retransmits |
+| `committed_gaps` | Ranges we gave up on, each with the TSval of the first segment that overtook it, so late arrivals can be told from retransmits — and, by that clock, delayed originals from resends |
 | `recent`, `recent_bytes` | The transmissions accepted most recently, as `(seq, end, TSval, peer_count)`, bounded by `reorder_window` bytes but never emptied |
 | `peer_count` | Packets seen from the other direction, whatever they carried |
 | `ts_recent` | RFC 7323's `TS.Recent`: the TSval of the last segment accepted *in order at arrival* |
@@ -104,10 +104,29 @@ differs; a mirror copy follows its original with nothing between.  Content
 is not compared — a resend carries the same bytes as its original unless one
 was corrupted in flight, and corruption is the checksum policy's business.
 
-`_judge` is the only place the Timestamps option is *consulted*; `_tsval` is
-the only place it is *read*.  A repeat of a held segment is judged against
-the `_Pending` directly rather than through `recent`, since the held segment
-is the transmission the repeat may be a copy of.
+`_judge` and `_late_reason` are the only places the Timestamps option is
+*consulted*; `_tsval` is the only place it is *read*.  A repeat of a held
+segment is judged against the `_Pending` directly rather than through
+`recent`, since the held segment is the transmission the repeat may be a
+copy of.
+
+### Why a byte was late
+
+A byte that lands inside a committed gap is compared, by TSval, against the
+**first segment past that gap at the time it was committed** — the
+`passer_tsval` on the `_Gap`, taken from the lowest-numbered held segment
+when `_commit_gap` fires.  Older: sent before the bytes that overtook it,
+so the original, delayed — `late-reordered`, the tuning signal.  Newer: sent
+after them, so a resend — `late-retransmitted`.  Same tick, or no option:
+plain `late-arrival`.
+
+The reference is the first passer and *not* the newest TSval committed by
+the time the late byte arrives, and `tcp_reorder_ts.pcap` is why: its
+spurious resends take the same slow path as the originals they repeat, so by
+their arrival the sender has committed 50 ms of newer segments.  Against
+"everything committed" 8 of 10 read as reordered; against the segment that
+overtook the gap, all 10 read as the resends they are.  The question is
+about the sender's order, not the arrival's.
 
 ## Committing a gap
 

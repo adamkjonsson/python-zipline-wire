@@ -30,7 +30,18 @@ class ConversionStats:
         gaps: Gaps committed — places where a record was emitted past bytes
             that never arrived, after which those bytes may never be written.
         late_bytes: Bytes that arrived after their gap had been committed and
-            so had to be dropped.
+            so had to be dropped.  The total; where the TCP Timestamps option
+            can say why they were late, the two fields below split it.
+        late_reordered_bytes: Of those, bytes whose TSval was *older* than
+            everything committed past their gap — the original transmission,
+            delayed by the network.  A wider ``reorder_window`` or a longer
+            ``flush_timeout`` would have kept them, so this is the number
+            that says the policy was nearly patient enough.
+        late_retransmitted_bytes: Of those, bytes whose TSval was *newer* —
+            a resend of an original that never arrived, recovered after the
+            hole was given up on.  No policy of ours could have kept them; a
+            fact about the network.  What remains of :attr:`late_bytes` after
+            both is late for a reason the option could not name.
         overlap_bytes: Retransmitted bytes discarded because the same range
             had already been accepted — the sender sent them again, and the
             record covering them says so with ``retransmit``.  A repeat the
@@ -83,6 +94,8 @@ class ConversionStats:
     payload_bytes: int = 0
     gaps: int = 0
     late_bytes: int = 0
+    late_reordered_bytes: int = 0
+    late_retransmitted_bytes: int = 0
     overlap_bytes: int = 0
     duplicates: int = 0
     duplicate_bytes: int = 0
@@ -121,6 +134,16 @@ class ConversionStats:
             lines.append(f"gaps         {self.gaps}")
         if self.late_bytes:
             lines.append(f"late bytes   {self.late_bytes} (dropped)")
+        if self.late_reordered_bytes:
+            lines.append(
+                f"  reordered  {self.late_reordered_bytes} "
+                "(originals the network delayed; a wider window would have kept them)",
+            )
+        if self.late_retransmitted_bytes:
+            lines.append(
+                f"  resent     {self.late_retransmitted_bytes} "
+                "(recovered after the gap closed; no policy could have kept them)",
+            )
         if self.overlap_bytes:
             lines.append(f"overlap      {self.overlap_bytes} bytes (retransmitted, discarded)")
         if self.duplicates:

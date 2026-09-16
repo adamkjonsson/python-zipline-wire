@@ -20,6 +20,8 @@ __all__ = [
     "REASON_CHECKSUM",
     "REASON_DUPLICATE",
     "REASON_LATE",
+    "REASON_LATE_REORDERED",
+    "REASON_LATE_RETRANSMITTED",
     "REASON_OVERLAP",
     "FlowKey",
     "FlowTracker",
@@ -42,7 +44,28 @@ option; see :class:`~zpfwire.tcp.TcpFlow`.
 """
 
 REASON_LATE = "late-arrival"
-"""Undecoded reason for bytes that arrived after their gap had been committed."""
+"""Undecoded reason for bytes that arrived after their gap had been committed.
+
+The bare reason: used when the TCP Timestamps option cannot say *why* they
+were late — absent, or the arrival shares a clock tick with everything
+committed past it.  Where it can, one of the two below is written instead.
+"""
+
+REASON_LATE_REORDERED = "late-reordered"
+"""Undecoded reason for a late arrival that was the original transmission, delayed.
+
+Its TSval is older than everything committed past its gap: the network
+reordered it, and a wider ``reorder_window`` or a longer ``flush_timeout``
+would have kept it.  A tuning signal about our own policy.
+"""
+
+REASON_LATE_RETRANSMITTED = "late-retransmitted"
+"""Undecoded reason for a late arrival that was a resend of lost bytes.
+
+Its TSval is newer than everything committed past its gap: the original was
+lost and the sender recovered it after the hole had been given up on.  A
+fact about the network, which no policy of ours could have changed.
+"""
 
 REASON_CHECKSUM = "bad-checksum"
 """Undecoded reason for a packet discarded because its checksum did not verify.
@@ -156,8 +179,8 @@ def cite_undecoded(
             name.
         length: How many bytes the region covers.
         reason: Why the region went undecoded; see :data:`REASON_OVERLAP`,
-            :data:`REASON_DUPLICATE`, :data:`REASON_LATE` and
-            :data:`REASON_CHECKSUM`.
+            :data:`REASON_DUPLICATE`, :data:`REASON_LATE` and its two
+            refinements, and :data:`REASON_CHECKSUM`.
         decoder: The stage that discarded the bytes.
         stats: Tally to record the block, or the failure to place it, in.
 

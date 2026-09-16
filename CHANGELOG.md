@@ -71,6 +71,31 @@ Requires packeteer **0.15.0**, up from `0.14.0`.
   `tcp_dup_ts.pcap` are all duplicates, and the 36 real resends across
   `tcp_lossy_ts`, `tcp_reorder_ts`, `tcp_corrupt_ts` and `tcp_wrap_ts` are
   all retransmissions, none ambiguous.
+- **The option is read to say *why* a late byte was late**
+  ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
+  item 3).  A byte arriving inside a gap the reassembler had already given
+  up on is compared against the clock of the first segment that overtook
+  the gap.  Sent before it — the original, delayed by the network, which a
+  wider `reorder_window` or a longer `flush_timeout` would have kept — it is
+  cited `late-reordered` (`REASON_LATE_REORDERED`) and counted in the new
+  `ConversionStats.late_reordered_bytes`; sent after it — a resend of an
+  original that was lost, recovered once the gap had closed, which no policy
+  of ours could have kept — it is cited `late-retransmitted`
+  (`REASON_LATE_RETRANSMITTED`) and counted in `late_retransmitted_bytes`.
+  Inside the same tick as the passer, or without the option, it stays
+  `late-arrival` and is counted in `late_bytes` only.  `late_bytes` remains
+  the total and `lossless` is unchanged.  The reference is the *first*
+  passer at commit time rather than everything committed since, because a
+  resend can be slow to arrive too: in `tcp_reorder_ts.pcap` the spurious
+  resends take the same slow path as the originals they repeat, and against
+  "everything committed" 8 of 10 would read as reordered.  Measured with the
+  hold disabled: `tcp_gap_ts.pcap`'s 13 fills are all resends, and
+  `tcp_reorder_ts.pcap`'s 18 late regions split 2 reordered, 6 same-tick,
+  10 resent — the manifest's own count.
+- The summary prints the split beneath `late bytes`, and the CLI's note on a
+  lossy conversion now says whether raising the window would have helped:
+  it names the reordered bytes when there are any, and says outright that
+  no window would have kept them when every late byte was a resend.
 - **`ConversionStats.ts_fallback`**, a `Counter` of how often a repeat could
   *not* be judged and was treated as a retransmission — the conservative
   reading spec `0.20` asks of a producer that cannot tell — keyed by why:
@@ -101,6 +126,14 @@ Requires packeteer **0.15.0**, up from `0.14.0`.
   and the file is now what the specification says such a file should be.
   `ReassemblyOptions` gains no field, so `params_digest()` is unchanged; the
   Decoder Descriptor's version is what says the rule moved.
+- **Breaking: the `Undecoded` reason on a late byte can now be
+  `late-reordered` or `late-retransmitted`** instead of `late-arrival`, on a
+  capture that carries the Timestamps option *and* loses bytes to a
+  committed gap.  No fixture that predates this release has that shape —
+  the two that carry the option lose nothing — so no pinned file moves; a
+  `0.2.0` conversion of such a capture, reproduced now, differs in those
+  reason strings and nowhere else.  A reader matching on `late-arrival`
+  should match on the `late-` prefix, or on all three constants.
 
 **The packeteer floor is `0.15.0`**, up from `0.14.0`.  Nothing at runtime
 needs it — the option has been parsed onto every `PacketView` since `0.14.0`

@@ -185,3 +185,60 @@ def test_a_duplicated_retransmission_is_both(tmp_path: pathlib.Path):
     assert out.stats.duplicates == 16
     assert out.stats.overlap_bytes == 13369
     assert out.stats.ts_fallback == {}
+
+
+# ── why a byte was late ─────────────────────────────────────────────────
+
+
+def late_reasons(out: object) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for u in out.undecoded:  # type: ignore[attr-defined]
+        if u.reason.startswith("late"):
+            counts[u.reason] = counts.get(u.reason, 0) + 1
+    return counts
+
+
+def test_a_receiver_side_capture_of_loss_shows_only_resends(tmp_path: pathlib.Path):
+    """``tcp_gap_ts`` with no hold: every hole is given up on, every fill is late.
+
+    Each fill carries a TSval newer than the segment that overtook its hole —
+    the sender resent after the loss — so all 13 are ``late-retransmitted``,
+    and the reordered bucket, the one that says the policy was too impatient,
+    is empty: no policy could have kept bytes that never arrived in time.
+    """
+    out = to_zpf(CAPTURES / "tcp_gap_ts.pcap", tmp_path, options=NO_HOLD)
+
+    assert out.stats.gaps == 11
+    assert out.stats.late_bytes == 6812
+    assert out.stats.late_reordered_bytes == 0
+    assert out.stats.late_retransmitted_bytes == 6812
+    assert late_reasons(out) == {"late-retransmitted": 13}
+
+
+def test_a_receiver_side_capture_of_reordering_shows_both(tmp_path: pathlib.Path):
+    """``tcp_reorder_ts``: delayed originals, then the sender's spurious resends.
+
+    Of the 8 delayed originals, 2 carry a TSval strictly older than the
+    segment that overtook them and 6 share its tick — a burst-mate — which
+    the option cannot separate from a resend inside the same tick, so those
+    stay ``late-arrival``.  The 10 resends were sent after the overtaking
+    segment, and say so.  The manifest counts the same 2-and-6.
+    """
+    out = to_zpf(CAPTURES / "tcp_reorder_ts.pcap", tmp_path, options=NO_HOLD)
+
+    assert out.stats.gaps == 8
+    assert out.stats.late_bytes == 9432
+    assert out.stats.late_reordered_bytes == 2 * 524
+    assert out.stats.late_retransmitted_bytes == 10 * 524
+    assert late_reasons(out) == {
+        "late-reordered": 2, "late-arrival": 6, "late-retransmitted": 10,
+    }
+
+
+def test_the_split_holds_across_the_wrap(tmp_path: pathlib.Path):
+    """``tcp_wrap_ts``: four originals delayed past the wrap, four resends after."""
+    out = to_zpf(CAPTURES / "tcp_wrap_ts.pcap", tmp_path, options=NO_HOLD)
+
+    assert out.stats.late_reordered_bytes == 4 * 524
+    assert out.stats.late_retransmitted_bytes == 4 * 524
+    assert late_reasons(out) == {"late-reordered": 4, "late-retransmitted": 4}
