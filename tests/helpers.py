@@ -9,6 +9,7 @@ on demand.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import pathlib
 from collections.abc import Iterable, Sequence
@@ -43,6 +44,7 @@ __all__ = [
     "Seg",
     "SessionSnapshot",
     "capture_of",
+    "decode_digest",
     "fragmented_frames",
     "tcp_packet",
     "tcp_segments",
@@ -312,3 +314,42 @@ def to_zpf(source: io.BytesIO | pathlib.Path | str, tmp_path: pathlib.Path,
 
     return Converted(stats=stats, sessions=snapshots, diagnostics=diagnostics, path=out,
                      undecoded=undecoded, unplaceable=unplaceable)
+
+
+def decode_digest(path: pathlib.Path | str) -> str:
+    """Digest what the reassembler decided, and nothing else.
+
+    A whole-file hash would pin three things that move without a byte of
+    reassembly moving: the wall-clock ``produced_at``, the tool version in
+    ``produced_by``, and the capture's path in the Source ``uri``.  This
+    hashes every block in stored order with those taken out — the File
+    Header dropped, the Source reduced to the capture's own digest and link
+    type, the Decoder to its name, output layer and ``params_digest`` — so
+    two files agree exactly when the same records, hints, flags, timestamps,
+    participants, session ends and Undecoded citations were written in the
+    same order under the same declared policy.
+
+    Args:
+        path: A ``.zpf`` file.
+
+    Returns:
+        A ``sha256:`` digest.
+
+    """
+    h = hashlib.sha256()
+    with zpf.open(path) as reader:
+        for block in reader.blocks():
+            if isinstance(block, zpf.FileHeader):
+                continue
+            if isinstance(block, zpf.Source):
+                canonical = f"source {block.kind} {block.digest} {block.link_type}".encode()
+            elif isinstance(block, zpf.Decoder):
+                canonical = (
+                    f"decoder {block.name} {block.output_layer} {block.params_digest}".encode()
+                )
+            else:
+                canonical = block.to_bytes()
+            h.update(block.block_type.to_bytes(2, "little"))
+            h.update(len(canonical).to_bytes(4, "little"))
+            h.update(canonical)
+    return "sha256:" + h.hexdigest()

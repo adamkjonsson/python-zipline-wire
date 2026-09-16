@@ -33,11 +33,32 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+**The TCP Timestamps release.**  The reassembler reads the option for the
+first time, and every rule it had to *choose* where the option could *say*
+something now says it: whether a repeated segment is a retransmission or the
+same transmission seen twice, why a late byte was late, whether a segment is
+from after a sequence wrap, and — as a second overlap policy — which copy of
+disagreeing bytes the receiver actually kept
+([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
+[#18](https://github.com/adamkjonsson/python-zipline-wire/issues/18)).
+Each rule is measured against real traffic packeteer collected for it —
+six captures of real Linux stacks under loss, duplication, corruption,
+reordering and a wrap through 2³² — and each is listed below as it lands,
+with what it changes in a written file.
+
 Writes spec **v0.20** (`zpf.SPEC_VERSION == (0, 20)`), up from `0.19`.
 Requires a `zpf` that implements it — python-zipline `main` after 0.3.0
 (`0.4.0.dev0`), until the next release; the dependency floor says so.
+Requires packeteer **0.15.0**, up from `0.14.0`.
 
 ### Changed
+
+**The packeteer floor is `0.15.0`**, up from `0.14.0`.  Nothing at runtime
+needs it — the option has been parsed onto every `PacketView` since `0.14.0`
+— but `0.15.0` is where the capture-point duplication impairment
+(`duplicate_probability`, [packeteer#150](https://github.com/adamkjonsson/packeteer/issues/150))
+arrived, and it is the generated half of the material the Timestamps rules
+are tested against, so it is the version this release was built on.
 
 **Spec `0.20`.** A repair-and-vector release upstream: no option and no block
 was added, no body layout moved, and every `.zpf` this tree writes is

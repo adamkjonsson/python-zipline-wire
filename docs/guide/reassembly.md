@@ -232,7 +232,7 @@ with zpf.open("capture.zpf") as reader:
 ```
 
 ```
-tcp-reassembly 0.2.0 sha256:1f3a…
+tcp-reassembly 0.3.0 sha256:1f3a…
 ```
 
 The name is `DECODER_NAME`.  Declaring it is a **should** in the
