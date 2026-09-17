@@ -76,11 +76,19 @@ Every session carries one.  See {doc}`../guide/converting`.
 .. autodata:: zpfwire.flow.END_CAPTURE_END
 ```
 
+```{eval-rst}
+.. autodata:: zpfwire.tcp.END_CAPTURE_GAP
+```
+
+```{eval-rst}
+.. autodata:: zpfwire.tcp.END_OFFSET_LIMIT
+```
+
 ---
 
 ## Undecoded reasons
 
-The `reason` strings on the `Undecoded` blocks a conversion writes.  Both are
+The `reason` strings on the `Undecoded` blocks a conversion writes.  All are
 of the *bytes-exist* class: the bytes are in the capture, and a consumer may
 follow the reference to fetch them.  See {doc}`../guide/provenance`.
 
@@ -89,5 +97,34 @@ follow the reference to fetch them.  See {doc}`../guide/provenance`.
 ```
 
 ```{eval-rst}
+.. autodata:: zpfwire.flow.REASON_DUPLICATE
+```
+
+```{eval-rst}
 .. autodata:: zpfwire.flow.REASON_LATE
+```
+
+```{eval-rst}
+.. autodata:: zpfwire.flow.REASON_LATE_REORDERED
+```
+
+```{eval-rst}
+.. autodata:: zpfwire.flow.REASON_LATE_RETRANSMITTED
+```
+
+```{eval-rst}
+.. autodata:: zpfwire.flow.REASON_PAWS
+```
+
+When a repeat could not be judged by the Timestamps option it is cited as
+`REASON_OVERLAP` — the conservative reading — and the reason it could not be
+is counted under one of these keys in
+{attr}`~zpfwire.stats.ConversionStats.ts_fallback`:
+
+```{eval-rst}
+.. autodata:: zpfwire.tcp.TS_ABSENT
+```
+
+```{eval-rst}
+.. autodata:: zpfwire.tcp.TS_STALE
 ```

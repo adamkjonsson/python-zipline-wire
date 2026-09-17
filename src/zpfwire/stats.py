@@ -14,8 +14,9 @@ class ConversionStats:
 
     Everything a capture contains is either converted or counted here.  The
     loss-bearing fields — :attr:`skipped`, :attr:`gaps`, :attr:`late_bytes`,
-    :attr:`overlap_bytes` — exist so that a conversion never drops data
-    silently; a caller is expected to surface them.
+    :attr:`overlap_bytes`, :attr:`duplicate_bytes` — exist so that a
+    conversion never drops data silently; a caller is expected to surface
+    them.
 
     Attributes:
         packets: Packets in the capture, including those skipped.
@@ -29,9 +30,69 @@ class ConversionStats:
         gaps: Gaps committed — places where a record was emitted past bytes
             that never arrived, after which those bytes may never be written.
         late_bytes: Bytes that arrived after their gap had been committed and
-            so had to be dropped.
+            so had to be dropped.  The total; where the TCP Timestamps option
+            can say why they were late, the two fields below split it.
+        late_reordered_bytes: Of those, bytes whose TSval was *older* than
+            everything committed past their gap — the original transmission,
+            delayed by the network.  A wider ``reorder_window`` or a longer
+            ``flush_timeout`` would have kept them, so this is the number
+            that says the policy was nearly patient enough.
+        late_retransmitted_bytes: Of those, bytes whose TSval was *newer* —
+            a resend of an original that never arrived, recovered after the
+            hole was given up on.  No policy of ours could have kept them; a
+            fact about the network.  What remains of :attr:`late_bytes` after
+            both is late for a reason the option could not name.
         overlap_bytes: Retransmitted bytes discarded because the same range
-            had already been accepted.
+            had already been accepted — the sender sent them again, and the
+            record covering them says so with ``retransmit``.  A repeat the
+            TCP Timestamps option cannot judge lands here too, as the
+            conservative reading; :attr:`ts_fallback` says how often.
+        duplicates: Segments that were a copy of a transmission already
+            accepted — the same packet seen twice by the capture point, as a
+            mirror port or a two-interface capture shows it.  The sender
+            resent nothing, so no record carries ``retransmit`` on their
+            account.  A count of segments rather than bytes because it is a
+            statement about the capture: set it beside :attr:`packets` and
+            it says how much of the file is doubled.
+        duplicate_bytes: Payload bytes those copies carried, all discarded.
+        paws_bytes: Payload bytes discarded because the segment's TSval was
+            older than the last accepted in order — an old segment from
+            before a sequence wrap, which a receiver drops whole (RFC 7323
+            §5.3).  Like :attr:`checksum_dropped_bytes` these reached no
+            receiver either.
+        wrap_resolved: Times a segment that serial arithmetic placed more
+            than 2**30 bytes *behind* was recognised as being from ahead,
+            because its TSval was newer than the last accepted in order: the
+            far side of a hole in the capture too wide for one session to
+            span, which without the option would have been miscounted as a
+            retransmission and the rest of the direction lost.  Each ends
+            the session for ``capture-gap`` and opens another, so each is
+            also a session.
+        offset_splits: Times a direction passed 2 GiB and was continued in a
+            new session, the old one ending for ``offset-limit``.
+            **Temporary** — a shim for
+            `zipline#146 <https://github.com/adamkjonsson/zipline/issues/146>`_,
+            the format's transport offset space reaching no further than
+            that from one origin; goes when it does.
+        acked_swaps: Under ``overlap="favor-acked"``, ranges where the copy
+            the receiver acknowledged — by the TSecr its ack echoed — was
+            not the first copy seen, and replaced it.  Each is a range the
+            ``favor-old`` policy would have written wrong.
+        acked_fallback_bytes: Under ``favor-acked``, bytes of disagreeing
+            copies decided as ``favor-old`` would decide them because the
+            evidence never came: no ack covered the run before
+            ``flush_timeout`` or ``reorder_window`` was reached, or the ack
+            that did carried no Timestamps option, or the session ended
+            first.  Non-zero means the file's overlap policy was, for those
+            bytes, not the one its Decoder Descriptor names — which is why
+            it is counted rather than silent.
+        ts_fallback: How often a repeat could not be judged by the Timestamps
+            option and was treated as a retransmission, keyed by why —
+            :data:`~zpfwire.tcp.TS_ABSENT` when either side lacked the
+            option, :data:`~zpfwire.tcp.TS_STALE` when the transmission it
+            repeated had aged out of the reassembler's memory.  Non-zero
+            means some ``retransmit`` flags in the file rest on the
+            specification's conservative reading rather than on evidence.
         undecoded_regions: Undecoded blocks written, each naming a range of
             the capture that reached no record.
         bad_checksum: Packets whose transport checksum did not verify.
@@ -64,7 +125,17 @@ class ConversionStats:
     payload_bytes: int = 0
     gaps: int = 0
     late_bytes: int = 0
+    late_reordered_bytes: int = 0
+    late_retransmitted_bytes: int = 0
     overlap_bytes: int = 0
+    duplicates: int = 0
+    duplicate_bytes: int = 0
+    paws_bytes: int = 0
+    wrap_resolved: int = 0
+    acked_swaps: int = 0
+    acked_fallback_bytes: int = 0
+    offset_splits: int = 0
+    ts_fallback: Counter[str] = field(default_factory=Counter)
     bad_checksum: int = 0
     checksum_dropped_bytes: int = 0
     truncated: int = 0
@@ -99,8 +170,50 @@ class ConversionStats:
             lines.append(f"gaps         {self.gaps}")
         if self.late_bytes:
             lines.append(f"late bytes   {self.late_bytes} (dropped)")
+        if self.late_reordered_bytes:
+            lines.append(
+                f"  reordered  {self.late_reordered_bytes} "
+                "(originals the network delayed; a wider window would have kept them)",
+            )
+        if self.late_retransmitted_bytes:
+            lines.append(
+                f"  resent     {self.late_retransmitted_bytes} "
+                "(recovered after the gap closed; no policy could have kept them)",
+            )
         if self.overlap_bytes:
-            lines.append(f"overlap      {self.overlap_bytes} bytes (discarded)")
+            lines.append(f"overlap      {self.overlap_bytes} bytes (retransmitted, discarded)")
+        if self.duplicates:
+            lines.append(
+                f"duplicates   {self.duplicates} of {self.packets} packets were copies, "
+                f"{self.duplicate_bytes} bytes (discarded)",
+            )
+        if self.paws_bytes:
+            lines.append(f"paws         {self.paws_bytes} bytes rejected (older than the clock)")
+        if self.wrap_resolved:
+            lines.append(
+                f"wrap         {self.wrap_resolved} hole(s) wider than 2^30 bytes; "
+                "the session was split there",
+            )
+        if self.acked_swaps:
+            lines.append(
+                f"acked        {self.acked_swaps} range(s) took the copy the receiver echoed",
+            )
+        if self.acked_fallback_bytes:
+            lines.append(
+                f"acked        {self.acked_fallback_bytes} contested bytes decided as favor-old "
+                "(no ack evidence)",
+            )
+        if self.offset_splits:
+            lines.append(
+                f"offset       {self.offset_splits} direction(s) passed 2 GiB; "
+                "the session was split there (zipline#146)",
+            )
+        if self.ts_fallback:
+            why = ", ".join(f"{key}: {count}" for key, count in sorted(self.ts_fallback.items()))
+            lines.append(
+                f"ts fallback  {sum(self.ts_fallback.values())} repeat(s) treated as "
+                f"retransmitted without timestamp evidence ({why})",
+            )
         if self.bad_checksum:
             lines.append(f"bad cksum    {self.bad_checksum} packet(s)")
         if self.checksum_dropped_bytes:

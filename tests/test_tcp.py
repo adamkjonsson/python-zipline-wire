@@ -162,7 +162,13 @@ def test_every_observed_byte_is_written_or_counted(tmp_path: pathlib.Path):
     ]), tmp_path)
 
     observed = 4 + 4 + 4 + 8
-    accounted = out.stats.payload_bytes + out.stats.overlap_bytes + out.stats.late_bytes
+    accounted = (
+        out.stats.payload_bytes
+        + out.stats.overlap_bytes
+        + out.stats.duplicate_bytes
+        + out.stats.late_bytes
+        + out.stats.paws_bytes
+    )
     assert accounted == observed
     assert out.only.stream(0) == b"aaaabbbbcc"
 
@@ -385,3 +391,632 @@ def test_a_fin_carried_with_data_flags_the_record(tmp_path: pathlib.Path):
     out = to_zpf(tcp_segments([Seg(1, b"last", flags=TCP_FIN | TCP_PSH)]), tmp_path)
 
     assert out.only.by(0)[0].flags & zpf.RecordFlags.FIN
+
+
+# ── the Timestamps option: copy or resend ───────────────────────────────
+#
+# A repeat is a *duplicate* — the same transmission seen twice by the capture
+# point — only when both copies carry the option, their TSvals are equal, and
+# nothing from the peer arrived in between.  Anything else is a
+# retransmission, which is what the specification asks a producer that cannot
+# tell to say.  One test per clause failing, one per site where a repeat is
+# judged, and the two fallbacks counted by name.
+
+
+def _flagged(out: object) -> list[bool]:
+    """Whether each record of the only session carries ``retransmit``."""
+    return [bool(r.flags & zpf.RecordFlags.RETRANSMIT) for r in out.only.records]  # type: ignore[attr-defined]
+
+
+def _reasons(out: object) -> list[str]:
+    return [u.reason for u in out.undecoded]  # type: ignore[attr-defined]
+
+
+def test_a_copy_with_the_same_tsval_and_nothing_between_is_a_duplicate(
+    tmp_path: pathlib.Path,
+):
+    """The mirror-port shape: the sender resent nothing, so no flag."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path)
+
+    assert out.only.stream(0) == b"aaaabbbb"
+    assert out.stats.duplicates == 1
+    assert out.stats.duplicate_bytes == 4
+    assert out.stats.overlap_bytes == 0
+    assert _reasons(out) == ["duplicate-discarded"]
+    assert _flagged(out) == [False]
+    assert out.stats.ts_fallback == {}
+
+
+def test_a_peer_packet_between_the_copies_makes_it_a_retransmission(
+    tmp_path: pathlib.Path,
+):
+    """Same TSval, but the peer's ACK sits between: a fast retransmit inside one tick."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"", from_client=False, timestamps=(500, 100)),
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path)
+
+    assert out.stats.duplicates == 0
+    assert out.stats.overlap_bytes == 4
+    assert _reasons(out) == ["overlap-discarded"]
+    assert _flagged(out) == [True]
+    assert out.stats.ts_fallback == {}
+
+
+def test_a_later_tsval_is_a_retransmission_however_close_it_follows(
+    tmp_path: pathlib.Path,
+):
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(140, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(141, 0)),
+    ]), tmp_path)
+
+    assert out.stats.duplicates == 0
+    assert out.stats.overlap_bytes == 4
+    assert _flagged(out) == [True]
+    assert out.stats.ts_fallback == {}
+
+
+def test_a_repeat_without_the_option_falls_back_and_says_so(tmp_path: pathlib.Path):
+    """Neither side carries it: the conservative reading, counted as ``absent``."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa"),
+        Seg(1, b"aaaa"),
+        Seg(5, b"bbbb", flags=TCP_PSH),
+    ]), tmp_path)
+
+    assert out.stats.overlap_bytes == 4
+    assert _flagged(out) == [True]
+    assert out.stats.ts_fallback == {"absent": 1}
+
+
+def test_a_repeat_with_the_option_on_one_side_only_is_absent_too(tmp_path: pathlib.Path):
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa"),
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path)
+
+    assert out.stats.overlap_bytes == 4
+    assert out.stats.ts_fallback == {"absent": 1}
+
+
+def test_a_repeat_of_something_forgotten_falls_back_as_stale(tmp_path: pathlib.Path):
+    """The memory of accepted transmissions is bounded by ``reorder_window``.
+
+    With a four-byte window the first segment is forgotten once the second is
+    accepted, so a copy of it — same TSval, nothing between — cannot be
+    judged and is treated as a retransmission, counted as ``stale``.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", timestamps=(101, 0)),
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", flags=TCP_PSH, timestamps=(102, 0)),
+    ]), tmp_path, options=ReassemblyOptions(reorder_window=4))
+
+    assert out.only.stream(0) == b"aaaabbbbcccc"
+    assert out.stats.duplicates == 0
+    assert out.stats.overlap_bytes == 4
+    assert out.stats.ts_fallback == {"stale": 1}
+
+
+def test_the_newest_transmission_is_never_forgotten(tmp_path: pathlib.Path):
+    """Even at ``reorder_window=0`` the copy that follows its original is judged."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path, options=ReassemblyOptions(reorder_window=0))
+
+    assert out.stats.duplicates == 1
+    assert out.stats.ts_fallback == {}
+
+
+def test_a_leading_trim_is_judged_too(tmp_path: pathlib.Path):
+    """Site two: a segment that re-covers accepted bytes and adds new ones."""
+    resend = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(3, b"aabb", flags=TCP_PSH, timestamps=(140, 0)),
+    ]), tmp_path / "resend")
+    copy = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(3, b"aabb", flags=TCP_PSH, timestamps=(100, 0)),
+    ]), tmp_path / "copy")
+
+    assert resend.only.stream(0) == copy.only.stream(0) == b"aaaabb"
+    assert resend.stats.overlap_bytes == 2 and _flagged(resend) == [True]
+    assert copy.stats.duplicate_bytes == 2 and _flagged(copy) == [False]
+
+
+def test_a_repeat_of_a_held_segment_is_judged_against_it(tmp_path: pathlib.Path):
+    """Site three: the copy arrives while its original waits behind a hole."""
+    copy = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", timestamps=(102, 0)),
+        Seg(9, b"cccc", timestamps=(102, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(103, 0)),
+    ]), tmp_path / "copy")
+    resend = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", timestamps=(102, 0)),
+        Seg(1, b"", from_client=False, timestamps=(500, 100)),
+        Seg(9, b"cccc", timestamps=(102, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(103, 0)),
+    ]), tmp_path / "resend")
+
+    assert copy.only.stream(0) == resend.only.stream(0) == b"aaaabbbbcccc"
+    assert copy.stats.duplicates == 1 and _flagged(copy) == [False]
+    assert resend.stats.overlap_bytes == 4 and _flagged(resend) == [True]
+
+
+def test_a_trim_while_draining_is_judged_against_the_fill(tmp_path: pathlib.Path):
+    """Site four: the fill re-covers the head of a held segment."""
+    resend = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(7, b"bbcc", timestamps=(101, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(140, 0)),
+    ]), tmp_path / "resend")
+    copy = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(7, b"bbcc", timestamps=(101, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path / "copy")
+
+    assert resend.only.stream(0) == copy.only.stream(0) == b"aaaabbbbcc"
+    assert resend.stats.overlap_bytes == 2 and _flagged(resend) == [True]
+    assert copy.stats.duplicate_bytes == 2 and _flagged(copy) == [False]
+
+
+# ── the Timestamps option: why a byte was late ──────────────────────────
+#
+# A byte that arrives inside a committed gap is compared against the clock of
+# the first segment that overtook it.  Older: the original, delayed by the
+# network — a wider window would have kept it.  Newer: a resend of bytes that
+# were lost — nothing of ours could have.  Same tick, or no option: late, and
+# no more is said.
+
+
+def _late(seq_tsval: int | None, passer_tsval: int | None, tmp_path: pathlib.Path) -> object:
+    """Commit a gap with ``reorder_window=0`` and land a byte in it afterwards."""
+    return to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)),
+        Seg(9, b"cccc", flags=TCP_PSH,
+            timestamps=None if passer_tsval is None else (passer_tsval, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH,
+            timestamps=None if seq_tsval is None else (seq_tsval, 0)),
+    ]), tmp_path, options=ReassemblyOptions(reorder_window=0))
+
+
+def test_a_late_byte_older_than_what_passed_it_was_reordered(tmp_path: pathlib.Path):
+    out = _late(seq_tsval=101, passer_tsval=105, tmp_path=tmp_path)
+
+    assert out.stats.late_bytes == 4
+    assert out.stats.late_reordered_bytes == 4
+    assert out.stats.late_retransmitted_bytes == 0
+    assert _reasons(out) == ["late-reordered"]
+
+
+def test_a_late_byte_newer_than_what_passed_it_was_resent(tmp_path: pathlib.Path):
+    out = _late(seq_tsval=150, passer_tsval=105, tmp_path=tmp_path)
+
+    assert out.stats.late_bytes == 4
+    assert out.stats.late_reordered_bytes == 0
+    assert out.stats.late_retransmitted_bytes == 4
+    assert _reasons(out) == ["late-retransmitted"]
+
+
+def test_a_late_byte_in_the_same_tick_as_what_passed_it_is_just_late(
+    tmp_path: pathlib.Path,
+):
+    out = _late(seq_tsval=105, passer_tsval=105, tmp_path=tmp_path)
+
+    assert out.stats.late_bytes == 4
+    assert out.stats.late_reordered_bytes == 0
+    assert out.stats.late_retransmitted_bytes == 0
+    assert _reasons(out) == ["late-arrival"]
+
+
+@pytest.mark.parametrize(("seq_tsval", "passer_tsval"), [(None, None), (101, None), (None, 105)])
+def test_a_late_byte_without_the_option_is_just_late(
+    tmp_path: pathlib.Path, seq_tsval: int | None, passer_tsval: int | None,
+):
+    out = _late(seq_tsval=seq_tsval, passer_tsval=passer_tsval, tmp_path=tmp_path)
+
+    assert out.stats.late_bytes == 4
+    assert out.stats.late_reordered_bytes == out.stats.late_retransmitted_bytes == 0
+    assert _reasons(out) == ["late-arrival"]
+
+
+def test_the_reference_is_the_first_passer_not_the_latest_commit(tmp_path: pathlib.Path):
+    """A resend can be slow to arrive too; it is still a resend.
+
+    By the time the resend lands, the sender has committed segments newer than
+    it — so compared against *everything* committed it would look older, and
+    read as reordered.  Compared against the segment that overtook the gap,
+    it was sent afterwards, which is what makes it a resend.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)),
+        Seg(9, b"cccc", flags=TCP_PSH, timestamps=(105, 0)),    # overtakes 5..8
+        Seg(13, b"dddd", flags=TCP_PSH, timestamps=(200, 0)),   # newer still
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(140, 0)),    # sent after 105
+    ]), tmp_path, options=ReassemblyOptions(reorder_window=0))
+
+    assert out.stats.late_retransmitted_bytes == 4
+    assert _reasons(out) == ["late-retransmitted"]
+
+
+# ── the Timestamps option: PAWS and the wrap ────────────────────────────
+
+
+def test_a_segment_older_than_the_clock_is_rejected_whole(tmp_path: pathlib.Path):
+    """PAWS: new bytes with a TSval below ``TS.Recent`` are an old segment come round."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(90, 0)),
+        Seg(5, b"BBBB", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path)
+
+    assert out.only.stream(0) == b"aaaaBBBB"
+    assert out.stats.paws_bytes == 4
+    assert out.stats.overlap_bytes == 0
+    assert _reasons(out) == ["paws-rejected"]
+    assert _flagged(out) == [False, False]
+
+
+def test_a_delayed_original_behind_a_hole_passes_paws(tmp_path: pathlib.Path):
+    """The held segment's newer clock does not reject the original that fills the hole.
+
+    ``TS.Recent`` moves only on in-order arrival — which is what a real
+    receiver does, and what ``tcp_reorder_ts``'s D-SACKs prove.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", timestamps=(105, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(103, 0)),
+    ]), tmp_path)
+
+    assert out.only.stream(0) == b"aaaabbbbcccc"
+    assert out.stats.paws_bytes == 0
+
+
+def test_paws_does_not_apply_to_a_repeat(tmp_path: pathlib.Path):
+    """A repeat of accepted bytes is judged as a repeat, whatever its clock."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", timestamps=(101, 0)),
+        Seg(1, b"aaaa", timestamps=(90, 0)),
+        Seg(9, b"cccc", flags=TCP_PSH, timestamps=(102, 0)),
+    ]), tmp_path)
+
+    assert out.stats.paws_bytes == 0
+    assert out.stats.overlap_bytes == 4
+    assert _reasons(out) == ["overlap-discarded"]
+
+
+PAST_THE_WRAP = 1 + 4 + (1 << 31) + 100
+"""A segment this far on is more than any window behind, by serial arithmetic."""
+
+
+def test_a_segment_from_past_the_wrap_opens_a_new_session(tmp_path: pathlib.Path):
+    """A hole wider than 2**31: the clock says the segment is from ahead.
+
+    One session cannot hold both sides — records are stored in serial order,
+    and a record that far past its predecessor *precedes* it — so the first
+    ends for ``capture-gap`` and the second carries on.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)),
+        Seg(PAST_THE_WRAP, b"zzzz", flags=TCP_PSH, timestamps=(900, 0)),
+        Seg(PAST_THE_WRAP + 4, b"yyyy", flags=TCP_PSH, timestamps=(901, 0)),
+    ]), tmp_path)
+
+    assert [s.end_reason for s in out.sessions] == ["capture-gap", "capture-end"]
+    assert out.sessions[0].stream(0) == b"aaaa"
+    assert out.sessions[1].stream(0) == b"zzzzyyyy"
+    assert out.stats.wrap_resolved == 1
+    assert out.stats.sessions == 2
+    assert out.stats.overlap_bytes == 0
+
+
+@pytest.mark.parametrize("timestamps", [None, (90, 0)], ids=["no-option", "older-clock"])
+def test_without_a_newer_clock_the_far_side_of_a_hole_is_old_data(
+    tmp_path: pathlib.Path, timestamps: tuple[int, int] | None,
+):
+    """As before this release: serial arithmetic calls it behind, and it is dropped."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=None if timestamps is None else (100, 0)),
+        Seg(PAST_THE_WRAP, b"zzzz", flags=TCP_PSH, timestamps=timestamps),
+    ]), tmp_path)
+
+    assert len(out.sessions) == 1
+    assert out.only.stream(0) == b"aaaa"
+    assert out.stats.wrap_resolved == 0
+    assert out.stats.overlap_bytes == 4
+
+
+def test_a_resend_a_window_behind_is_not_mistaken_for_the_far_side(tmp_path: pathlib.Path):
+    """Behind by less than the largest window TCP allows is a repeat, clock or no clock."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)),
+        Seg(1, b"aaaa", flags=TCP_PSH, timestamps=(140, 0)),
+    ]), tmp_path)
+
+    assert len(out.sessions) == 1
+    assert out.stats.wrap_resolved == 0
+    assert out.stats.overlap_bytes == 4
+
+
+# ── SHIM (zipline#146): a direction longer than 2 GiB ──────────────────
+#
+# The format places a transport record by its seq_start against the stream
+# origin with serial arithmetic, which reaches 2**31 and no further: the
+# writer refuses a record past that, and a reader zero-widths one.  Until the
+# format unwraps offsets along stored order, a direction is continued in a
+# new session every 2 GiB.  Delete this section with the shim.
+
+GIB = 1 << 30
+
+
+def _long_stream(samples: int) -> list[bytes]:
+    """Build the handshake, then one 4-byte segment per GiB of one direction."""
+    return handshake() + [
+        Seg((ISN + 1 + k * GIB) % (1 << 32), b"kkkk", flags=TCP_PSH,
+            timestamps=(100 + k, 0)).frame(ack=5001)
+        for k in range(samples)
+    ]
+
+
+def test_a_direction_past_2_gib_continues_in_a_new_session(tmp_path: pathlib.Path):
+    out = to_zpf(capture_of(_long_stream(4)), tmp_path,
+                 options=ReassemblyOptions(reorder_window=0))
+
+    assert [s.end_reason for s in out.sessions] == ["offset-limit", "capture-end"]
+    assert [r.seq_start for r in out.sessions[0].records if r.payload] == [
+        ISN + 1, ISN + 1 + GIB,
+    ]
+    assert [r.seq_start for r in out.sessions[1].records if r.payload] == [
+        ISN + 1 + 2 * GIB, ISN + 1 + 3 * GIB,
+    ]
+    assert out.stats.offset_splits == 1
+    assert out.diagnostics == [] and out.unplaceable == []
+
+
+def test_every_record_of_a_split_stream_is_placed(tmp_path: pathlib.Path):
+    """The point of the shim: no data record has a zero-width range, in any session."""
+    out = to_zpf(capture_of(_long_stream(5)), tmp_path,
+                 options=ReassemblyOptions(reorder_window=0))
+
+    with zpf.open(out.path) as reader:
+        for session in reader.sessions():
+            for participant in session.participants:
+                pid = participant.participant_id
+                for record, (start, end) in zip(session.stream(pid), session.ranges(pid),
+                                                strict=True):
+                    assert end - start == len(record.payload)
+    assert out.stats.offset_splits == 2
+    assert out.stats.sessions == 3
+
+
+def test_a_record_straddling_the_limit_stays_where_it_starts(tmp_path: pathlib.Path):
+    """Only the start is placed; a record beginning just under 2**31 is fine."""
+    out = to_zpf(capture_of(handshake() + [
+        Seg(ISN + 1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)).frame(ack=5001),
+        Seg(ISN + 1 + (1 << 31) - 2, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)).frame(ack=5001),
+    ]), tmp_path, options=ReassemblyOptions(reorder_window=0))
+
+    assert len(out.sessions) == 1
+    assert out.stats.offset_splits == 0
+    assert out.diagnostics == [] and out.unplaceable == []
+
+
+def test_a_split_stream_sequences_cleanly(tmp_path: pathlib.Path):
+    out = to_zpf(capture_of(_long_stream(4)), tmp_path,
+                 options=ReassemblyOptions(reorder_window=0), sequenced=True)
+
+    assert out.diagnostics == [] and out.unplaceable == []
+    for session in out.sessions:
+        zpf.verify_sequenced(session.records, participant_count=len(session.participants))
+
+
+# ── overlap="favor-acked": the copy the receiver kept ───────────────────
+#
+# Two copies of a range disagree — a segment corrupted in flight, then resent
+# clean.  favor-old keeps the first seen.  favor-acked keeps the one whose
+# TSval the peer's first covering ack echoed as TSecr: the receiver's own
+# word on which copy advanced its window.  The evidence arrives after both
+# copies, so a run is held after it closes until the peer acks it.
+
+ACKED = ReassemblyOptions(overlap="favor-acked")
+
+
+def _ack(ack: int, tsecr: int | None, tsval: int = 500) -> Seg:
+    """Build a bare acknowledgement from the server, echoing *tsecr*."""
+    return Seg(1, b"", from_client=False, ack=ack,
+               timestamps=None if tsecr is None else (tsval, tsecr))
+
+
+def _corrupt_then_resent(*, echo: int | None, ack: bool = True) -> list[Seg]:
+    """Build a corrupted original, its clean resend, more data, and the server's ack."""
+    segs = [
+        Seg(1, b"XXXX", timestamps=(100, 0)),                  # corrupted in flight
+        Seg(1, b"aaaa", timestamps=(140, 0)),                  # resent clean
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(141, 0)),   # closes the run
+    ]
+    if ack:
+        segs.append(_ack(9, echo))
+    return segs
+
+
+def test_favor_acked_keeps_the_copy_the_receiver_echoed(tmp_path: pathlib.Path):
+    old = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path / "old")
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path / "acked",
+                   options=ACKED)
+
+    assert old.only.stream(0) == b"XXXXbbbb"
+    assert acked.only.stream(0) == b"aaaabbbb"
+    assert acked.stats.acked_swaps == 1
+    assert acked.stats.acked_fallback_bytes == 0
+    assert acked.stats.overlap_bytes == 4          # the loser, whichever it was
+    assert _reasons(acked) == ["overlap-discarded"]
+    assert _flagged(acked) == [True]               # the sender did resend
+    assert acked.diagnostics == [] and acked.unplaceable == []
+
+
+def test_favor_acked_keeps_the_first_copy_when_the_receiver_echoed_it(
+    tmp_path: pathlib.Path,
+):
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=100)), tmp_path, options=ACKED)
+
+    assert acked.only.stream(0) == b"XXXXbbbb"
+    assert acked.stats.acked_swaps == 0
+    assert acked.stats.acked_fallback_bytes == 0
+
+
+def test_the_loser_is_cited_wherever_it_lies(tmp_path: pathlib.Path):
+    """The Undecoded block names the copy that lost, not the one that arrived second."""
+    buf = tcp_segments(_corrupt_then_resent(echo=140))
+    capture = buf.getvalue()
+    acked = to_zpf(buf, tmp_path, options=ACKED)
+
+    (loser,) = acked.undecoded
+    assert capture[loser.off_start:loser.off_end] == b"XXXX"
+
+
+def test_a_swap_moves_the_timestamp_to_the_resend(tmp_path: pathlib.Path):
+    """The record's time is its last contributing packet, and the resend is one now."""
+    old = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path / "old")
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path / "acked",
+                   options=ACKED)
+
+    assert old.only.records[0].timestamp == acked.only.records[0].timestamp
+    assert old.only.records[0].ts_first is not None
+    assert acked.only.records[0].ts_first is not None
+    assert acked.only.records[0].ts_first > old.only.records[0].ts_first
+
+
+@pytest.mark.parametrize("echo", [None], ids=["ack-without-option"])
+def test_an_ack_without_the_option_is_no_evidence(tmp_path: pathlib.Path, echo: int | None):
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=echo)), tmp_path, options=ACKED)
+
+    assert acked.only.stream(0) == b"XXXXbbbb"
+    assert acked.stats.acked_fallback_bytes == 4
+
+
+def test_a_one_way_capture_falls_back_at_the_end(tmp_path: pathlib.Path):
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=140, ack=False)), tmp_path,
+                   options=ACKED)
+
+    assert acked.only.stream(0) == b"XXXXbbbb"
+    assert acked.stats.acked_fallback_bytes == 4
+    assert acked.stats.records == 1
+
+
+def test_a_run_held_past_flush_timeout_falls_back(tmp_path: pathlib.Path):
+    """The evidence came, but too late: something else arrived first, past the bound."""
+    segs = _corrupt_then_resent(echo=140, ack=False) + [
+        Seg(9, b"cccc", flags=TCP_PSH, timestamps=(150, 0)),   # 2 s later; the bound expires
+        _ack(13, 140),                                         # covers everything, now
+    ]
+    acked = to_zpf(tcp_segments(segs, step_us=2_000_000), tmp_path,
+                   options=ReassemblyOptions(overlap="favor-acked", flush_timeout=1.0))
+
+    assert acked.only.stream(0) == b"XXXXbbbbcccc"
+    assert acked.stats.acked_fallback_bytes == 4
+    assert acked.stats.acked_swaps == 0
+
+
+def test_the_hold_is_bounded_by_reorder_window(tmp_path: pathlib.Path):
+    """Closed runs held beyond the window are written oldest first, on the fallback."""
+    segs = _corrupt_then_resent(echo=140, ack=False) + [
+        Seg(9, b"cccc", flags=TCP_PSH, timestamps=(142, 0)),   # a second closed run: 12 > 8
+        _ack(13, 140),
+    ]
+    acked = to_zpf(tcp_segments(segs), tmp_path,
+                   options=ReassemblyOptions(overlap="favor-acked", reorder_window=8))
+
+    assert acked.only.stream(0) == b"XXXXbbbbcccc"
+    assert acked.stats.acked_fallback_bytes == 4
+
+
+def test_the_evidence_is_the_first_ack_covering_the_range_not_the_run(
+    tmp_path: pathlib.Path,
+):
+    """The receiver echoes what last advanced its window, so a later ack names later data."""
+    segs = [
+        Seg(1, b"XXXX", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(140, 0)),
+        _ack(5, 140),                                          # covers the range: echoes the resend
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(160, 0)),
+        _ack(9, 160),                                          # covers the run: echoes bbbb
+    ]
+    acked = to_zpf(tcp_segments(segs), tmp_path, options=ACKED)
+
+    assert acked.only.stream(0) == b"aaaabbbb"
+    assert acked.stats.acked_swaps == 1
+
+
+def test_a_disagreeing_copy_of_a_held_segment_is_contested_too(tmp_path: pathlib.Path):
+    """Site three: both copies wait behind the hole, and the run takes the echoed one."""
+    segs = [
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"XXXX", timestamps=(102, 0)),                  # held, corrupted
+        Seg(9, b"cccc", timestamps=(140, 0)),                  # its clean resend, held too
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(141, 0)),   # fills; the run closes
+        _ack(13, 140),
+    ]
+    acked = to_zpf(tcp_segments(segs), tmp_path, options=ACKED)
+
+    assert acked.only.stream(0) == b"aaaabbbbcccc"
+    assert acked.stats.acked_swaps == 1
+
+
+def test_a_held_segments_trimmed_head_is_contested_against_the_fill(tmp_path: pathlib.Path):
+    """Site four: the fill re-covers the head of a held segment with different bytes."""
+    def convert(echo: int) -> bytes:
+        segs = [
+            Seg(1, b"aaaa", timestamps=(100, 0)),
+            Seg(7, b"XXcc", timestamps=(101, 0)),              # held; its head disagrees with..
+            Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(140, 0)),  # ..the fill's tail
+            _ack(11, echo),
+        ]
+        return to_zpf(tcp_segments(segs), tmp_path / str(echo), options=ACKED).only.stream(0)
+
+    assert convert(140) == b"aaaabbbbcc"   # the receiver kept the fill
+    assert convert(101) == b"aaaabbXXcc"   # the receiver kept the held segment
+
+
+def test_agreeing_copies_are_not_held_against_the_run(tmp_path: pathlib.Path):
+    """Where the copies agree the choice is moot; it is discarded at once, as favor-old does."""
+    segs = [
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(140, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(141, 0)),
+        _ack(9, 140),
+    ]
+    acked = to_zpf(tcp_segments(segs), tmp_path, options=ACKED)
+
+    assert acked.stats.overlap_bytes == 4
+    assert acked.stats.acked_swaps == 0
+    assert acked.stats.acked_fallback_bytes == 0
+
+
+def test_favor_acked_sequences_cleanly(tmp_path: pathlib.Path):
+    acked = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path,
+                   options=ACKED, sequenced=True)
+
+    assert acked.only.stream(0) == b"aaaabbbb"
+    assert acked.diagnostics == [] and acked.unplaceable == []
+    zpf.verify_sequenced(acked.only.records, participant_count=len(acked.only.participants))
+
+
+def test_favor_acked_is_recorded_in_the_policy_digest():
+    assert ACKED.params_digest() != ReassemblyOptions().params_digest()

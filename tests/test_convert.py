@@ -244,7 +244,11 @@ def test_no_capture_loses_bytes_without_counting_them(tmp_path: pathlib.Path, na
 
     out = to_zpf(CAPTURES / name, tmp_path)
     accounted = (
-        out.stats.payload_bytes + out.stats.overlap_bytes + out.stats.late_bytes
+        out.stats.payload_bytes
+        + out.stats.overlap_bytes
+        + out.stats.duplicate_bytes
+        + out.stats.late_bytes
+        + out.stats.paws_bytes
     )
 
     assert accounted == observed

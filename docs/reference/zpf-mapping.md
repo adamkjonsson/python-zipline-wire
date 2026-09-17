@@ -151,6 +151,8 @@ range no record covers.
 | `rst` | Either direction reset |
 | `timeout` | Silence longer than `session_timeout` |
 | `capture-end` | The capture ran out first |
+| `capture-gap` | The capture skipped further than a session can span; the next session continues the connection |
+| `offset-limit` | One direction passed 2 GiB; the next session continues the connection.  Temporary — [zipline#146](https://github.com/adamkjonsson/zipline/issues/146) |
 
 ## Blocks zpfwire never writes
 

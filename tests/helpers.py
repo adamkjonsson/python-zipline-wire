@@ -9,6 +9,7 @@ on demand.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import pathlib
 from collections.abc import Iterable, Sequence
@@ -16,7 +17,7 @@ from dataclasses import dataclass, field
 
 import zpf
 from packeteer.generate import PacketBuilder
-from packeteer.generate.tcp import TCP_ACK, TCP_FIN, TCP_PSH, TCP_RST, TCP_SYN
+from packeteer.generate.tcp import TCP_ACK, TCP_FIN, TCP_PSH, TCP_RST, TCP_SYN, TCPOptions
 from packeteer.pcap import LINKTYPE_ETHERNET, SNAPLEN_UNLIMITED, write_pcap
 
 from zpfwire import ConversionStats, capture_to_zpf
@@ -43,6 +44,7 @@ __all__ = [
     "Seg",
     "SessionSnapshot",
     "capture_of",
+    "decode_digest",
     "fragmented_frames",
     "tcp_packet",
     "tcp_segments",
@@ -62,18 +64,21 @@ def tcp_packet(
     flags: int = TCP_ACK,
     payload: bytes = b"",
     checksum: int | None = None,
+    timestamps: tuple[int, int] | None = None,
 ) -> bytes:
     """Build one Ethernet/IPv4/TCP frame.
 
     *checksum* overrides the computed value, which is the only way to write a
-    segment that was corrupted on the wire.
+    segment that was corrupted on the wire.  *timestamps* is the ``(TSval,
+    TSecr)`` pair of the Timestamps option, absent by default.
     """
+    options = None if timestamps is None else TCPOptions(timestamps=timestamps)
     builder = (
         PacketBuilder()
         .ethernet(src_mac="00:00:00:00:00:01", dst_mac="00:00:00:00:00:02")
         .ip(src=src, dst=dst)
         .tcp(src_port=src_port, dst_port=dst_port, seq=seq, ack=ack, flags=flags,
-             checksum=checksum)
+             checksum=checksum, options=options)
     )
     if payload:
         builder = builder.payload(data=payload)
@@ -178,6 +183,8 @@ class Seg:
         data: Payload bytes.
         flags: TCP flags to set in addition to ACK.
         from_client: Direction the segment travels.
+        timestamps: The ``(TSval, TSecr)`` pair, or ``None`` for no option.
+        ack: The acknowledgement number, or ``None`` to take :meth:`frame`'s.
 
     """
 
@@ -188,24 +195,32 @@ class Seg:
         *,
         flags: int = TCP_ACK,
         from_client: bool = True,
+        timestamps: tuple[int, int] | None = None,
+        ack: int | None = None,
     ) -> None:
         self.seq = seq
         self.data = data
         self.flags = flags
         self.from_client = from_client
+        self.timestamps = timestamps
+        self.ack = ack
 
     def frame(self, *, ack: int = 0) -> bytes:
         """Render this segment as a frame."""
+        if self.ack is not None:
+            ack = self.ack
         if self.from_client:
             return tcp_packet(
                 src=CLIENT_IP, dst=SERVER_IP,
                 src_port=CLIENT_PORT, dst_port=SERVER_PORT,
                 seq=self.seq, ack=ack, flags=self.flags, payload=self.data,
+                timestamps=self.timestamps,
             )
         return tcp_packet(
             src=SERVER_IP, dst=CLIENT_IP,
             src_port=SERVER_PORT, dst_port=CLIENT_PORT,
             seq=self.seq, ack=ack, flags=self.flags, payload=self.data,
+            timestamps=self.timestamps,
         )
 
 
@@ -312,3 +327,42 @@ def to_zpf(source: io.BytesIO | pathlib.Path | str, tmp_path: pathlib.Path,
 
     return Converted(stats=stats, sessions=snapshots, diagnostics=diagnostics, path=out,
                      undecoded=undecoded, unplaceable=unplaceable)
+
+
+def decode_digest(path: pathlib.Path | str) -> str:
+    """Digest what the reassembler decided, and nothing else.
+
+    A whole-file hash would pin three things that move without a byte of
+    reassembly moving: the wall-clock ``produced_at``, the tool version in
+    ``produced_by``, and the capture's path in the Source ``uri``.  This
+    hashes every block in stored order with those taken out — the File
+    Header dropped, the Source reduced to the capture's own digest and link
+    type, the Decoder to its name, output layer and ``params_digest`` — so
+    two files agree exactly when the same records, hints, flags, timestamps,
+    participants, session ends and Undecoded citations were written in the
+    same order under the same declared policy.
+
+    Args:
+        path: A ``.zpf`` file.
+
+    Returns:
+        A ``sha256:`` digest.
+
+    """
+    h = hashlib.sha256()
+    with zpf.open(path) as reader:
+        for block in reader.blocks():
+            if isinstance(block, zpf.FileHeader):
+                continue
+            if isinstance(block, zpf.Source):
+                canonical = f"source {block.kind} {block.digest} {block.link_type}".encode()
+            elif isinstance(block, zpf.Decoder):
+                canonical = (
+                    f"decoder {block.name} {block.output_layer} {block.params_digest}".encode()
+                )
+            else:
+                canonical = block.to_bytes()
+            h.update(block.block_type.to_bytes(2, "little"))
+            h.update(len(canonical).to_bytes(4, "little"))
+            h.update(canonical)
+    return "sha256:" + h.hexdigest()

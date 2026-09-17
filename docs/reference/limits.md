@@ -30,6 +30,35 @@ specification's rule, and it is why the policy is a declared, hashed option.
 Bytes lost this way are counted as `late_bytes` and cited as `late-arrival`
 regions.
 
+**A direction longer than 2 GiB is written as several sessions.**  The
+format places a transport record by its `seq_start` against the stream
+origin with serial arithmetic, which is decidable only within 2³¹: a record
+further from the origin than that is "below" it, and python-zipline's writer
+refuses it — so without help a capture of any TCP direction carrying more
+than 2 GiB, an ordinary large download, could not be converted at all.
+Until the format unwraps offsets along stored order
+([zipline#146](https://github.com/adamkjonsson/zipline/issues/146)) zpfwire
+ends the session at that point for `offset-limit` and continues the
+direction in a new one, whose origin is its first byte; every record is
+then placed, and `stats.offset_splits` says it happened.  What it costs: a
+reader sees several sessions with one key where the wire had one
+connection, and a segment reordered across the boundary — sent below 2 GiB,
+arriving after the split — lands in the new session as a repeat rather than
+in the old one where it belonged.  Both go with the shim.
+
+**A hole wider than 2³¹ bytes in one direction splits the session.**  The
+offset space is modular over 2³² and records are stored in serial order, so
+two records of one participant cannot be more than 2³¹ apart with nothing
+between them.  A segment from the far side of a hole that wide is recognised
+by the Timestamps option — further behind than any window and carrying a
+newer clock — and opens a new session, the old one ending for
+`capture-gap`.  Without the option the shape is invisible: serial arithmetic
+calls the segment old, it is discarded as a retransmission, and the rest of
+the direction goes with it.  The zone between a window's width and 2³¹
+behind is where a resend cannot be, so the rule is safe there; a hole
+between 2³⁰ and 2³¹ wide is placed by serial arithmetic alone and needs no
+rule, and is held and then committed as any gap is.
+
 **Filtering below the flow level breaks streams.** A predicate that drops
 segments from the middle of a connection produces gaps exactly as packet loss
 would.  Filtering by address or port keeps whole conversations and is safe.
@@ -55,33 +84,41 @@ which ranges the receiver actually got — but the reassembler does not consult
 them.  It infers loss from arrival order and its timeouts alone, so a capture
 with SACK information available is analysed as though it had none.
 
-**The TCP Timestamps option is not read either**, and it could settle three
-things the reassembler currently assumes: whether a repeated segment is a
-retransmission or the same transmission seen twice (a mirror port doubles
-every packet, and today each copy sets `retransmit`); whether late bytes were
-a delayed original or a loss recovered after the gap was committed; and, as
-PAWS, whether a segment that looks 2³¹ behind is really from after a sequence
-wrap.  This is [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17).
-It was held on two things, and both have since arrived: a real capture of a
-retransmission carrying the option
-([packeteer#149](https://github.com/adamkjonsson/packeteer/issues/149),
-`tcp_lossy_ts.pcap` and its duplicated twin `tcp_dup_ts.pcap` in packeteer
-0.15.0), and the format saying whether `retransmit` means the sender resent
-or the reassembler discarded
-([zipline#142](https://github.com/adamkjonsson/zipline/issues/142)).  Spec
-`0.20` answered the second: the flag names the **sender's** act, a copy of one
-transmission does not set it, and a producer that cannot tell the two apart
-SHOULD treat the repeat as a retransmission.  That last clause is what this
-reassembler does today, so its output is conformant — but the flag on a
-duplicated capture overstates what happened, and reading TSval is what stops
-it.
+**A one-way capture of a coarse-tick stack cannot tell a fast retransmit
+from a mirror copy.**  The reassembler reads the TCP Timestamps option to
+separate the two — see {doc}`../guide/reassembly` — and the signal that
+separates them on a stack whose timestamp tick is coarser than its round
+trip (historically ~100 ms on some stacks, against a LAN round trip of well
+under a millisecond) is the peer's duplicate ACKs sitting between the
+original and the resend.  In a capture that holds only one direction those
+ACKs are not in the file, and a fast retransmit that landed inside its
+original's tick carries the same TSval with nothing visible between: the
+rule calls it a duplicate and clears `retransmit` on a record whose bytes
+the sender did in fact resend.  Linux ticks at 1 ms and a resend after a
+dup-ACK round trip is safely apart, so the six real captures the rule was
+built against never show the shape; it is recorded because the shape exists.
+The Timestamps option itself is only present when both ends negotiated it,
+and every rule that reads it degrades to the specification's conservative
+reading — every repeat is a retransmission — when it is absent, and counts
+that it did (`stats.ts_fallback`).
 
-**A fourth thing the option could settle needs a different reassembler:**
-which copy of disagreeing bytes the *receiver* kept, read from the TSval its
-acknowledgement echoes.  That evidence arrives after the data it settles, by
-which time the first copy has been written, so acting on it means holding
-every run until the peer acknowledges it.  It is the same reason `overlap`
-has one policy — see {doc}`../guide/reassembly`.
+**A late byte in the same tick as the segment that overtook it is not
+classified.**  A delayed original that was a burst-mate of the passer shares
+its TSval, and so does a fast retransmit on a path whose round trip is
+shorter than a tick; the option cannot tell them apart and the reassembler
+leaves such a byte as plain `late-arrival` rather than guess.  On real
+traffic with realistic delay this is the minority — 6 of 18 late regions in
+`tcp_reorder_ts.pcap`, none in `tcp_gap_ts.pcap` — and it is the option's
+granularity, not the tool's.
+
+**`favor-acked` is evidence, not proof.**  RFC 7323 §4.3 lets a receiver's
+`TS.Recent` advance from an old duplicate that lands inside its delayed-ACK
+window, so a copy arriving there can steal the echo from the copy the
+receiver actually kept.  It is nonetheless the receiver's own word, and
+independent of the capture point, which the order copies arrived in is not.
+And it needs both directions in the capture and the option negotiated;
+without either, every contested byte is decided as `favor-old` and counted
+as such — see {doc}`../guide/reassembly`.
 
 **Byte ranges for discarded fragments.** A datagram reassembled from several
 IP fragments occupies several discontiguous ranges of the capture, and an

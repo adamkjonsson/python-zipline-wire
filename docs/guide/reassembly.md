@@ -82,20 +82,53 @@ convert a capture live or five years later.
 ### `overlap` — which copy wins
 
 When retransmitted bytes disagree with bytes already accepted, `"favor-old"`
-keeps what was seen first, as most receiving stacks do.  It is the only
-policy, and the reason is structural rather than a gap: the converter writes
-in one pass, so once a record is out, a later copy of its bytes cannot replace
-them.  Any rule that prefers a later copy — the retransmission, or the copy
-the peer's acknowledgement turns out to echo — means holding every run until
-the choice can be made, which is a different reassembler.  (A `"favor-new"`
-was offered until 0.2.0; it was never read, and was withdrawn rather than
-left to put a policy in the digest that no code applied.)
+keeps what was seen first.  That is what a single-pass writer can always do,
+and it is the default.
+
+`"favor-acked"` keeps the copy the **receiver** kept.  The evidence is the
+TCP Timestamps option: the peer's acknowledgement echoes, as TSecr, the TSval
+of the transmission that advanced its window, and every transmission carries
+its own TSval — so the first ack covering a range says which copy of it the
+receiver accepted, in the receiver's own words.  A segment corrupted in
+flight and resent clean is the case: the receiver drops the damaged copy on
+its checksum and acks the resend, echoing the resend's clock.  On packeteer's
+real capture of exactly that (`tcp_corrupt_ts.pcap`, five corruptions),
+`favor-acked` writes the same bytes `checksum="drop"` writes — arrived at
+from the receiver's side rather than ours, which matters because a capture
+taken on a host with checksum offload has every checksum wrong and `"drop"`
+would discard the whole stream.
+
+What it costs, and why it could not be the default: the evidence arrives
+*after* both copies, so every run is **held after it closes until the peer's
+ack covers it**, and only then written.  The hold is bounded by the two
+bounds the policy already has — `reorder_window` bytes of closed runs per
+direction, `flush_timeout` seconds since a run closed — and a run the bound
+releases, or that the session ends on, is written as `favor-old` would have
+written it.  So is a range whose copies both lacked the option, or whose
+covering ack did.  Every such byte is counted in
+`stats.acked_fallback_bytes`, so a file's digest never names a rule the file
+silently did not follow; `stats.acked_swaps` counts the ranges where the
+receiver's choice was *not* the first copy.  A one-way capture, with no acks
+in it at all, falls back on every contested byte and says so.  Only
+*disagreeing* copies are held against a run, so memory is bounded by real
+disagreements, not by repeats.
+
+The record covering a swapped range carries `retransmit` either way — the
+flag is the sender's act — and its `timestamp` moves to the resend, which is
+now the packet that completed it.  The loser is cited as an `Undecoded`
+region wherever it lay in the capture.
+
+A `"favor-new"` was offered until 0.2.0 and never read, for the reason that
+makes `"favor-acked"` need the hold: a writer cannot prefer a later copy
+against bytes already written.  It stays withdrawn — "the later copy" is not
+a fact about the connection, and "the copy the receiver kept" is.
 
 Disagreeing retransmits are rare in healthy traffic and are a classic evasion
 technique in unhealthy traffic: a sender that knows a monitor prefers one copy
 can hide bytes in the other.  If you are analysing traffic adversarially, this
-is the setting to know about, and the digest is what lets you prove which rule
-the file was built under — even while there is only one.
+is the setting to know about — `"favor-acked"` is the one that follows the
+receiver rather than a rule the sender can predict — and the digest is what
+lets you prove which rule the file was built under.
 
 ### `session_timeout` — when a conversation is over
 
@@ -196,28 +229,127 @@ ReassemblyOptions(flush_timeout=-1)
 
 The accepted policies are in `OVERLAP_POLICIES` and `CHECKSUM_POLICIES`.
 
-## Reading what a policy cost
+## What the Timestamps option decides
 
-Three counters report what the policy threw away:
+None of the settings above is an option for this: the reassembler reads the
+TCP Timestamps option (RFC 7323) whenever a connection negotiated it, and
+falls back to the conservative reading when it did not.  The option puts the
+sender's clock on every segment, and the property reassembly cares about is
+that **every transmission of a byte range gets its own value, and a copy of
+one transmission does not**.
+
+**A repeated segment is a copy, not a resend**, when it carries the same
+TSval as the transmission it repeats and nothing from the peer arrived
+between the two.  That is what a mirror port, a two-interface capture or a
+veth pair produces: every packet twice, a microsecond apart, the sender
+having sent once.  Such a copy is discarded and cited as
+`duplicate-discarded`, counted in `stats.duplicates`, and — the part that
+reaches the file — **does not set `retransmit`** on the record covering its
+bytes.  The specification names that flag as the sender's act, and a mirror
+is not the sender.
+
+A repeat with a **later** TSval is a retransmission, cited
+`overlap-discarded` and flagged as before.  So is a repeat with the *same*
+TSval that has a packet from the peer between it and its original: a fast
+retransmit is triggered by the peer's duplicate ACKs, and on a stack whose
+timestamp tick is coarser than its round trip the resend can land inside the
+original's tick — the ACKs between them are what tells it from a copy.
+
+A repeat that **cannot be judged** is treated as a retransmission, which is
+what the specification asks of a producer that cannot tell, and the reason
+it could not be judged is counted:
 
 ```python
-stats.gaps           # records written past bytes that never arrived
-stats.late_bytes     # bytes that arrived after their gap had closed
-stats.overlap_bytes  # retransmits discarded as already-accepted
+stats.ts_fallback["absent"]  # one side, or both, carried no option
+stats.ts_fallback["stale"]   # the original had aged out of the reassembler's memory
+```
+
+The memory is bounded by `reorder_window` bytes, so a copy of something
+older than that is `stale`; the newest transmission is never forgotten, so
+the copy that follows its original is always judged.  A non-zero
+`ts_fallback` means some `retransmit` flags in the file rest on the fallback
+rather than on evidence — which is exactly what every file written before
+this option was read rested on.
+
+The one shape this cannot separate is a **one-way capture of a coarse-tick
+stack**: with the peer's ACKs absent from the file and the resend inside its
+original's tick, a fast retransmit looks like a copy.  See
+{doc}`../reference/limits`.
+
+**An old segment from before a wrap is rejected**, as a receiver rejects it:
+RFC 7323's PAWS.  A segment that would contribute bytes but carries a TSval
+older than the last one accepted in order is not new data — its sequence
+numbers have come round again — and it is dropped whole, cited
+`paws-rejected` and counted in `stats.paws_bytes`.  The clock it is compared
+against moves only on in-order arrival, which is the receiver's own rule and
+the reason a delayed original that finally fills a hole is *not* rejected
+however many newer segments passed it.  A repeat of accepted bytes is never
+judged by PAWS — it is a repeat, and judged as one above.
+
+**A segment from the far side of a hole wider than 2³¹ bytes is recognised
+as such.**  Serial arithmetic places anything more than 2³¹ away on the near
+side, so without the option such a segment reads as old data, is discarded as
+a retransmission the sender never made, and the rest of the direction is lost
+behind it.  With it, a segment further behind than the largest window TCP can
+advertise (2³⁰ bytes) whose TSval is *newer* than the last accepted in order
+is from ahead.  It cannot join the session it belongs to — the format stores
+records in serial order, and one that far past its predecessor precedes it —
+so the session ends for `capture-gap` and the segment opens the next; see
+{doc}`converting`.  Counted in `stats.wrap_resolved`, since a file that
+needed the rule is a file with a hole worth knowing about.
+
+## Reading what a policy cost
+
+Four counters report what the policy threw away:
+
+```python
+stats.gaps             # records written past bytes that never arrived
+stats.late_bytes       # bytes that arrived after their gap had closed
+stats.overlap_bytes    # retransmits discarded as already-accepted
+stats.duplicate_bytes  # copies of one transmission, seen twice by the capture point
 ```
 
 `overlap_bytes` is normal — it is what reassembly is *for*, and those bytes
-did reach the output the first time they were seen.  `gaps` and `late_bytes`
-are the ones to watch: they mean the policy stopped waiting.
+did reach the output the first time they were seen.  `duplicate_bytes` says
+something about the capture rather than the connection: set
+`stats.duplicates` beside `stats.packets` and it says how much of the file
+is doubled.  `gaps` and `late_bytes` are the ones to watch: they mean the
+policy stopped waiting.
+
+A non-zero `late_bytes` says the bytes did arrive, just after the
+reassembler had given up — but that is two different stories, and where the
+Timestamps option is present it tells them apart:
 
 ```python
-if not stats.lossless:
-    print(f"{stats.gaps} gaps; raise reorder_window or flush_timeout")
+stats.late_reordered_bytes      # the original, delayed by the network
+stats.late_retransmitted_bytes  # a resend of an original that was lost
 ```
 
-A non-zero `late_bytes` is the specific signal that you were nearly patient
-enough: the bytes did arrive, just after the reassembler had given up.
-Raising `flush_timeout` will usually recover them.
+A late byte is compared against the clock of the first segment that overtook
+its gap.  **Older** means it was sent *before* the bytes that passed it: the
+original transmission, reordered on the way — and a wider `reorder_window`
+or a longer `flush_timeout` would have kept it.  That is the tuning signal.
+**Newer** means it was sent *after* them: the original never arrived and the
+sender recovered it once the receiver's duplicate ACKs said so, by which time
+the gap had been given up on.  No policy of ours could have kept those; they
+are a fact about the network.  The comparison is against the *first* segment
+past the gap rather than everything committed since, because a resend can be
+slow to arrive too, and by then the sender has moved on.
+
+What remains of `late_bytes` after both is late for a reason the option could
+not name: no option on one side, or an arrival inside the same clock tick as
+the segment that overtook it — which is what a delayed original that was a
+burst-mate of the passer looks like, and on a path with no delay what a fast
+retransmit can look like too, so nothing more is said.  Each late region's
+`Undecoded` block carries the same verdict as its reason: `late-reordered`,
+`late-retransmitted`, or plain `late-arrival`.
+
+```python
+if stats.late_reordered_bytes:
+    print("raise reorder_window or flush_timeout")
+elif stats.late_bytes:
+    print("the late bytes were resends of losses; no window would have kept them")
+```
 
 ## Where the policy is recorded
 
@@ -232,7 +364,7 @@ with zpf.open("capture.zpf") as reader:
 ```
 
 ```
-tcp-reassembly 0.2.0 sha256:1f3a…
+tcp-reassembly 0.3.0 sha256:1f3a…
 ```
 
 The name is `DECODER_NAME`.  Declaring it is a **should** in the

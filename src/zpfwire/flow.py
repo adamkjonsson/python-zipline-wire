@@ -18,18 +18,65 @@ __all__ = [
     "END_CAPTURE_END",
     "END_TIMEOUT",
     "REASON_CHECKSUM",
+    "REASON_DUPLICATE",
     "REASON_LATE",
+    "REASON_LATE_REORDERED",
+    "REASON_LATE_RETRANSMITTED",
     "REASON_OVERLAP",
+    "REASON_PAWS",
     "FlowKey",
     "FlowTracker",
     "cite_undecoded",
 ]
 
 REASON_OVERLAP = "overlap-discarded"
-"""Undecoded reason for bytes dropped because that range was already accepted."""
+"""Undecoded reason for retransmitted bytes dropped because the range was already accepted.
+
+The sender resent; the record covering the range carries ``retransmit``.
+"""
+
+REASON_DUPLICATE = "duplicate-discarded"
+"""Undecoded reason for a copy of a transmission already accepted.
+
+The capture point saw one packet twice — a mirror port, a two-interface
+capture — and the sender resent nothing, so no record carries ``retransmit``
+on its account.  Told apart from :data:`REASON_OVERLAP` by the TCP Timestamps
+option; see :class:`~zpfwire.tcp.TcpFlow`.
+"""
 
 REASON_LATE = "late-arrival"
-"""Undecoded reason for bytes that arrived after their gap had been committed."""
+"""Undecoded reason for bytes that arrived after their gap had been committed.
+
+The bare reason: used when the TCP Timestamps option cannot say *why* they
+were late — absent, or the arrival shares a clock tick with everything
+committed past it.  Where it can, one of the two below is written instead.
+"""
+
+REASON_LATE_REORDERED = "late-reordered"
+"""Undecoded reason for a late arrival that was the original transmission, delayed.
+
+Its TSval is older than everything committed past its gap: the network
+reordered it, and a wider ``reorder_window`` or a longer ``flush_timeout``
+would have kept it.  A tuning signal about our own policy.
+"""
+
+REASON_LATE_RETRANSMITTED = "late-retransmitted"
+"""Undecoded reason for a late arrival that was a resend of lost bytes.
+
+Its TSval is newer than everything committed past its gap: the original was
+lost and the sender recovered it after the hole had been given up on.  A
+fact about the network, which no policy of ours could have changed.
+"""
+
+REASON_PAWS = "paws-rejected"
+"""Undecoded reason for a segment whose timestamp says it is from before a wrap.
+
+RFC 7323 §5.3: a segment carrying a TSval older than the last one the
+receiver accepted in order is an old segment whose sequence numbers have
+come round again, and a receiver drops it whole.  Applied only to segments
+that would otherwise contribute bytes; a repeat of accepted bytes is judged
+as a repeat, whatever its clock.
+"""
 
 REASON_CHECKSUM = "bad-checksum"
 """Undecoded reason for a packet discarded because its checksum did not verify.
@@ -143,7 +190,8 @@ def cite_undecoded(
             name.
         length: How many bytes the region covers.
         reason: Why the region went undecoded; see :data:`REASON_OVERLAP`,
-            :data:`REASON_LATE` and :data:`REASON_CHECKSUM`.
+            :data:`REASON_DUPLICATE`, :data:`REASON_LATE` and its two
+            refinements, :data:`REASON_PAWS` and :data:`REASON_CHECKSUM`.
         decoder: The stage that discarded the bytes.
         stats: Tally to record the block, or the failure to place it, in.
 
@@ -217,8 +265,8 @@ class FlowTracker(ABC):
             off_start: Byte offset of the region in the capture file, or
                 ``None`` when it cannot be located.
             length: How many bytes the region covers.
-            reason: Why the region went undecoded; see :data:`REASON_OVERLAP`
-                and :data:`REASON_LATE`.
+            reason: Why the region went undecoded; see :data:`REASON_OVERLAP`,
+                :data:`REASON_DUPLICATE` and :data:`REASON_LATE`.
 
         """
         cite_undecoded(
@@ -246,6 +294,23 @@ class FlowTracker(ABC):
     def time_out(self) -> None:
         """Record that this flow is being closed by the idle timeout."""
         self.timed_out = True
+
+    def splits_before(self, pkt: PacketView) -> bool:
+        """Report whether *pkt* must open a new session rather than join this one.
+
+        The base tracker never splits; a transport whose session cannot
+        represent what comes next says so here.  When it answers ``True`` the
+        caller closes this flow and begins another, and *pkt* is the new
+        flow's first packet.
+
+        Args:
+            pkt: The packet about to be delivered.
+
+        Returns:
+            ``True`` to end this session before *pkt*.
+
+        """
+        return False
 
     @abstractmethod
     def packet(self, pkt: PacketView) -> None:

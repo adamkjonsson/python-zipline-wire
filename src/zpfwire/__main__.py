@@ -38,6 +38,7 @@ from zpfwire.capture import CaptureReader
 from zpfwire.convert import convert, describe_source
 from zpfwire.filter import matcher
 from zpfwire.options import CHECKSUM_POLICIES, OVERLAP_POLICIES, ReassemblyOptions
+from zpfwire.stats import ConversionStats
 from zpfwire.survey import survey
 
 _ERRORS = (OSError, ValueError, zpf.ZpfError)
@@ -128,11 +129,25 @@ def _cmd_convert(args: argparse.Namespace) -> None:
         print(stats.summary())
         if not stats.lossless:
             sys.stdout.flush()
-            print(
-                "Note: some bytes never reached the output. "
-                "Raise --reorder-window or --flush-timeout to wait longer.",
-                file=sys.stderr,
-            )
+            print(f"Note: {_loss_advice(stats)}", file=sys.stderr)
+
+
+def _loss_advice(stats: ConversionStats) -> str:
+    """Say whether waiting longer would have helped, where the option can tell."""
+    if stats.late_reordered_bytes:
+        return (
+            f"{stats.late_reordered_bytes} bytes were originals the network delayed. "
+            "Raise --reorder-window or --flush-timeout to keep them."
+        )
+    if stats.late_bytes and stats.late_bytes == stats.late_retransmitted_bytes:
+        return (
+            "some bytes never reached the output; every late one was a resend "
+            "of a loss, which no window would have kept."
+        )
+    return (
+        "some bytes never reached the output. "
+        "Raise --reorder-window or --flush-timeout to wait longer."
+    )
 
 
 # ── info subcommand ─────────────────────────────────────────────────────

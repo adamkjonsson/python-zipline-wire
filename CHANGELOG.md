@@ -33,11 +33,197 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
-Writes spec **v0.20** (`zpf.SPEC_VERSION == (0, 20)`), up from `0.19`.
-Requires a `zpf` that implements it — python-zipline `main` after 0.3.0
-(`0.4.0.dev0`), until the next release; the dependency floor says so.
+---
+
+## [0.3.0] - 2026-09-17
+
+**The TCP Timestamps release.**  The reassembler reads the option for the
+first time, and every rule it had to *choose* where the option could *say*
+something now says it: whether a repeated segment is a retransmission or the
+same transmission seen twice, why a late byte was late, whether a segment is
+from after a sequence wrap, and — as a second overlap policy — which copy of
+disagreeing bytes the receiver actually kept
+([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
+[#18](https://github.com/adamkjonsson/python-zipline-wire/issues/18)).
+Each rule is measured against real traffic packeteer collected for it —
+six captures of real Linux stacks under loss, duplication, corruption,
+reordering and a wrap through 2³² — and each is listed below as it lands,
+with what it changes in a written file.
+
+Writes spec **v0.20** (`zpf.SPEC_VERSION == (0, 20)`), up from `0.19`,
+against packeteer **0.16.0** and python-zipline **0.4.0**.  The floors are
+python-zipline `0.4.0`, the first release that implements `0.20`, and
+packeteer `0.15.0`, the last thing the code itself needs; the six real
+Timestamps captures the release is measured against were collected for it
+in packeteer `0.16.0`, and are carried here as fixtures.
+
+### Added
+
+- **The TCP Timestamps option is read to tell a duplicate from a
+  retransmission**
+  ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
+  item 1).  A repeated segment is a *duplicate* — the same transmission seen
+  twice by the capture point, as a mirror port, a two-interface capture or a
+  veth pair shows every packet — when it carries the same TSval as the
+  transmission it repeats and nothing from the peer arrived between the two.
+  It is discarded like any repeat, but cited as `duplicate-discarded`
+  (`REASON_DUPLICATE`), counted in the new `ConversionStats.duplicates`
+  (segments) and `duplicate_bytes`, and does **not** set `retransmit` on the
+  record covering its bytes.  A repeat with a later TSval, or with a peer
+  packet between the copies — a fast retransmit is triggered by the peer's
+  duplicate ACKs, which is what separates it from a copy on a stack whose
+  timestamp tick is coarser than its round trip — is a retransmission, as
+  before.  Measured on packeteer's real corpus: the 10 mirror duplicates in
+  `tcp_dup_ts.pcap` are all duplicates, and the 36 real resends across
+  `tcp_lossy_ts`, `tcp_reorder_ts`, `tcp_corrupt_ts` and `tcp_wrap_ts` are
+  all retransmissions, none ambiguous.
+- **The option is read to say *why* a late byte was late**
+  ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
+  item 3).  A byte arriving inside a gap the reassembler had already given
+  up on is compared against the clock of the first segment that overtook
+  the gap.  Sent before it — the original, delayed by the network, which a
+  wider `reorder_window` or a longer `flush_timeout` would have kept — it is
+  cited `late-reordered` (`REASON_LATE_REORDERED`) and counted in the new
+  `ConversionStats.late_reordered_bytes`; sent after it — a resend of an
+  original that was lost, recovered once the gap had closed, which no policy
+  of ours could have kept — it is cited `late-retransmitted`
+  (`REASON_LATE_RETRANSMITTED`) and counted in `late_retransmitted_bytes`.
+  Inside the same tick as the passer, or without the option, it stays
+  `late-arrival` and is counted in `late_bytes` only.  `late_bytes` remains
+  the total and `lossless` is unchanged.  The reference is the *first*
+  passer at commit time rather than everything committed since, because a
+  resend can be slow to arrive too: in `tcp_reorder_ts.pcap` the spurious
+  resends take the same slow path as the originals they repeat, and against
+  "everything committed" 8 of 10 would read as reordered.  Measured with the
+  hold disabled: `tcp_gap_ts.pcap`'s 13 fills are all resends, and
+  `tcp_reorder_ts.pcap`'s 18 late regions split 2 reordered, 6 same-tick,
+  10 resent — the manifest's own count.
+- The summary prints the split beneath `late bytes`, and the CLI's note on a
+  lossy conversion now says whether raising the window would have helped:
+  it names the reordered bytes when there are any, and says outright that
+  no window would have kept them when every late byte was a resend.
+- **PAWS**
+  ([#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17),
+  item 4).  A segment that would contribute bytes but carries a TSval older
+  than the last one accepted in order is an old segment from before a
+  sequence wrap, and is dropped whole as a receiver drops it (RFC 7323
+  §5.3): cited `paws-rejected` (`REASON_PAWS`), counted in the new
+  `ConversionStats.paws_bytes`, no flag.  The clock it is compared against
+  moves only on in-order arrival — the receiver's own rule — so a delayed
+  original that finally fills a hole is not rejected however many newer
+  segments passed it, which is what the real receivers in `tcp_reorder_ts`
+  and `tcp_wrap_ts` did and D-SACKed.  A repeat of accepted bytes is never
+  judged by PAWS.  Measured: the rule fires on none of the six real
+  captures under either policy.
+- **A segment from the far side of a hole wider than 2³¹ bytes is
+  recognised, and opens a new session** (#17, item 4).  Serial arithmetic
+  places anything more than 2³¹ away on the near side, so until now such a
+  segment was discarded as a retransmission the sender never made and the
+  rest of the direction was lost behind it.  A segment further behind than
+  the largest window TCP can advertise (2³⁰) whose TSval is newer than the
+  last accepted in order is from ahead — but the format stores records in
+  serial order, and a record that far past its predecessor *precedes* it,
+  so it cannot join the session: the session ends for the new reason
+  **`capture-gap`** (`END_CAPTURE_GAP`, beside `fin`/`rst`/`timeout`/
+  `capture-end`) and the segment opens the next, exactly as the idle
+  timeout splits a flow.  Counted in `ConversionStats.wrap_resolved`.
+  Without the option nothing changes.  `FlowTracker` gains a
+  `splits_before(pkt)` hook the conversion loop consults beside
+  `expired()`; the base answers no.
+- **A TCP direction longer than 2 GiB can now be converted** — as several
+  sessions, each ending for the new reason **`offset-limit`**
+  (`END_OFFSET_LIMIT`) and the next continuing the direction from its first
+  byte; `ConversionStats.offset_splits` counts them.  **This is a temporary
+  shim** for [zipline#146](https://github.com/adamkjonsson/zipline/issues/146),
+  found while measuring item 4: the format places a transport record by
+  `seq_start` against the origin with serial arithmetic, which cannot reach
+  past 2³¹, so python-zipline's writer refuses the record at 2 GiB and a
+  `0.2.0` conversion of any capture carrying more than that in one
+  direction — a large download — failed outright.  When the format unwraps
+  offsets along stored order the split, the reason and the counter go.  Two
+  more findings from the same measurement are filed upstream:
+  [zipline#147](https://github.com/adamkjonsson/zipline/issues/147), a hole
+  of 2³¹ or more between consecutive records having no representation (which
+  is why `capture-gap` above is a split and not a gap), and
+  [python-zipline#70](https://github.com/adamkjonsson/python-zipline/issues/70),
+  the reader zero-widthing records past 2 GiB on a stream without an `isn`
+  while reporting none of them unplaceable.
+- **`overlap="favor-acked"`: keep the copy the receiver kept**
+  ([#18](https://github.com/adamkjonsson/python-zipline-wire/issues/18)).
+  When two copies of a range disagree — a segment corrupted in flight, then
+  resent clean — the peer's first acknowledgement covering the range echoes,
+  as TSecr, the TSval of the transmission that advanced its window, and
+  that copy is written.  The evidence arrives after both copies, so under
+  this policy every run is held after it closes until the peer's ack covers
+  it; the hold is bounded by `reorder_window` and `flush_timeout`, which
+  gain no companion field so `params_digest()` moves only for files that
+  choose the policy.  A run the bound releases or the session ends on, a
+  range whose copies lacked the option, or an ack that did, are decided as
+  `favor-old` and counted in the new `ConversionStats.acked_fallback_bytes`;
+  `acked_swaps` counts the ranges where the receiver's choice was not the
+  first copy.  Only disagreeing copies are held, so memory is bounded by
+  real disagreements.  The record covering a swapped range keeps
+  `retransmit` — the sender did resend — and its `timestamp` moves to the
+  resend; the loser is cited wherever it lay.  Measured on packeteer's
+  `tcp_corrupt_ts.pcap`: five swaps, no fallback, and a stream identical to
+  what `checksum="drop"` writes — the receiver's echo and our checksum
+  agreeing at every one of the five offsets, from opposite sides.  On the
+  other five real captures, where every resend is byte-identical to its
+  original, the policy writes the same bytes as `favor-old` with no
+  fallback.  `favor-new` stays withdrawn: this is the policy that can be
+  honoured, and that one is not.
+- **`ConversionStats.ts_fallback`**, a `Counter` of how often a repeat could
+  *not* be judged and was treated as a retransmission — the conservative
+  reading spec `0.20` asks of a producer that cannot tell — keyed by why:
+  `TS_ABSENT` when either side carried no option, `TS_STALE` when the
+  transmission it repeated had aged out of the reassembler's memory, which
+  is bounded by `reorder_window` bytes (and never emptied, so the copy that
+  follows its original is always judged).  Non-zero means some `retransmit`
+  flags in the file rest on the fallback rather than on evidence; every
+  file written before this release rested on it entirely.
+- The summary prints a `duplicates` line — `10 of 154 packets were copies,
+  5092 bytes (discarded)` — since a doubled capture is worth one line to the
+  user, and a `ts fallback` line when any repeat went unjudged.  The
+  `overlap` line now says `retransmitted`.
 
 ### Changed
+
+- **Breaking: `retransmit` clears on a duplicated capture.**  A `.zpf`
+  written from a capture in which the same transmission appears twice with
+  the Timestamps option — a mirror port's file — carries `retransmit` on no
+  record that only a copy touched, where `0.2.0` set it on every such
+  record; the `Undecoded` blocks for the copies read `duplicate-discarded`
+  rather than `overlap-discarded`.  Of the twenty-two fixtures exactly one
+  moves, `tcp_dup_ts.pcap` (3 of 7 records flagged → 0); the sixteen that
+  predate the Timestamps work are pinned and byte-for-byte unchanged, and
+  the five other real Timestamps captures keep every flag they had, since
+  every repeat in them is a real resend.  A caller reproducing a `0.2.0`
+  file of a mirror capture will see the flag gone and the reason renamed —
+  and the file is now what the specification says such a file should be.
+  `ReassemblyOptions` gains no field, so `params_digest()` is unchanged; the
+  Decoder Descriptor's version is what says the rule moved.
+- **Breaking: the `Undecoded` reason on a late byte can now be
+  `late-reordered` or `late-retransmitted`** instead of `late-arrival`, on a
+  capture that carries the Timestamps option *and* loses bytes to a
+  committed gap.  No fixture that predates this release has that shape —
+  the two that carry the option lose nothing — so no pinned file moves; a
+  `0.2.0` conversion of such a capture, reproduced now, differs in those
+  reason strings and nowhere else.  A reader matching on `late-arrival`
+  should match on the `late-` prefix, or on all three constants.
+- **Breaking: bytes move on a stream carrying the option that PAWS rejects
+  or that skips more than 2³¹ bytes.**  Neither shape exists in any fixture
+  — the sixteen pins hold, and `tcp_wrap_ts.pcap` under defaults decodes
+  identically to before any rule read the option, its wrap being one serial
+  arithmetic already crossed — so the break is stated for a capture this
+  tree has not seen: a `0.2.0` conversion of one would have written the
+  old segment as data, or the far side of the hole as overlap.
+
+**The packeteer floor is `0.15.0`**, up from `0.14.0`.  Nothing at runtime
+needs it — the option has been parsed onto every `PacketView` since `0.14.0`
+— but `0.15.0` is where the capture-point duplication impairment
+(`duplicate_probability`, [packeteer#150](https://github.com/adamkjonsson/packeteer/issues/150))
+arrived, and it is the generated half of the material the Timestamps rules
+are tested against, so it is the version this release was built on.
 
 **Spec `0.20`.** A repair-and-vector release upstream: no option and no block
 was added, no body layout moved, and every `.zpf` this tree writes is
@@ -54,10 +240,10 @@ stamp, the Specification URL, and one definition:
   discarded, retransmitted or duplicated, is the `Undecoded` block it always
   was.  This reassembler does not read the TCP Timestamps option and so cannot
   tell the two apart; `0.20` says such a producer SHOULD treat every repeat as
-  a retransmission, which is exactly what it did before and does now, so no
-  flag moves.  The documentation now states the flag's meaning and that this
-  tree is on the fallback; leaving the fallback is #17, and is a `Breaking:`
-  change when it comes, since the flag will clear on a duplicated capture.
+  a retransmission, which is exactly what it did before, so the port itself
+  moved no flag.  Leaving the fallback is #17, and it lands in this same
+  release — see the **Breaking** entry below, which is where the flag does
+  move.
 - The other three `0.20` items do not reach a capture-sourced producer: the
   pass-through hole obligation (zipline#133) binds files that cite a `.zpf`
   input, the vector byte repairs (zipline#141) fix files this project never
@@ -363,6 +549,7 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adamkjonsson/python-zipline-wire/releases/tag/v0.1.0

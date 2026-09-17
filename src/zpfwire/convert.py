@@ -203,6 +203,9 @@ def convert(
                 tracker.time_out()
                 _close(tracker, flows, key)
                 tracker = None
+            elif tracker is not None and tracker.splits_before(pkt):
+                _close(tracker, flows, key)
+                tracker = None
             if tracker is None:
                 tracker = _begin(writer, key, decoder=decoder, options=options,
                                  stats=stats, tick_hz=reader.tick_hz, source=source,
