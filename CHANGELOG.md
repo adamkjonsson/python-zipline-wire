@@ -33,6 +33,10 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+---
+
+## [0.3.0] - 2026-09-17
+
 **The TCP Timestamps release.**  The reassembler reads the option for the
 first time, and every rule it had to *choose* where the option could *say*
 something now says it: whether a repeated segment is a retransmission or the
@@ -46,10 +50,12 @@ six captures of real Linux stacks under loss, duplication, corruption,
 reordering and a wrap through 2³² — and each is listed below as it lands,
 with what it changes in a written file.
 
-Writes spec **v0.20** (`zpf.SPEC_VERSION == (0, 20)`), up from `0.19`.
-Requires a `zpf` that implements it — python-zipline `main` after 0.3.0
-(`0.4.0.dev0`), until the next release; the dependency floor says so.
-Requires packeteer **0.15.0**, up from `0.14.0`.
+Writes spec **v0.20** (`zpf.SPEC_VERSION == (0, 20)`), up from `0.19`,
+against packeteer **0.16.0** and python-zipline **0.4.0**.  The floors are
+python-zipline `0.4.0`, the first release that implements `0.20`, and
+packeteer `0.15.0`, the last thing the code itself needs; the six real
+Timestamps captures the release is measured against were collected for it
+in packeteer `0.16.0`, and are carried here as fixtures.
 
 ### Added
 
@@ -543,6 +549,7 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adamkjonsson/python-zipline-wire/releases/tag/v0.1.0
