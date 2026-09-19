@@ -68,12 +68,6 @@ class ConversionStats:
             retransmission and the rest of the direction lost.  Each ends
             the session for ``capture-gap`` and opens another, so each is
             also a session.
-        offset_splits: Times a direction passed 2 GiB and was continued in a
-            new session, the old one ending for ``offset-limit``.
-            **Temporary** — a shim for
-            `zipline#146 <https://github.com/adamkjonsson/zipline/issues/146>`_,
-            the format's transport offset space reaching no further than
-            that from one origin; goes when it does.
         acked_swaps: Under ``overlap="favor-acked"``, ranges where the copy
             the receiver acknowledged — by the TSecr its ack echoed — was
             not the first copy seen, and replaced it.  Each is a range the
@@ -134,7 +128,6 @@ class ConversionStats:
     wrap_resolved: int = 0
     acked_swaps: int = 0
     acked_fallback_bytes: int = 0
-    offset_splits: int = 0
     ts_fallback: Counter[str] = field(default_factory=Counter)
     bad_checksum: int = 0
     checksum_dropped_bytes: int = 0
@@ -202,11 +195,6 @@ class ConversionStats:
             lines.append(
                 f"acked        {self.acked_fallback_bytes} contested bytes decided as favor-old "
                 "(no ack evidence)",
-            )
-        if self.offset_splits:
-            lines.append(
-                f"offset       {self.offset_splits} direction(s) passed 2 GiB; "
-                "the session was split there (zipline#146)",
             )
         if self.ts_fallback:
             why = ", ".join(f"{key}: {count}" for key, count in sorted(self.ts_fallback.items()))

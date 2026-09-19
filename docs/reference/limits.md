@@ -30,21 +30,31 @@ specification's rule, and it is why the policy is a declared, hashed option.
 Bytes lost this way are counted as `late_bytes` and cited as `late-arrival`
 regions.
 
-**A direction longer than 2 GiB is written as several sessions.**  The
-format places a transport record by its `seq_start` against the stream
-origin with serial arithmetic, which is decidable only within 2³¹: a record
-further from the origin than that is "below" it, and python-zipline's writer
-refuses it — so without help a capture of any TCP direction carrying more
-than 2 GiB, an ordinary large download, could not be converted at all.
-Until the format unwraps offsets along stored order
-([zipline#146](https://github.com/adamkjonsson/zipline/issues/146)) zpfwire
-ends the session at that point for `offset-limit` and continues the
-direction in a new one, whose origin is its first byte; every record is
-then placed, and `stats.offset_splits` says it happened.  What it costs: a
-reader sees several sessions with one key where the wire had one
-connection, and a segment reordered across the boundary — sent below 2 GiB,
-arriving after the split — lands in the new session as a repeat rather than
-in the old one where it belonged.  Both go with the shim.
+**A direction longer than 2 GiB is one session, placed at its true
+offsets.**  Since spec `0.21` a transport record's offset is its
+predecessor's plus the signed serial delta of their `seq_start`s, so a
+stream is placed at any length and through a sequence wrap
+([zipline#146](https://github.com/adamkjonsson/zipline/issues/146), filed
+from this project).  Through `0.20` every record was measured against the
+origin, which stopped at 2³¹, and `0.3.0` split such a direction into a new
+session every 2 GiB to get past it; that split, its `offset-limit` reason
+and its counter are gone.  The one shape one session cannot hold is the
+hole below.
+
+**A sequenced conversion of a direction longer than 2 GiB can be refused
+when the peer only acknowledges.**  The specification's causal check
+compares each record's end against the peer's latest *recorded* `ack` with
+serial arithmetic, and a peer that sends pure ACKs writes no record after
+its SYN-ACK — an ordinary upload — so from 2 GiB on the comparison inverts
+and the writer refuses the record as *already acknowledged*
+([zipline#151](https://github.com/adamkjonsson/zipline/issues/151),
+[python-zipline#75](https://github.com/adamkjonsson/python-zipline/issues/75),
+both filed from this project).  A plain conversion of the same capture is
+one clean session; the limit is `--sequenced`'s alone.  `0.3.0`'s 2 GiB
+split happened to sidestep it, which is how it went unseen; it is not
+kept, since a split that hides a rule's ambiguity is what zipline#146 was
+about.  When the peer's records carry current acks — any exchange, not just
+an upload — the check is right at any length.
 
 **A hole wider than 2³¹ bytes in one direction splits the session.**  The
 offset space is modular over 2³² and records are stored in serial order, so

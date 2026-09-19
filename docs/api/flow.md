@@ -80,10 +80,6 @@ Every session carries one.  See {doc}`../guide/converting`.
 .. autodata:: zpfwire.tcp.END_CAPTURE_GAP
 ```
 
-```{eval-rst}
-.. autodata:: zpfwire.tcp.END_OFFSET_LIMIT
-```
-
 ---
 
 ## Undecoded reasons

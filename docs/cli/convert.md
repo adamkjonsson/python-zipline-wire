@@ -126,7 +126,6 @@ the output:
 | `paws` | Bytes rejected because their clock was older than the last accepted in order: an old segment from before a wrap |
 | `wrap` | Holes wider than 2³⁰ bytes crossed by the clock, each splitting the session |
 | `acked` | Under `--overlap favor-acked`: ranges that took the receiver's copy, and contested bytes decided without ack evidence |
-| `offset` | Directions split every 2 GiB, the most the format can place from one origin (temporary; zipline#146) |
 | `ts fallback` | Repeats treated as retransmissions because the Timestamps option could not judge them, and why |
 | `bad cksum` | Packets whose transport checksum did not verify, whether or not they were dropped |
 | `dropped` | Payload bytes discarded under `--checksum drop` |

@@ -95,6 +95,15 @@ def test_a_stream_that_wraps_is_placeable(
     transferred = 65536 if options is None else 65536 - 4 * 524
     assert len(session.stream(server.participant_id)) == transferred
     assert out.stats.late_bytes == (0 if options is None else 8 * 524)
+    # The extent is the whole transfer under either policy — the offset space
+    # is hole-inclusive, so the bytes no-hold loses are still *in* it — and
+    # since spec 0.21 it is computed by unwrapping along stored order rather
+    # than against the origin, which is what makes it right past the wrap.
+    with zpf.open(out.path) as reader:
+        (read_back,) = reader.sessions()
+        pid = server.participant_id
+        blocks = list(read_back.stream_blocks(pid))
+        assert zpf.stream_extent(read_back.participant(pid), blocks, read_back.layer(pid)) == 65536
 
 
 # ── duplicate or retransmission ─────────────────────────────────────────

@@ -61,12 +61,16 @@ release waits on.
 | #48 | Specification URL pointed at a stale version | Held to `SPEC_VERSION` by a test |
 | #49 | No writer-side support for causal output ordering | `begin_session(linearize=True)` and a write-time order guard |
 | #63 | A zero-length SYN record at the `isn` sat one below the stream origin, and `check_coverage` measured the stream as 2³²−1 bytes | The writer refuses a `syn` record whose `seq_start` is not `isn + 1`, and `FileReader.unplaceable` reports what the offset space cannot place (0.3.0) |
+| #70 | On a stream with no `isn`, records past 2 GiB were given zero-width ranges while none was reported unplaceable — the reader's two answers disagreed | `0.4.0` applied the origin floor without an `isn`; `0.5.0`'s unwrapping walk places them (spec `0.21`) |
+| #75 | `verify_sequenced` and the linearize guard refuse a valid linearization past 2 GiB when the peer's last recorded `ack` is stale — a pure-ACK peer's is its SYN-ACK's | **Open** — downstream of zipline#151; the shape is a strict `xfail` here |
 
 **zipline** (the specification):
 
 | Issue | Gap | Resolution |
 |-------|-----|-----------|
 | #142 | The `retransmit` flag's "retransmission/overlap" carries two readings — the sender resent, or the reassembler discarded — and a duplicated capture tells them apart | Spec `0.20`: the flag names the sender's act; a producer that cannot tell a copy from a resend SHOULD treat it as one, which is what this tree does until #17 |
+| #146 | A transport record was placed against the origin by serial arithmetic, so a stream stopped at 2 GiB: an ordinary large download could not be represented | Spec `0.21`: offsets unwrap along stored order — each record's is its predecessor's plus the signed serial delta — and a stream is placed at any length.  The shim this tree carried for one release is gone (0.4.0) |
+| #151 | The causal edge rule compares a record's end against a peer record's `ack` with serial arithmetic, and the two can be a whole stream apart when the peer only sends pure ACKs; #146's shape on the ack axis | **Open** — found by deleting the #146 shim; a documented limit of `--sequenced` here |
 
 Two of packeteer's fixes went further than asked — #73 added `iter_packets`
 in response to the composition problem, and #76 put the tick rate on the
@@ -112,11 +116,16 @@ thing.
 
 ## Shims
 
-One, right now:
-
-| Shim | Waiting on | Where |
-|------|------------|-------|
-| A TCP direction is split into a new session every 2 GiB, the old one ending for `offset-limit`, because the format places a record by `seq_start` against the origin with serial arithmetic and so cannot reach past 2³¹ | [zipline#146](https://github.com/adamkjonsson/zipline/issues/146) — offsets unwrapping along stored order | `tcp.py`: `_OFFSET_LIMIT`, `END_OFFSET_LIMIT`, `_Stream.origin`, the second branch of `splits_before`; `stats.offset_splits`; the tests under *SHIM* in `test_tcp.py` |
+None, right now.  The last one — a TCP direction split into a new session
+every 2 GiB, because the format placed a record against the origin by serial
+arithmetic and so could not reach past 2³¹ — waited on
+[zipline#146](https://github.com/adamkjonsson/zipline/issues/146) through
+`0.3.0` and was deleted in `0.4.0` when spec `0.21` unwrapped offsets along
+stored order.  Deleting it exposed
+[zipline#151](https://github.com/adamkjonsson/zipline/issues/151), the same
+ambiguity on the ack axis, which the split had been hiding; that one is
+**not** shimmed — it is a documented limit of `--sequenced` and a strict
+`xfail`, because a split that hides a rule's ambiguity is what #146 was about.
 
 A shim looks like this: a comment naming the issue, and a note in the
 current release plan under `plans/` saying which phase is waiting.  When the

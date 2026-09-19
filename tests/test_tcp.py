@@ -14,6 +14,7 @@ from helpers import (
     TCP_PSH,
     TCP_RST,
     TCP_SYN,
+    Converted,
     Seg,
     capture_of,
     tcp_packet,
@@ -755,13 +756,16 @@ def test_a_resend_a_window_behind_is_not_mistaken_for_the_far_side(tmp_path: pat
     assert out.stats.overlap_bytes == 4
 
 
-# ── SHIM (zipline#146): a direction longer than 2 GiB ──────────────────
+# ── A direction longer than 2 GiB (spec 0.21, zipline#146) ─────────────
 #
-# The format places a transport record by its seq_start against the stream
-# origin with serial arithmetic, which reaches 2**31 and no further: the
-# writer refuses a record past that, and a reader zero-widths one.  Until the
-# format unwraps offsets along stored order, a direction is continued in a
-# new session every 2 GiB.  Delete this section with the shim.
+# Since spec 0.21 a transport record's offset is its predecessor's plus the
+# signed serial delta of their seq_starts, so a stream is placed at any
+# length and through 2**32.  Through 0.20 every record was measured against
+# the origin, which stopped at 2**31, and 0.3.0 split a direction into a new
+# session every 2 GiB to get past it; these tests pinned that shim, and now
+# pin the rule it waited for.  The only shape one session cannot hold is a
+# hole of 2**31 or more between consecutive records — that is capture-gap,
+# tested above.
 
 GIB = 1 << 30
 
@@ -775,23 +779,30 @@ def _long_stream(samples: int) -> list[bytes]:
     ]
 
 
-def test_a_direction_past_2_gib_continues_in_a_new_session(tmp_path: pathlib.Path):
-    out = to_zpf(capture_of(_long_stream(4)), tmp_path,
+def _client_extent(out: Converted) -> int:
+    """Return the client's stream extent as ``zpf`` computes it from the file."""
+    with zpf.open(out.path) as reader:
+        (session,) = reader.sessions()
+        client = next(p for p in session.participants if p.endpoint.endswith(":51000"))
+        pid = client.participant_id
+        return zpf.stream_extent(client, list(session.stream_blocks(pid)), session.layer(pid))
+
+
+@pytest.mark.parametrize("samples", [4, 5], ids=["to-3GiB", "past-2^32"])
+def test_a_direction_past_2_gib_is_one_session(tmp_path: pathlib.Path, samples: int):
+    """Four records a GiB apart are one stream; five put the last past 2**32."""
+    out = to_zpf(capture_of(_long_stream(samples)), tmp_path,
                  options=ReassemblyOptions(reorder_window=0))
 
-    assert [s.end_reason for s in out.sessions] == ["offset-limit", "capture-end"]
-    assert [r.seq_start for r in out.sessions[0].records if r.payload] == [
-        ISN + 1, ISN + 1 + GIB,
+    assert [s.end_reason for s in out.sessions] == ["capture-end"]
+    assert [r.seq_start for r in out.only.records if r.payload] == [
+        (ISN + 1 + k * GIB) % (1 << 32) for k in range(samples)
     ]
-    assert [r.seq_start for r in out.sessions[1].records if r.payload] == [
-        ISN + 1 + 2 * GIB, ISN + 1 + 3 * GIB,
-    ]
-    assert out.stats.offset_splits == 1
     assert out.diagnostics == [] and out.unplaceable == []
 
 
-def test_every_record_of_a_split_stream_is_placed(tmp_path: pathlib.Path):
-    """The point of the shim: no data record has a zero-width range, in any session."""
+def test_every_record_of_a_long_stream_is_placed(tmp_path: pathlib.Path):
+    """No data record has a zero-width range, and the extent is the last byte."""
     out = to_zpf(capture_of(_long_stream(5)), tmp_path,
                  options=ReassemblyOptions(reorder_window=0))
 
@@ -802,29 +813,75 @@ def test_every_record_of_a_split_stream_is_placed(tmp_path: pathlib.Path):
                 for record, (start, end) in zip(session.stream(pid), session.ranges(pid),
                                                 strict=True):
                     assert end - start == len(record.payload)
-    assert out.stats.offset_splits == 2
-    assert out.stats.sessions == 3
+    assert _client_extent(out) == 4 * GIB + 4
+    assert out.stats.sessions == 1
 
 
-def test_a_record_straddling_the_limit_stays_where_it_starts(tmp_path: pathlib.Path):
-    """Only the start is placed; a record beginning just under 2**31 is fine."""
+def test_a_record_far_from_the_origin_but_near_its_predecessor_is_placed(
+    tmp_path: pathlib.Path,
+):
+    """The case 0.20 got wrong: 2**31 - 2 past the origin, under 2**31 past the last."""
     out = to_zpf(capture_of(handshake() + [
         Seg(ISN + 1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)).frame(ack=5001),
         Seg(ISN + 1 + (1 << 31) - 2, b"bbbb", flags=TCP_PSH, timestamps=(101, 0)).frame(ack=5001),
     ]), tmp_path, options=ReassemblyOptions(reorder_window=0))
 
     assert len(out.sessions) == 1
-    assert out.stats.offset_splits == 0
+    assert _client_extent(out) == (1 << 31) + 2
     assert out.diagnostics == [] and out.unplaceable == []
 
 
-def test_a_split_stream_sequences_cleanly(tmp_path: pathlib.Path):
-    out = to_zpf(capture_of(_long_stream(4)), tmp_path,
+def _upload(samples: int, *, peer: str) -> list[bytes]:
+    """Build a client upload sampled per GiB, with the server answering as *peer* says.
+
+    ``"pure-ack"`` is the ordinary upload: the server acknowledges each
+    segment and sends nothing, so after its SYN-ACK it writes no record.
+    ``"data"`` has it send four bytes back per sample, each record carrying
+    a current ``ack``.
+    """
+    frames = handshake()
+    for k in range(samples):
+        seq = (ISN + 1 + k * GIB) % (1 << 32)
+        frames.append(Seg(seq, b"kkkk", flags=TCP_PSH, timestamps=(100 + k, 0)).frame(ack=5001))
+        ack = (seq + 4) % (1 << 32)
+        if peer == "pure-ack":
+            frames.append(tcp_packet(
+                src=SERVER_IP, dst=CLIENT_IP, src_port=SERVER_PORT, dst_port=CLIENT_PORT,
+                seq=5001, ack=ack, flags=TCP_ACK, timestamps=(100 + k, 100 + k),
+            ))
+        else:
+            frames.append(Seg(5001 + 4 * k, b"okok", flags=TCP_PSH, from_client=False,
+                              timestamps=(100 + k, 100 + k)).frame(ack=ack))
+    return frames
+
+
+def test_a_long_stream_sequences_cleanly(tmp_path: pathlib.Path):
+    """With a peer whose records carry current acks, the causal order holds past 2 GiB."""
+    out = to_zpf(capture_of(_upload(4, peer="data")), tmp_path,
                  options=ReassemblyOptions(reorder_window=0), sequenced=True)
 
+    assert len(out.sessions) == 1
     assert out.diagnostics == [] and out.unplaceable == []
     for session in out.sessions:
         zpf.verify_sequenced(session.records, participant_count=len(session.participants))
+
+
+@pytest.mark.xfail(
+    raises=zpf.SemanticError, strict=True,
+    reason="zipline#151: the causal edge rule compares a record's end against the "
+           "peer's last *recorded* ack with serial arithmetic; a pure-ACK peer's last "
+           "record is its SYN-ACK, and 2 GiB later the comparison inverts",
+)
+def test_a_sequenced_upload_past_2_gib_with_a_pure_ack_peer(tmp_path: pathlib.Path):
+    """The ordinary upload: the server only acks, so its ack is never *recorded* again.
+
+    Plain conversion of the same capture is one clean session — see the
+    tests above — and ``0.3.0`` sequenced it by splitting every 2 GiB, which
+    reset the comparison before it could invert.  Deleting that shim exposed
+    this; it is filed upstream and this test flips when the fix lands.
+    """
+    to_zpf(capture_of(_upload(4, peer="pure-ack")), tmp_path,
+           options=ReassemblyOptions(reorder_window=0), sequenced=True)
 
 
 # ── overlap="favor-acked": the copy the receiver kept ───────────────────

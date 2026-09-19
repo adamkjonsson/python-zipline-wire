@@ -62,7 +62,6 @@ from zpfwire.flow import (
 __all__ = [
     "END_CAPTURE_GAP",
     "END_FIN",
-    "END_OFFSET_LIMIT",
     "END_RST",
     "TS_ABSENT",
     "TS_STALE",
@@ -77,32 +76,12 @@ _SEQ_HALF = _SEQ_MOD >> 1
 # than that is not a resend of anything; if its clock is newer than ours, it
 # is from *ahead*, past the half-space edge serial arithmetic cannot cross.
 _MAX_WINDOW = 1 << 30
-# SHIM — zipline#146.  The specification derives a transport record's offset
-# from seq_start against the stream origin with serial arithmetic, so a record
-# 2**31 or more past the origin is "below" it and the writer refuses it: a
-# direction carrying more than 2 GiB cannot be written.  Until the format
-# unwraps offsets along stored order, a direction is split into a new session
-# every 2 GiB.  Delete _OFFSET_LIMIT, END_OFFSET_LIMIT, _Stream.origin and the
-# branch in splits_before when the fix lands.
-_OFFSET_LIMIT = _SEQ_HALF
 
 END_FIN = "fin"
 """Session End reason when both directions closed cleanly."""
 
 END_RST = "rst"
 """Session End reason when either direction reset the connection."""
-
-END_OFFSET_LIMIT = "offset-limit"
-"""Session End reason when a direction passed 2 GiB and the next session carries on.
-
-**Temporary** — a shim for
-`zipline#146 <https://github.com/adamkjonsson/zipline/issues/146>`_.  The
-format places a transport record by its ``seq_start`` against the stream
-origin with serial arithmetic, which cannot reach past 2**31; a direction
-that carries more than 2 GiB is therefore split into a new session at that
-point, and this reason on the old one says the connection did not end.  Goes
-when the format unwraps offsets along stored order.
-"""
 
 END_CAPTURE_GAP = "capture-gap"
 """Session End reason when the capture skipped further than a session can span.
@@ -274,9 +253,6 @@ class _Stream:
     isn: int | None = None
     role: TcpRole | None = None
     next_seq: int | None = None
-    # SHIM — zipline#146: the offset origin, isn + 1 or the first captured
-    # byte, so the 2 GiB the format can place from it can be measured.
-    origin: int | None = None
     declared: bool = False
     syn_written: bool = False
     fin: bool = False
@@ -410,7 +386,6 @@ class TcpFlow(FlowTracker):
         stream.role = TcpRole.RESPONDER if pkt.tcp_flags & TCP_ACK else TcpRole.INITIATOR
         # The SYN itself consumes one sequence number; data starts after it.
         stream.next_seq = _advance(pkt.seq, 1)
-        stream.origin = stream.next_seq
 
     def _syn_record(self, stream: _Stream, pkt: PacketView) -> None:
         """Write the handshake itself as an empty record carrying ``SYN``.
@@ -483,7 +458,6 @@ class TcpFlow(FlowTracker):
             # Mid-stream capture: no handshake was seen, so this segment
             # defines where our view of the stream begins.
             stream.next_seq = seq
-            stream.origin = seq
 
         end = _advance(seq, len(data))
         tsval = _tsval(pkt)
@@ -693,17 +667,6 @@ class TcpFlow(FlowTracker):
             self._split_reason = END_CAPTURE_GAP
             self._stats.wrap_resolved += 1
             return True
-        # SHIM — zipline#146.  The record this segment would start — at its
-        # own seq, or at next_seq after a leading trim — must sit under 2**31
-        # from the origin or the writer refuses it.  Every segment held so far
-        # passed this test on arrival, so finish() writes them all into this
-        # session; the one that fails opens the next, with itself as origin.
-        if stream.origin is not None and behind <= 0:
-            start = pkt.seq if behind < 0 else stream.next_seq
-            if (start - stream.origin) % _SEQ_MOD >= _OFFSET_LIMIT:
-                self._split_reason = END_OFFSET_LIMIT
-                self._stats.offset_splits += 1
-                return True
         return False
 
     def _maybe_commit_gap(self, stream: _Stream, pkt: PacketView) -> None:

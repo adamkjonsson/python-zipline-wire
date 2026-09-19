@@ -70,6 +70,41 @@ would let one stream span a wide hole is deferred to a `1.x` minor.
 
 ### Changed
 
+- **Breaking: a TCP direction longer than 2 GiB is written as one session**
+  ([#27](https://github.com/adamkjonsson/python-zipline-wire/issues/27)).
+  Spec `0.21` places a transport record by unwrapping along stored order, so
+  the ceiling the `0.3.0` shim for zipline#146 worked around is gone from
+  the format, and the shim goes with it: `0.3.0` ended the session every
+  2 GiB for `offset-limit` and continued the direction in a new one with its
+  own origin; the same capture now writes one session whose records sit at
+  their true offsets — measured here on five records a GiB apart, the last
+  past 2³² from the origin, all placed, nothing unplaceable — and a segment
+  reordered across a former boundary lands where it belonged instead of as a
+  repeat in the wrong session.  No fixture in `tests/captures/` has the
+  shape, so no pin moves; the break is stated for the capture this tree has
+  not seen, as `0.3.0` did for PAWS.
+- **Breaking: `END_OFFSET_LIMIT` (`"offset-limit"`) and
+  `ConversionStats.offset_splits` are removed**, and the summary's `offset`
+  line with them.  A caller matching on the reason or reading the counter
+  must stop; a `0.3.0` file carrying `offset-limit` is a valid `0.20` file
+  that a `0.21` reader would refuse at the version gate anyway.  The
+  `capture-gap` split beside it stays — see its entry.
+- **Breaking: a sequenced conversion of a direction longer than 2 GiB can
+  now be refused when the peer only acknowledges.**  Deleting the shim
+  exposed the same 2³¹ ambiguity on the ack axis: the specification's causal
+  check compares each record's end against the peer's latest *recorded*
+  `ack` by serial arithmetic, a peer that sends pure ACKs writes no record
+  after its SYN-ACK, and from 2 GiB on the comparison inverts and
+  python-zipline's writer refuses the record as *already acknowledged*.
+  Filed as [zipline#151](https://github.com/adamkjonsson/zipline/issues/151)
+  and [python-zipline#75](https://github.com/adamkjonsson/python-zipline/issues/75).
+  A `0.3.0` conversion of such a capture with `--sequenced` succeeded only
+  because the split reset the comparison every 2 GiB; a `0.4.0` one raises
+  `zpf.SemanticError` at the writer.  A plain conversion of the same capture
+  is one clean session, and a sequenced one whose peer's records carry
+  current acks is right at any length.  Not shimmed: `sequenced` is opt-in,
+  and a split that hides a rule's ambiguity is what zipline#146 was about.
+  The shape is a strict `xfail` in the suite, and flips when the fix lands.
 - **The python-zipline floor is `0.5.0`**, up from `0.4.0`
   ([#26](https://github.com/adamkjonsson/python-zipline-wire/issues/26)).
   No API this tree calls changed shape — `SessionWriter.participant()`
@@ -82,6 +117,11 @@ would let one stream span a wide hole is deferred to a `1.x` minor.
 
 ### Documentation
 
+- `limits.md` no longer describes the 2 GiB split; it states the `0.21`
+  rule, and the new `--sequenced` limit beside it.  `upstream-first.md`'s
+  *Shims* table is empty for the first time since `0.1.0`, and its ledgers
+  gain zipline#146 and python-zipline#70 as resolved and zipline#151 and
+  python-zipline#75 as open.
 - The README's *what it does not do* list said the reassembler does not yet
   read the TCP Timestamps option, which has been false since `0.3.0`.  The
   bullet is now about what is still true of it: SACK is not read.
