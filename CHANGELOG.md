@@ -33,6 +33,62 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+**The spec `0.21` release.**  Writes spec **v0.21**
+(`zpf.SPEC_VERSION == (0, 21)`), up from `0.20`, against packeteer
+**0.16.0** and python-zipline **0.5.0**
+([#25](https://github.com/adamkjonsson/python-zipline-wire/issues/25),
+[#26](https://github.com/adamkjonsson/python-zipline-wire/issues/26)).
+The floors are python-zipline `0.5.0`, the first release that implements
+`0.21`, and packeteer `0.15.0`, unchanged — nothing in this release touches
+packeteer, which is still at `0.16.0`.  The `0.x` rule as before: a `0.20`
+reader refuses the files this release writes, and a `0.21` reader refuses
+`0.3.0`'s.
+
+**Spec `0.21`** is the design release upstream — two rulings and no option —
+and unlike `0.20` it changes what a reader *computes*, in exactly the place
+this project ran into in `0.3.0`.  Offsets now **unwrap along stored order**
+([zipline#146](https://github.com/adamkjonsson/zipline/issues/146), filed
+from [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17)):
+a record's offset is its predecessor's plus the signed serial delta of their
+`seq_start`s, so a transport stream is placed at any length and the 2 GiB
+ceiling `0.3.0` shimmed around is gone from the format.  A hole of 2³¹ or
+more between consecutive records is the one shape the walk cannot place, and
+`0.21` states the exit — end the session, open another on the same key with
+no `isn` — and names it: the producer SHOULD write **`capture-gap`**
+([zipline#147](https://github.com/adamkjonsson/zipline/issues/147), filed
+from #17), the word this project chose in `0.3.0`.  And the Participant
+Descriptor gains **`adjacency`**, its first body field since `0.15`
+([zipline#80](https://github.com/adamkjonsson/zipline/issues/80),
+[zipline#106](https://github.com/adamkjonsson/zipline/issues/106)):
+`contiguous` or `units`, in the byte that was reserved and zero, so no
+existing file changes.  What each of the three means for a file this tree
+writes is under its own entry below.  Two `0.21` decisions do not reach a
+capture-sourced producer: Package D — deleting `input_extents`,
+`reason_class` and the seam predicate — is declined upstream for good, and
+nothing here ever depended on it; and the `u64 offset` Record option that
+would let one stream span a wide hole is deferred to a `1.x` minor.
+
+### Changed
+
+- **The python-zipline floor is `0.5.0`**, up from `0.4.0`
+  ([#26](https://github.com/adamkjonsson/python-zipline-wire/issues/26)).
+  No API this tree calls changed shape — `SessionWriter.participant()`
+  gained a keyword with a default, and `record()`, `undecoded()`, `Hints`,
+  `Decoded` and `RecordFlags` are as they were — so the floor moves for the
+  version stamp alone: `0.5.0` is the first release that writes `0.21`.
+  For the same input and options every `.zpf` this tree writes differs from
+  `0.3.0`'s by the version in the File Header and nothing else, which the
+  sixteen decode pins confirm on the first run against the new library.
+
+### Documentation
+
+- The README's *what it does not do* list said the reassembler does not yet
+  read the TCP Timestamps option, which has been false since `0.3.0`.  The
+  bullet is now about what is still true of it: SACK is not read.
+- `limits.md` quoted the dependency floors as `packeteer>=0.14.0`,
+  `zpf>=0.3.0`, two releases stale; it no longer quotes numbers a test
+  cannot see.
+
 ---
 
 ## [0.3.0] - 2026-09-17

@@ -16,7 +16,7 @@ It is glue, and deliberately so:
   mapping onto the specification's model.
 
 **Status: early.** The format itself is `0.x` and says it is not ready for
-production; this is a first implementation against `0.20`.
+production; this is a first implementation against `0.21`.
 
 Full documentation lives in `docs/` — build it with `cd docs && make html`.
 This README is the short version.
@@ -158,14 +158,13 @@ is why it is opt-in in a format whose point is streaming.
   clean transport-layer output here is what makes that possible.
 - **Sequenced UDP sessions.** A UDP session carries no `seq`/`ack`, so its
   order rests on something else and claiming it is a separate judgement.
-- **Reading the TCP options.** They are parsed and carried on each packet,
-  but the reassembler does not yet use them — neither SACK for loss inference
-  nor the Timestamps option, which would tell a mirror port's duplicate from
-  a real retransmission. Spec `0.20` defines `retransmit` as the sender's
-  act, so a duplicate should not set it; until the option is read, every
-  discarded repeat is treated as a retransmission, which is the fallback the
-  specification allows. The second is
-  [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17).
+- **SACK-aware loss inference.** The TCP options are parsed and carried on
+  each packet, and since `0.3.0` the reassembler reads the Timestamps option
+  — to tell a mirror port's duplicate from a real retransmission, which is
+  what `retransmit` has meant since spec `0.20`, and for the rules beside
+  it. SACK it does not read: loss is inferred from arrival order and the
+  timeouts alone, and a capture with SACK information is analysed as though
+  it had none.
 
 `docs/reference/limits.md` tracks these, and says which are permanent.
 
