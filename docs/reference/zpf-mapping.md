@@ -68,10 +68,31 @@ which always precedes any record from it.
 | `endpoint` | `ip:port`, IPv6 bracketed |
 | `isn` | The initial sequence number — present **exactly when** the handshake was observed, and absent otherwise |
 | `tcp_role` | `INITIATOR` or `RESPONDER` when the handshake said which |
+| `adjacency` | **`contiguous`**, always — the writer's default, never named.  A body field since spec `0.21`; see below |
 
 The `isn` rule is a **must** in both directions: present when known, absent
 when not.  This is why participant declaration is lazy rather than done up
 front — the SYN has to have been seen first.
+
+`adjacency` is the Participant Descriptor's first body field since `0.15`:
+`contiguous` means stored neighbours join, which is what every file ever
+written meant; `units` declares a *unit sequence*, a decoded participant no
+two of whose adjacent records may be assumed to join — the wholesale form of
+a Discontinuity at every seam, for a stage that reorders a participant's
+records or a decoder whose units decompose one another (nested DNS, in
+[zipline#106](https://github.com/adamkjonsson/zipline/issues/106)).  On a
+transport-layer participant the field says nothing, since the offsets come
+from sequence numbers, and **a writer MUST NOT set `units` there**.  A
+capture-sourced, transport-layer file is the only kind zpfwire writes, so
+`contiguous` is the only conformant value, and a test pins every participant
+of every fixture to it.  Dissection, when it comes, is the first layer at
+which the field could say something.
+
+One visible consequence: **every participant line in a JSONL projection of a
+zpfwire file carries `"adjacency":"contiguous"`**, right after `"pid"`, as a
+body field always projects; a line without it is rejected.  Nothing in this
+tree produces or compares JSONL, but that is where the line's shape is
+looked up.
 
 The far endpoint is declared even if it never sent anything.  The conversation
 had two ends whether or not both spoke; a session naming only the talker would

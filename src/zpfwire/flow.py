@@ -334,6 +334,13 @@ class FlowTracker(ABC):
         notably a TCP stream's ``isn`` — is known by then when it is knowable
         at all.
 
+        ``adjacency`` is deliberately left at the writer's default,
+        ``contiguous``.  On a transport-layer participant the field says
+        nothing — offsets come from sequence numbers, so stored neighbours
+        join by construction — and the specification forbids a writer to set
+        ``units`` there (spec 0.21).  Every participant this project writes
+        is transport-layer, so there is nothing to pass.
+
         Args:
             endpoint: The participant's ``ip:port``.
             **declaration: Extra arguments for the Participant Descriptor,

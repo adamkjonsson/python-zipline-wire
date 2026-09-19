@@ -120,6 +120,21 @@ would let one stream span a wide hole is deferred to a `1.x` minor.
   at offset `0`.  The `u64 offset` Record option that would let one stream
   span the hole is deferred upstream to a `1.x` minor, which is why a
   converted stream still ends there.
+- **`adjacency`: every participant this tree writes is `contiguous`, and no
+  byte moves** ([#29](https://github.com/adamkjonsson/python-zipline-wire/issues/29)).
+  The Participant Descriptor's reserved `u16` after `participant_id` is
+  `adjacency: u8` + `_reserved: u8` since spec `0.21`; `0` is `contiguous`,
+  which is what the reserved byte held and meant in every file this project
+  ever wrote, so the sixteen decode pins — which hash every Participant
+  block's bytes — hold unchanged.  The specification forbids a writer to set
+  `units` on a transport-layer participant, and a capture-sourced
+  transport-layer file is the only kind zpfwire writes, so `contiguous` is
+  the only conformant value; the writer's default supplies it, and a new
+  test pins every participant of every fixture to it (and to
+  `is_unit_sequence is False` on the reader's layer-aware view).
+  `zpf-mapping.md` gains the field, and the one visible consequence: a
+  JSONL projection of a zpfwire file now carries `"adjacency":"contiguous"`
+  on every participant line.
 - **The python-zipline floor is `0.5.0`**, up from `0.4.0`
   ([#26](https://github.com/adamkjonsson/python-zipline-wire/issues/26)).
   No API this tree calls changed shape — `SessionWriter.participant()`
