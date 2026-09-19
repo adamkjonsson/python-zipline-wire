@@ -21,8 +21,9 @@ every *other* consumer of that library.  Filing it fixes it once.
 
 ## What it produced
 
-Twenty-one issues so far; three are open, and all three are what the next
-release waits on.
+Twenty-nine issues so far; two are open, both found by the `0.4.0` release
+deleting a shim, and neither blocks anything — the shape they describe is a
+documented limit of `--sequenced` until the format answers.
 
 **packeteer**, filed before a line of code was written:
 
@@ -50,8 +51,13 @@ release waits on.
 | #92 | A snaplen-truncated packet kept its checksum, so a truncated capture read as corruption throughout | Cleared on truncation (0.9.1); reinstated with `datagram_truncated` beside it (0.12.0) |
 | #94 | Nothing said a packet *was* truncated, so a cleared checksum was ambiguous | `ParsedPacket.datagram_truncated`, `PcapRecord.orig_len` |
 | #138 | No way to ask whether a link type is supported, so it was inferred from missing headers — and a raw-IP packet with a bad IP header was misfiled | `supports_link_type`, `SUPPORTED_LINK_TYPES` (0.14.0) |
-| #149 | No real capture, here or in packeteer's corpus, of a retransmission carrying the TCP Timestamps option | **Open** — what #17 waits on |
-| #150 | The generator rebuilds every resend with a fresh TSval, so it cannot produce a capture-point duplicate | **Open** |
+| #149 | No real capture, here or in packeteer's corpus, of a retransmission carrying the TCP Timestamps option | `tcp_lossy_ts.pcap` and `tcp_dup_ts.pcap`, real Linux stacks under loss and mirror duplication (0.15.0) |
+| #150 | The generator rebuilds every resend with a fresh TSval, so it cannot produce a capture-point duplicate | `duplicate_probability`, the capture-point duplication impairment (0.15.0) |
+| #158 | No receiver-side capture, so no real file in which a hole is actually *in* the capture rather than absorbed by the sender's retransmission | `tcp_gap_ts.pcap` and `tcp_reorder_ts.pcap` (0.16.0) |
+| #160 | No real capture in which two copies of a range *differ* — a segment corrupted in flight, then resent clean | `tcp_corrupt_ts.pcap`, delivered the day it was filed (0.16.0) |
+| #161 | No real capture of a stream whose sequence numbers pass through 2³² | `tcp_wrap_ts.pcap`, delivered the day it was filed (0.16.0) |
+| #163 | The generated receiver acknowledged past a corrupted segment before its retransmission, so a generated stream could not test a policy that reads acks | Fixed the same day (0.16.0); reviewed here across 20 seeds |
+| #164 | A generated retransmission kept the original's acknowledgement number, so a direction's acks stepped backwards on every resend after peer data | Fixed the same day (0.16.0); reviewed here across 20 seeds × four impairments |
 
 **python-zipline**:
 
@@ -68,7 +74,7 @@ release waits on.
 
 | Issue | Gap | Resolution |
 |-------|-----|-----------|
-| #142 | The `retransmit` flag's "retransmission/overlap" carries two readings — the sender resent, or the reassembler discarded — and a duplicated capture tells them apart | Spec `0.20`: the flag names the sender's act; a producer that cannot tell a copy from a resend SHOULD treat it as one, which is what this tree does until #17 |
+| #142 | The `retransmit` flag's "retransmission/overlap" carries two readings — the sender resent, or the reassembler discarded — and a duplicated capture tells them apart | Spec `0.20`: the flag names the sender's act; a producer that cannot tell a copy from a resend SHOULD treat it as one, which is what this tree did until `0.3.0` read the option (#17) |
 | #146 | A transport record was placed against the origin by serial arithmetic, so a stream stopped at 2 GiB: an ordinary large download could not be represented | Spec `0.21`: offsets unwrap along stored order — each record's is its predecessor's plus the signed serial delta — and a stream is placed at any length.  The shim this tree carried for one release is gone (0.4.0) |
 | #147 | A hole of 2³¹ or more between consecutive records of one participant had no representation and no name — the far side reads as *before* the near side | Spec `0.21`: no representation, by design — the pair is an ordering violation by construction — and the exit this tree already took is now the standard: end the session, open another on the same key with no `isn`, and the producer SHOULD write `capture-gap`.  The `u64 offset` option is held for a `1.x` minor |
 | #151 | The causal edge rule compares a record's end against a peer record's `ack` with serial arithmetic, and the two can be a whole stream apart when the peer only sends pure ACKs; #146's shape on the ack axis | **Open** — found by deleting the #146 shim; a documented limit of `--sequenced` here |
@@ -98,10 +104,11 @@ part a maintainer cannot be expected to notice.  #138's was that the inference
 from missing headers *looks* right on every link type but one, and that one
 has no headers to be missing.
 
-A gap in test material is an issue too.  packeteer#149 asks for a capture,
-not a feature: the rule it would validate is sound on paper and unverified on
-any real stack, and filing that is what keeps the rule from shipping on paper
-alone.
+A gap in test material is an issue too.  packeteer#149 asked for a capture,
+not a feature: the rule it would validate was sound on paper and unverified on
+any real stack, and filing that is what kept the rule from shipping on paper
+alone — five of the seven packeteer issues from `0.3.0` were captures, and
+every rule in that release is measured against one.
 
 ## Verify, do not trust the changelog
 

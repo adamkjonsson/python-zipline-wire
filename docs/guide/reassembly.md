@@ -188,7 +188,7 @@ discard:
 ```
 $ zpfwire convert payload_corruption.pcap -o kept.zpf
 payload      74065 bytes
-overlap      9150 bytes (discarded)
+overlap      9150 bytes (retransmitted, discarded)
 bad cksum    11 packet(s)
 
 $ zpfwire convert payload_corruption.pcap -o dropped.zpf --checksum drop
@@ -221,7 +221,7 @@ Invalid options raise `ValueError` at construction, not at conversion:
 
 ```python
 ReassemblyOptions(overlap="favour-old")
-# ValueError: overlap must be one of favor-old, got 'favour-old'
+# ValueError: overlap must be one of favor-old, favor-acked, got 'favour-old'
 
 ReassemblyOptions(flush_timeout=-1)
 # ValueError: flush_timeout must not be negative
@@ -294,7 +294,8 @@ behind it.  With it, a segment further behind than the largest window TCP can
 advertise (2³⁰ bytes) whose TSval is *newer* than the last accepted in order
 is from ahead.  It cannot join the session it belongs to — the format stores
 records in serial order, and one that far past its predecessor precedes it —
-so the session ends for `capture-gap` and the segment opens the next; see
+so the session ends for `capture-gap`, the specification's own word for the
+shape since `0.21`, and the segment opens the next on the same key; see
 {doc}`converting`.  Counted in `stats.wrap_resolved`, since a file that
 needed the rule is a file with a hole worth knowing about.
 
@@ -364,7 +365,7 @@ with zpf.open("capture.zpf") as reader:
 ```
 
 ```
-tcp-reassembly 0.3.0 sha256:1f3a…
+tcp-reassembly 0.4.0 sha256:1f3a…
 ```
 
 The name is `DECODER_NAME`.  Declaring it is a **should** in the

@@ -152,6 +152,22 @@ would let one stream span a wide hole is deferred to a `1.x` minor.
   *Shims* table is empty for the first time since `0.1.0`, and its ledgers
   gain zipline#146 and python-zipline#70 as resolved and zipline#151 and
   python-zipline#75 as open.
+- **A documentation sweep for stale references**, the first of what is now a
+  release step.  Most of what it found predated this release: the `0.3.0`
+  rules had each fixed the pages their issue named and left the rest —
+  `provenance.md`'s reasons table listed three of the seven `Undecoded`
+  reasons, `zpf-mapping.md` still said the reassembler could not tell a
+  duplicate from a resend and listed the same three reasons, the README's
+  flag table offered one overlap policy and its Session End row four
+  reasons, the `overlap` summary line was quoted in its pre-`0.3.0` wording
+  in three places, `testing.md`'s accounting identities lacked three
+  counters and its test count was two releases old, `architecture.md`'s
+  session-lifetime table had no `capture-gap`, `writer-mapping.md` named
+  three reasons, `reassembly.md`'s `ValueError` sample named one policy, and
+  `upstream-first.md` counted twenty-one issues with three open (it is
+  twenty-nine with two), still listed packeteer#149 and #150 as open, and
+  lacked the five packeteer issues `0.3.0` filed.  All brought current;
+  `ordering.md` gains a pointer to the new `--sequenced` limit.
 - The README's *what it does not do* list said the reassembler does not yet
   read the TCP Timestamps option, which has been false since `0.3.0`.  The
   bullet is now about what is still true of it: SACK is not read.

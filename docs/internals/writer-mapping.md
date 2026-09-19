@@ -48,12 +48,15 @@ range no record covers.  Declaring it again would be two accounts of the same
 missing bytes with no rule for which to believe.
 
 So `_count_repeat` splits a discard by whether it falls inside a committed
-gap, and cites both halves with different reasons — `late-arrival` for bytes
-we refused to write, `overlap-discarded` for a retransmit of bytes already
-accepted — but never cites the hole itself.  A third reason, `bad-checksum`,
-comes from `convert.py` rather than the reassembler: under `checksum="drop"`
-a packet that failed its checksum is discarded whole before it reaches a
-flow, and its payload is cited the same way.
+gap, and cites both halves with different reasons — `late-arrival` (or,
+where the Timestamps option can say why, `late-reordered` /
+`late-retransmitted`) for bytes we refused to write, `overlap-discarded` or
+`duplicate-discarded` for a repeat of bytes already accepted — but never
+cites the hole itself.  `paws-rejected` cites an old segment dropped whole
+before it reaches `_accept`.  One more reason, `bad-checksum`, comes from
+`convert.py` rather than the reassembler: under `checksum="drop"` a packet
+that failed its checksum is discarded whole before it reaches a flow, and
+its payload is cited the same way.
 
 ### When it cannot be done
 

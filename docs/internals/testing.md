@@ -1,6 +1,6 @@
 # Testing
 
-287 tests, native pytest style, in a top-level `tests/`.  Run them with:
+Some 460 tests, native pytest style, in a top-level `tests/`.  Run them with:
 
 ```bash
 .venv/bin/pytest
@@ -126,13 +126,20 @@ likely to catch a real regression:
 # every packet is converted, skipped, or filtered
 stats.converted + sum(stats.skipped.values()) + stats.filtered == total
 
-# every observed byte is written, discarded as overlap, dropped as late,
-# or — under checksum="drop" — discarded whole with its packet
-payload_bytes + overlap_bytes + late_bytes + checksum_dropped_bytes == observed
+# every observed byte is written, discarded as a repeat (overlap or
+# duplicate), dropped as late, rejected by PAWS, or — under checksum="drop"
+# — discarded whole with its packet
+(payload_bytes + overlap_bytes + duplicate_bytes + late_bytes + paws_bytes
+ + checksum_dropped_bytes) == observed
 
 # every discarded byte is either cited or counted as unlocatable
-cited + unlocatable_bytes == overlap_bytes + late_bytes + checksum_dropped_bytes
+cited + unlocatable_bytes == (overlap_bytes + duplicate_bytes + late_bytes
+                              + paws_bytes + checksum_dropped_bytes)
 ```
+
+Each `0.3.0` rule that discards bytes added its counter to both identities
+the day it landed; a rule that discards without counting fails the first,
+and one that counts without citing fails the second.
 
 Prefer adding to these over adding a test that pins a specific number.  A
 number changes when a fixture or a default changes; an identity should not.

@@ -109,7 +109,7 @@ One per run of contiguous stream bytes, or one per datagram for UDP.
 | `payload` | The stream bytes |
 | `seq_start` | The absolute wire sequence number of the first payload byte (TCP) |
 | `ack` | The serial **maximum** of the acknowledgement numbers on the packets that contributed bytes (TCP) — acks are cumulative, so it is the strongest statement the run can make that is certainly true |
-| `flags` | `PSH` / `FIN` / `RST` / `URG` as seen; `RETRANSMIT` when a repeated segment was discarded while the record was accumulating — see below; `MESSAGE` for a UDP datagram |
+| `flags` | `PSH` / `FIN` / `RST` / `URG` as seen; `RETRANSMIT` when the sender resent bytes of the record's range — see below; `MESSAGE` for a UDP datagram |
 | `decoder` | The reassembly decoder |
 
 One record is not a byte run: the **handshake record**, written once per
@@ -130,14 +130,18 @@ can never precede arrival of what it acknowledges.
 `RETRANSMIT` is defined by the specification as the **sender's** act: the
 sender resent bytes of the record's range.  A copy of one transmission — a
 mirror port, a two-interface capture — is not a retransmission and does not
-set it.  This reassembler does not read the TCP Timestamps option, so it
-cannot tell the two apart, and it takes the specification's fallback for a
-producer in that position: every discarded repeat is treated as a
-retransmission, and sets the flag on whichever record was accumulating when
-it was discarded.  What was discarded is cited either way, as an `Undecoded`
-block naming the bytes in the capture — see {doc}`../guide/provenance`.
-Telling a duplicate from a resend is
-[#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17).
+set it.  The reassembler tells the two apart by the TCP Timestamps option
+(since `0.3.0`, [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17)):
+a repeat with the same TSval as the transmission it repeats and nothing from
+the peer between the two is a duplicate, cited `duplicate-discarded` and
+setting no flag; any other repeat is a retransmission, and sets the flag on
+whichever record was accumulating when it was discarded.  When the option is
+absent, or the original has aged out of the reassembler's memory, the
+specification's fallback for a producer that cannot tell applies — every
+repeat is a retransmission — and `stats.ts_fallback` counts that it did.
+What was discarded is cited either way, as an `Undecoded` block naming the
+bytes in the capture — see {doc}`../guide/provenance` and
+{doc}`../guide/reassembly`.
 
 ### Fields deliberately absent
 
@@ -155,7 +159,7 @@ Written for bytes that are in the capture and reached no record.
 | `source_id` | The capture source |
 | `session_id`, `participant_id` | **`0`** — against a capture source there is no input `.zpf`, so there is no id namespace to name |
 | `off_start`, `off_end` | Byte offsets **into the capture file**, half-open |
-| `reason` | `overlap-discarded`, `late-arrival`, or `bad-checksum` under `checksum="drop"` |
+| `reason` | `overlap-discarded` or `duplicate-discarded` for a repeat; `late-arrival`, `late-reordered` or `late-retransmitted` for a byte inside a committed gap; `paws-rejected`; `bad-checksum` under `checksum="drop"` — see {doc}`../api/flow` |
 | `reason_class` | `bytes` |
 | `decoder_id` | The reassembly decoder |
 

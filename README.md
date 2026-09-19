@@ -77,7 +77,7 @@ specification's provenance/layer table. Concretely:
 | Session | one per conversation, both directions together |
 | Participant | one per endpoint, with `isn` and `tcp_role` when the handshake was captured |
 | Record | a reassembled byte run with `seq_start` and `ack`; UDP datagrams carry the `message` flag |
-| Session End | `fin`, `rst`, `timeout` or `capture-end` |
+| Session End | `fin`, `rst`, `timeout`, `capture-end` — or `capture-gap`, the specification's word for a hole in the capture too wide for one session to span |
 
 Reassembly counts as a decoder in zipline's vocabulary — that is why the
 Decoder block is there, and why it declares `output_layer = transport` rather
@@ -109,7 +109,7 @@ Note: some bytes never reached the output. Raise --reorder-window or
 |---|---|
 | `--reorder-window BYTES` | how much out-of-order data to hold before giving up on a gap |
 | `--flush-timeout SECONDS` | how long a gap may stay unfilled |
-| `--overlap {favor-old}` | which copy wins when retransmitted bytes disagree — one policy, for a structural reason the guide explains |
+| `--overlap {favor-old,favor-acked}` | which copy wins when retransmitted bytes disagree — the first seen, or the one the receiver's acknowledgement echoed |
 | `--session-timeout SECONDS` | silence after which a conversation is closed |
 | `--no-coalesce` | one record per segment instead of per contiguous byte run |
 | `--checksum {ignore,drop}` | whether to discard a packet whose transport checksum does not verify |
@@ -133,7 +133,8 @@ retransmit is written as an `Undecoded` block naming its byte range in the
 capture file:
 
 ```
-overlap      8875 bytes (discarded)
+overlap      8875 bytes (retransmitted, discarded)
+ts fallback  12 repeat(s) treated as retransmitted without timestamp evidence (absent: 12)
 undecoded    12 region(s) cited
 ```
 

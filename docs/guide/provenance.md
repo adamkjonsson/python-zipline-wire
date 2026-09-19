@@ -72,20 +72,28 @@ Those are the exact bytes the reassembler dropped.
 | Constant | `reason` | Meaning |
 |----------|----------|---------|
 | `REASON_OVERLAP` | `overlap-discarded` | A retransmit of a range already accepted |
-| `REASON_LATE` | `late-arrival` | Bytes that arrived after their gap had been committed |
+| `REASON_DUPLICATE` | `duplicate-discarded` | A copy of a transmission already accepted — the capture point saw it twice; the sender sent once |
+| `REASON_LATE` | `late-arrival` | Bytes that arrived after their gap had been committed, for a reason the Timestamps option could not name |
+| `REASON_LATE_REORDERED` | `late-reordered` | Late, and the original: delayed by the network — a wider window would have kept it |
+| `REASON_LATE_RETRANSMITTED` | `late-retransmitted` | Late, and a resend of an original that was lost — nothing would have kept it |
+| `REASON_PAWS` | `paws-rejected` | An old segment from before a sequence wrap, dropped whole as a receiver drops it |
 | `REASON_CHECKSUM` | `bad-checksum` | A packet discarded because its checksum did not verify, under `checksum="drop"` |
 
 All are `reason_class="bytes"` — the *bytes-exist* class, meaning a consumer
 may follow the reference and fetch them.  The distinction matters: an overlap
-discard lost nothing, because the same bytes are in a record already, and a
-bad-checksum discard lost nothing the receiver had either, while a late
-arrival is data the policy caused you to lose.
+or duplicate discard lost nothing, because the same bytes are in a record
+already, a bad-checksum or PAWS discard lost nothing the receiver had either,
+while a late arrival is data the policy caused you to lose — and the three
+`late-` reasons say whether a different policy would have kept it.  See
+{doc}`reassembly` for how each is decided.
 
 ```python
-from zpfwire import REASON_LATE
-
-lost = [b for b in reader.undecoded if b.reason == REASON_LATE]
+lost = [b for b in reader.undecoded if b.reason.startswith("late-")]
 ```
+
+Match on the prefix, or on all three constants: since `0.3.0` a late byte
+that the Timestamps option could classify is cited `late-reordered` or
+`late-retransmitted` rather than `late-arrival`.
 
 ### Why a gap gets no block
 
