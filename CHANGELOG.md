@@ -35,6 +35,152 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 
 ---
 
+## [0.4.0] - 2026-09-19
+
+**The spec `0.21` release.**  Writes spec **v0.21**
+(`zpf.SPEC_VERSION == (0, 21)`), up from `0.20`, against packeteer
+**0.16.0** and python-zipline **0.5.0**
+([#25](https://github.com/adamkjonsson/python-zipline-wire/issues/25),
+[#26](https://github.com/adamkjonsson/python-zipline-wire/issues/26)).
+The floors are python-zipline `0.5.0`, the first release that implements
+`0.21`, and packeteer `0.15.0`, unchanged — nothing in this release touches
+packeteer, which is still at `0.16.0`.  The `0.x` rule as before: a `0.20`
+reader refuses the files this release writes, and a `0.21` reader refuses
+`0.3.0`'s.
+
+**Spec `0.21`** is the design release upstream — two rulings and no option —
+and unlike `0.20` it changes what a reader *computes*, in exactly the place
+this project ran into in `0.3.0`.  Offsets now **unwrap along stored order**
+([zipline#146](https://github.com/adamkjonsson/zipline/issues/146), filed
+from [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17)):
+a record's offset is its predecessor's plus the signed serial delta of their
+`seq_start`s, so a transport stream is placed at any length and the 2 GiB
+ceiling `0.3.0` shimmed around is gone from the format.  A hole of 2³¹ or
+more between consecutive records is the one shape the walk cannot place, and
+`0.21` states the exit — end the session, open another on the same key with
+no `isn` — and names it: the producer SHOULD write **`capture-gap`**
+([zipline#147](https://github.com/adamkjonsson/zipline/issues/147), filed
+from #17), the word this project chose in `0.3.0`.  And the Participant
+Descriptor gains **`adjacency`**, its first body field since `0.15`
+([zipline#80](https://github.com/adamkjonsson/zipline/issues/80),
+[zipline#106](https://github.com/adamkjonsson/zipline/issues/106)):
+`contiguous` or `units`, in the byte that was reserved and zero, so no
+existing file changes.  What each of the three means for a file this tree
+writes is under its own entry below.  Two `0.21` decisions do not reach a
+capture-sourced producer: Package D — deleting `input_extents`,
+`reason_class` and the seam predicate — is declined upstream for good, and
+nothing here ever depended on it; and the `u64 offset` Record option that
+would let one stream span a wide hole is deferred to a `1.x` minor.
+
+### Changed
+
+- **Breaking: a TCP direction longer than 2 GiB is written as one session**
+  ([#27](https://github.com/adamkjonsson/python-zipline-wire/issues/27)).
+  Spec `0.21` places a transport record by unwrapping along stored order, so
+  the ceiling the `0.3.0` shim for zipline#146 worked around is gone from
+  the format, and the shim goes with it: `0.3.0` ended the session every
+  2 GiB for `offset-limit` and continued the direction in a new one with its
+  own origin; the same capture now writes one session whose records sit at
+  their true offsets — measured here on five records a GiB apart, the last
+  past 2³² from the origin, all placed, nothing unplaceable — and a segment
+  reordered across a former boundary lands where it belonged instead of as a
+  repeat in the wrong session.  No fixture in `tests/captures/` has the
+  shape, so no pin moves; the break is stated for the capture this tree has
+  not seen, as `0.3.0` did for PAWS.
+- **Breaking: `END_OFFSET_LIMIT` (`"offset-limit"`) and
+  `ConversionStats.offset_splits` are removed**, and the summary's `offset`
+  line with them.  A caller matching on the reason or reading the counter
+  must stop; a `0.3.0` file carrying `offset-limit` is a valid `0.20` file
+  that a `0.21` reader would refuse at the version gate anyway.  The
+  `capture-gap` split beside it stays — see its entry.
+- **Breaking: a sequenced conversion of a direction longer than 2 GiB can
+  now be refused when the peer only acknowledges.**  Deleting the shim
+  exposed the same 2³¹ ambiguity on the ack axis: the specification's causal
+  check compares each record's end against the peer's latest *recorded*
+  `ack` by serial arithmetic, a peer that sends pure ACKs writes no record
+  after its SYN-ACK, and from 2 GiB on the comparison inverts and
+  python-zipline's writer refuses the record as *already acknowledged*.
+  Filed as [zipline#151](https://github.com/adamkjonsson/zipline/issues/151)
+  and [python-zipline#75](https://github.com/adamkjonsson/python-zipline/issues/75).
+  A `0.3.0` conversion of such a capture with `--sequenced` succeeded only
+  because the split reset the comparison every 2 GiB; a `0.4.0` one raises
+  `zpf.SemanticError` at the writer.  A plain conversion of the same capture
+  is one clean session, and a sequenced one whose peer's records carry
+  current acks is right at any length.  Not shimmed: `sequenced` is opt-in,
+  and a split that hides a rule's ambiguity is what zipline#146 was about.
+  The shape is a strict `xfail` in the suite, and flips when the fix lands.
+- **`capture-gap` is the specification's word now, and nothing this tree
+  writes changes** ([#28](https://github.com/adamkjonsson/python-zipline-wire/issues/28)).
+  Spec `0.21` answers [zipline#147](https://github.com/adamkjonsson/zipline/issues/147),
+  filed from #17, by naming the exit `0.3.0` already took for a hole of 2³¹
+  or more between consecutive records: end the session, open another on the
+  same key with no `isn`, and the producer SHOULD write `capture-gap`.
+  `END_CAPTURE_GAP` was that value before the format fixed it, so the
+  change is a citation — the docstrings and the docs now point at
+  §Referencing the source by stream offset rather than deriving the rule
+  themselves — and one test for the half of the sentence the suite did not
+  check: the follow-on session is on the same key, both participants
+  declared, the client's `isn` *not* carried across, and its first record
+  at offset `0`.  The `u64 offset` Record option that would let one stream
+  span the hole is deferred upstream to a `1.x` minor, which is why a
+  converted stream still ends there.
+- **`adjacency`: every participant this tree writes is `contiguous`, and no
+  byte moves** ([#29](https://github.com/adamkjonsson/python-zipline-wire/issues/29)).
+  The Participant Descriptor's reserved `u16` after `participant_id` is
+  `adjacency: u8` + `_reserved: u8` since spec `0.21`; `0` is `contiguous`,
+  which is what the reserved byte held and meant in every file this project
+  ever wrote, so the sixteen decode pins — which hash every Participant
+  block's bytes — hold unchanged.  The specification forbids a writer to set
+  `units` on a transport-layer participant, and a capture-sourced
+  transport-layer file is the only kind zpfwire writes, so `contiguous` is
+  the only conformant value; the writer's default supplies it, and a new
+  test pins every participant of every fixture to it (and to
+  `is_unit_sequence is False` on the reader's layer-aware view).
+  `zpf-mapping.md` gains the field, and the one visible consequence: a
+  JSONL projection of a zpfwire file now carries `"adjacency":"contiguous"`
+  on every participant line.
+- **The python-zipline floor is `0.5.0`**, up from `0.4.0`
+  ([#26](https://github.com/adamkjonsson/python-zipline-wire/issues/26)).
+  No API this tree calls changed shape — `SessionWriter.participant()`
+  gained a keyword with a default, and `record()`, `undecoded()`, `Hints`,
+  `Decoded` and `RecordFlags` are as they were — so the floor moves for the
+  version stamp alone: `0.5.0` is the first release that writes `0.21`.
+  For the same input and options every `.zpf` this tree writes differs from
+  `0.3.0`'s by the version in the File Header and nothing else, which the
+  sixteen decode pins confirm on the first run against the new library.
+
+### Documentation
+
+- `limits.md` no longer describes the 2 GiB split; it states the `0.21`
+  rule, and the new `--sequenced` limit beside it.  `upstream-first.md`'s
+  *Shims* table is empty for the first time since `0.1.0`, and its ledgers
+  gain zipline#146 and python-zipline#70 as resolved and zipline#151 and
+  python-zipline#75 as open.
+- **A documentation sweep for stale references**, the first of what is now a
+  release step.  Most of what it found predated this release: the `0.3.0`
+  rules had each fixed the pages their issue named and left the rest —
+  `provenance.md`'s reasons table listed three of the seven `Undecoded`
+  reasons, `zpf-mapping.md` still said the reassembler could not tell a
+  duplicate from a resend and listed the same three reasons, the README's
+  flag table offered one overlap policy and its Session End row four
+  reasons, the `overlap` summary line was quoted in its pre-`0.3.0` wording
+  in three places, `testing.md`'s accounting identities lacked three
+  counters and its test count was two releases old, `architecture.md`'s
+  session-lifetime table had no `capture-gap`, `writer-mapping.md` named
+  three reasons, `reassembly.md`'s `ValueError` sample named one policy, and
+  `upstream-first.md` counted twenty-one issues with three open (it is
+  twenty-nine with two), still listed packeteer#149 and #150 as open, and
+  lacked the five packeteer issues `0.3.0` filed.  All brought current;
+  `ordering.md` gains a pointer to the new `--sequenced` limit.
+- The README's *what it does not do* list said the reassembler does not yet
+  read the TCP Timestamps option, which has been false since `0.3.0`.  The
+  bullet is now about what is still true of it: SACK is not read.
+- `limits.md` quoted the dependency floors as `packeteer>=0.14.0`,
+  `zpf>=0.3.0`, two releases stale; it no longer quotes numbers a test
+  cannot see.
+
+---
+
 ## [0.3.0] - 2026-09-17
 
 **The TCP Timestamps release.**  The reassembler reads the option for the
@@ -549,7 +695,8 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adamkjonsson/python-zipline-wire/releases/tag/v0.1.0

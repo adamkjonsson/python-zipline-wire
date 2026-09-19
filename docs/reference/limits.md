@@ -30,29 +30,50 @@ specification's rule, and it is why the policy is a declared, hashed option.
 Bytes lost this way are counted as `late_bytes` and cited as `late-arrival`
 regions.
 
-**A direction longer than 2 GiB is written as several sessions.**  The
-format places a transport record by its `seq_start` against the stream
-origin with serial arithmetic, which is decidable only within 2³¹: a record
-further from the origin than that is "below" it, and python-zipline's writer
-refuses it — so without help a capture of any TCP direction carrying more
-than 2 GiB, an ordinary large download, could not be converted at all.
-Until the format unwraps offsets along stored order
-([zipline#146](https://github.com/adamkjonsson/zipline/issues/146)) zpfwire
-ends the session at that point for `offset-limit` and continues the
-direction in a new one, whose origin is its first byte; every record is
-then placed, and `stats.offset_splits` says it happened.  What it costs: a
-reader sees several sessions with one key where the wire had one
-connection, and a segment reordered across the boundary — sent below 2 GiB,
-arriving after the split — lands in the new session as a repeat rather than
-in the old one where it belonged.  Both go with the shim.
+**A direction longer than 2 GiB is one session, placed at its true
+offsets.**  Since spec `0.21` a transport record's offset is its
+predecessor's plus the signed serial delta of their `seq_start`s, so a
+stream is placed at any length and through a sequence wrap
+([zipline#146](https://github.com/adamkjonsson/zipline/issues/146), filed
+from this project).  Through `0.20` every record was measured against the
+origin, which stopped at 2³¹, and `0.3.0` split such a direction into a new
+session every 2 GiB to get past it; that split, its `offset-limit` reason
+and its counter are gone.  The one shape one session cannot hold is the
+hole below.
 
-**A hole wider than 2³¹ bytes in one direction splits the session.**  The
-offset space is modular over 2³² and records are stored in serial order, so
-two records of one participant cannot be more than 2³¹ apart with nothing
-between them.  A segment from the far side of a hole that wide is recognised
+**A sequenced conversion of a direction longer than 2 GiB can be refused
+when the peer only acknowledges.**  The specification's causal check
+compares each record's end against the peer's latest *recorded* `ack` with
+serial arithmetic, and a peer that sends pure ACKs writes no record after
+its SYN-ACK — an ordinary upload — so from 2 GiB on the comparison inverts
+and the writer refuses the record as *already acknowledged*
+([zipline#151](https://github.com/adamkjonsson/zipline/issues/151),
+[python-zipline#75](https://github.com/adamkjonsson/python-zipline/issues/75),
+both filed from this project).  A plain conversion of the same capture is
+one clean session; the limit is `--sequenced`'s alone.  `0.3.0`'s 2 GiB
+split happened to sidestep it, which is how it went unseen; it is not
+kept, since a split that hides a rule's ambiguity is what zipline#146 was
+about.  When the peer's records carry current acks — any exchange, not just
+an upload — the check is right at any length.
+
+**A hole wider than 2³¹ bytes in one direction splits the session.**  This
+is the specification's stated exit for what it calls *the unmeasurable
+hole* (spec `0.21`, §Referencing the source by stream offset, answering
+[zipline#147](https://github.com/adamkjonsson/zipline/issues/147), filed
+from this project): the offset space is modular over 2³² and records are
+stored in serial order, so two records of one participant cannot be more
+than 2³¹ apart with nothing between them, and a producer that knows the far
+side is real ends the session at the hole and opens another on the same
+key with no `isn`, writing `capture-gap` — the specification's word, not
+ours, since `0.21` — so that a reader can tell a resumed conversation from
+a new one.  A segment from the far side of a hole that wide is recognised
 by the Timestamps option — further behind than any window and carrying a
-newer clock — and opens a new session, the old one ending for
-`capture-gap`.  Without the option the shape is invisible: serial arithmetic
+newer clock — and opens the new session.  The stream still *ends* at the
+hole rather than spanning it because the format has no representation for
+the far side's true position: the `u64 offset` Record option that would
+give it one is recorded upstream as the design if a capture with the shape
+ever needs it, and is safe to add as a `1.x` minor, so there is nothing to
+work around here.  Without the option the shape is invisible: serial arithmetic
 calls the segment old, it is discarded as a retransmission, and the rest of
 the direction goes with it.  The zone between a window's width and 2³¹
 behind is where a resend cannot be, so the rule is safe there; a hole
@@ -149,10 +170,12 @@ hard-coded number.  The format guarantees no upgrade path across a minor
 version while it is below 1.0, so a file written against one minor may be
 refused by a library implementing another.
 
-**Neither sibling is on PyPI yet.**  `pyproject.toml` floors both —
-`packeteer>=0.14.0`, `zpf>=0.3.0` — but with nothing to resolve against, a
-floor is documentation as much as a constraint: it names the releases the
-code was built against, which each `CHANGELOG.md` entry names too, and it
-makes an older checkout fail at import rather than somewhere subtler.  Both
+**Neither sibling is on PyPI yet.**  `pyproject.toml` floors both, but with
+nothing to resolve against, a floor is documentation as much as a
+constraint: it names the oldest release the code runs on, which each
+`CHANGELOG.md` entry names beside the release it was actually built
+against, and it makes an older checkout fail at import rather than
+somewhere subtler.  The numbers themselves live in `pyproject.toml` and the
+changelog, not here, because a copy in prose is one no test can see.  Both
 are installed editable from the checkouts beside this one, so what is
 actually in use is whatever those checkouts are at.

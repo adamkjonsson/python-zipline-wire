@@ -68,14 +68,18 @@ converted    219
 sessions     1
 records      32
 payload      78901 bytes
-overlap      8875 bytes (discarded)
+overlap      8875 bytes (retransmitted, discarded)
+ts fallback  12 repeat(s) treated as retransmitted without timestamp evidence (absent: 12)
 undecoded    12 region(s) cited
 ```
 
 Every figure after the first two exists so that nothing is lost quietly.  A
 retransmit whose bytes were already accepted is discarded — and then *cited*,
 as a region of the capture file that reached no record, because nothing else
-in the format can express that.  See {doc}`../guide/provenance`.
+in the format can express that.  See {doc}`../guide/provenance`.  The `ts
+fallback` line says this capture carries no TCP Timestamps option, so each
+repeat was *treated* as a retransmission rather than shown to be one; see
+{doc}`../guide/reassembly`.
 
 ## Where to go next
 

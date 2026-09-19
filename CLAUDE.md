@@ -79,12 +79,22 @@ warnings can only be used as a last resort, and **always ask before making such 
   was built against. `zpf.SPEC_VERSION` is the source of truth for the first.
 - `pyproject.toml` carries the version.
 - Releasing, in order:
-  1. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh
+  1. **Sweep the documentation for stale references** — `README.md`, every
+     page under `docs/`, the module docstrings — reading for anything that
+     describes the tree as it was rather than as it is: version numbers,
+     reason strings, stat names, limits the format no longer has, a
+     "temporary" whose trigger has fired. Issues fix the sites they name;
+     this pass is for the sites none did.
+  2. **File the carry-overs.** Anything the release plan defers — to a later
+     release here, or to packeteer / python-zipline / zipline — gets an issue
+     before the tag (upstream: ask first, then file), and the plan links the
+     number. A plan's closing section is not a tracker.
+  3. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh
      empty `Unreleased` above it.
-  2. Drop any `.devN` suffix from the version in `pyproject.toml`.
-  3. Update the link definitions at the bottom of `CHANGELOG.md`.
-  4. Tag `vX.Y.Z`.
-  5. Close the release's GitHub issues and its milestone.
+  4. Drop any `.devN` suffix from the version in `pyproject.toml`.
+  5. Update the link definitions at the bottom of `CHANGELOG.md`.
+  6. Tag `vX.Y.Z`.
+  7. Close the release's GitHub issues and its milestone.
 - **Issues close at release, not at merge**, matching packeteer — work can sit
   merged on `main` under `Unreleased`, and closing an issue then would claim a
   fix is delivered when it is not yet in any release.

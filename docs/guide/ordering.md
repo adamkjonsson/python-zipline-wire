@@ -90,6 +90,12 @@ Mitigations, in the order worth trying:
   sessions, each buffered and released separately.
 * Filter to the conversations you care about.
 
+One shape `sequenced` cannot currently write at all: a direction longer than
+2 GiB whose peer only acknowledges, where the format's causal check inverts
+against the peer's stale recorded `ack` and the writer refuses the record.
+It is filed upstream and stated in {doc}`../reference/limits`; a plain
+conversion of the same capture is fine.
+
 ## UDP sessions are not marked
 
 ```python

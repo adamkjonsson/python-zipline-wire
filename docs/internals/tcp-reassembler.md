@@ -137,9 +137,11 @@ newer than `ts_recent`, which an old segment's cannot be.  What the rule
 *cannot* do is place it in this session — the writer stores records in
 serial order and refuses one that far past its predecessor, since serially
 it precedes — so the session ends for `capture-gap` and the segment opens
-the next.  `wrap_resolved` counts it.  The plan for this release had the
-segment "held as ahead"; that is not representable, in the buffer or in the
-format, and the split is what the format can say.
+the next, on the same key with no `isn`.  `wrap_resolved` counts it.  The
+`0.3.0` plan had the segment "held as ahead"; that is not representable, in
+the buffer or in the format, and the split is what the format can say —
+since spec `0.21` in as many words, the exit and the reason both being the
+specification's own for what it calls *the unmeasurable hole*.
 
 ### Why a byte was late
 
@@ -263,8 +265,8 @@ incremental fields did — the sixteen pins are the proof.
 and settled by the same rule, just more of them.  `--sequenced` is
 unaffected: records still reach zpf in per-direction `seq_start` order, and
 the linearisation is zpf's own buffer of built blocks — which is also why
-the hold could not live there.  The idle `timeout` and the two `splits_before`
-reasons all go through `finish()`.  A one-way capture never acks, so every
+the hold could not live there.  The idle `timeout` and the `splits_before`
+reason both go through `finish()`.  A one-way capture never acks, so every
 run waits out `flush_timeout` (measured by the packets that do arrive, or
 the session's end) and falls back, counted.
 

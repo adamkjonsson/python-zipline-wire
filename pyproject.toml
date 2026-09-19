@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zpfwire"
-version = "0.3.0"
+version = "0.4.0"
 requires-python = ">=3.10"
 description = "Turn network captures into Zipline Payload Format (.zpf) files"
 authors = [ { name = "Adam Jonsson", email = "akj426@gmail.com" } ]
@@ -25,15 +25,15 @@ classifiers = [
 ]
 # Floors, not ranges: neither sibling is on PyPI, so these document what this
 # release was built against as much as they resolve anything.  Both are
-# required — the tree writes spec 0.20, which python-zipline first implements
-# in 0.4.0, and reads the TCP Timestamps option packeteer parses since 0.14.0
+# required — the tree writes spec 0.21, which python-zipline first implements
+# in 0.5.0, and reads the TCP Timestamps option packeteer parses since 0.14.0
 # — with the capture-point duplication impairment (`duplicate_probability`,
 # 0.15.0) as the generated half of the test material, which is where the
 # floor sits.  Built against packeteer 0.16.0, whose real Timestamps captures
 # are carried in tests/captures/.
 dependencies = [
     "packeteer>=0.15.0",
-    "zpf>=0.4.0",
+    "zpf>=0.5.0",
 ]
 
 [tool.setuptools]
@@ -55,4 +55,4 @@ zpfwire = "zpfwire.__main__:main"
 
 [project.urls]
 Repository = "https://github.com/adamkjonsson/python-zipline-wire.git"
-Specification = "https://github.com/adamkjonsson/zipline/blob/v0.20/docs/zipline-payload-format.md"
+Specification = "https://github.com/adamkjonsson/zipline/blob/v0.21/docs/zipline-payload-format.md"

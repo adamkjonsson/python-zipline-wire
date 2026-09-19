@@ -238,6 +238,31 @@ def test_every_capture_produces_a_file_that_reads_back_clean(
 
 
 @pytest.mark.parametrize("name", ALL_CAPTURES)
+def test_every_participant_is_contiguous(tmp_path: pathlib.Path, name: str):
+    """Every participant this tree writes is ``adjacency = contiguous`` (spec 0.21).
+
+    The Participant Descriptor's ``adjacency`` field is inert on a
+    transport-layer participant — its offsets come from sequence numbers, so
+    stored neighbours join by construction — and the specification forbids a
+    writer to set ``units`` there.  A capture-sourced, transport-layer file is
+    the only kind this project writes, so ``contiguous`` is the only
+    conformant value and the writer's default supplies it; this pins the
+    policy, so that a later change passing ``adjacency=`` through
+    ``FlowTracker.participant`` is caught.  ``is_unit_sequence`` is asked of
+    the reader's view, which is layer-aware, so it also pins that every
+    participant resolved to the transport layer.
+    """
+    out = to_zpf(CAPTURES / name, tmp_path)
+
+    with zpf.open(out.path) as reader:
+        for session in reader.sessions():
+            for participant in session.participants:
+                assert participant.adjacency is zpf.Adjacency.CONTIGUOUS
+            for view in session.reassemble():
+                assert view.is_unit_sequence is False
+
+
+@pytest.mark.parametrize("name", ALL_CAPTURES)
 def test_no_capture_loses_bytes_without_counting_them(tmp_path: pathlib.Path, name: str):
     reader = CaptureReader(path=CAPTURES / name)
     observed = sum(len(p.payload) for p in reader)

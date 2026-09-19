@@ -77,7 +77,7 @@ conversation had two ends whether or not both did.
 
 ## Session lifetime
 
-A tracker lives until one of four things happens:
+A tracker lives until one of five things happens:
 
 | Event | Reason written |
 |-------|----------------|
@@ -85,10 +85,14 @@ A tracker lives until one of four things happens:
 | Either direction reset | `rst` |
 | Silence past `session_timeout` | `timeout` |
 | The capture ran out | `capture-end` |
+| A segment from the far side of a hole 2³¹ bytes or wider (`splits_before`) | `capture-gap` |
 
 A timed-out flow is closed and removed from the table, so a later packet
 between the same endpoints creates a *new* tracker and a new session.  That is
 what stops a long capture producing one enormous session per endpoint pair.
+A `capture-gap` split works the same way — the segment that could not join
+opens the next tracker — and is the specification's own exit for the shape;
+see {doc}`tcp-reassembler`.
 
 ## Where the counters live
 
