@@ -151,7 +151,7 @@ range no record covers.
 | `rst` | Either direction reset |
 | `timeout` | Silence longer than `session_timeout` |
 | `capture-end` | The capture ran out first |
-| `capture-gap` | The capture skipped further than a session can span; the next session continues the connection |
+| `capture-gap` | The specification's value for *the unmeasurable hole* (spec `0.21`): the capture skipped 2³¹ bytes or more of one direction, further than a session can span; the next session, on the same key with no `isn`, continues the connection |
 
 ## Blocks zpfwire never writes
 

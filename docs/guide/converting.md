@@ -170,7 +170,7 @@ Every session carries a reason:
 | `END_RST` | `"rst"` | Either direction reset the connection |
 | `END_TIMEOUT` | `"timeout"` | Silence longer than `session_timeout` |
 | `END_CAPTURE_END` | `"capture-end"` | The capture ran out first |
-| `END_CAPTURE_GAP` | `"capture-gap"` | The capture skipped more than 2³¹ bytes of one direction — further than a session can span |
+| `END_CAPTURE_GAP` | `"capture-gap"` | The capture skipped 2³¹ bytes or more of one direction — further than a session can span.  The specification's own value for the shape, since `0.21` |
 
 A timed-out conversation is closed and a later packet between the same
 endpoints starts a *new* session, so one flow can produce several.  So does a

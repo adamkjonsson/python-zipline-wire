@@ -56,13 +56,24 @@ kept, since a split that hides a rule's ambiguity is what zipline#146 was
 about.  When the peer's records carry current acks — any exchange, not just
 an upload — the check is right at any length.
 
-**A hole wider than 2³¹ bytes in one direction splits the session.**  The
-offset space is modular over 2³² and records are stored in serial order, so
-two records of one participant cannot be more than 2³¹ apart with nothing
-between them.  A segment from the far side of a hole that wide is recognised
+**A hole wider than 2³¹ bytes in one direction splits the session.**  This
+is the specification's stated exit for what it calls *the unmeasurable
+hole* (spec `0.21`, §Referencing the source by stream offset, answering
+[zipline#147](https://github.com/adamkjonsson/zipline/issues/147), filed
+from this project): the offset space is modular over 2³² and records are
+stored in serial order, so two records of one participant cannot be more
+than 2³¹ apart with nothing between them, and a producer that knows the far
+side is real ends the session at the hole and opens another on the same
+key with no `isn`, writing `capture-gap` — the specification's word, not
+ours, since `0.21` — so that a reader can tell a resumed conversation from
+a new one.  A segment from the far side of a hole that wide is recognised
 by the Timestamps option — further behind than any window and carrying a
-newer clock — and opens a new session, the old one ending for
-`capture-gap`.  Without the option the shape is invisible: serial arithmetic
+newer clock — and opens the new session.  The stream still *ends* at the
+hole rather than spanning it because the format has no representation for
+the far side's true position: the `u64 offset` Record option that would
+give it one is recorded upstream as the design if a capture with the shape
+ever needs it, and is safe to add as a `1.x` minor, so there is nothing to
+work around here.  Without the option the shape is invisible: serial arithmetic
 calls the segment old, it is discarded as a retransmission, and the rest of
 the direction goes with it.  The zone between a window's width and 2³¹
 behind is where a resend cannot be, so the rule is safe there; a hole

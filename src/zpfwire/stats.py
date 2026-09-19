@@ -66,8 +66,9 @@ class ConversionStats:
             far side of a hole in the capture too wide for one session to
             span, which without the option would have been miscounted as a
             retransmission and the rest of the direction lost.  Each ends
-            the session for ``capture-gap`` and opens another, so each is
-            also a session.
+            the session for ``capture-gap`` — the specification's value for
+            the unmeasurable hole, since spec 0.21 — and opens another, so
+            each is also a session.
         acked_swaps: Under ``overlap="favor-acked"``, ranges where the copy
             the receiver acknowledged — by the TSecr its ack echoed — was
             not the first copy seen, and replaced it.  Each is a range the

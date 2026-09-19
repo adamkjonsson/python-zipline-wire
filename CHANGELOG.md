@@ -105,6 +105,21 @@ would let one stream span a wide hole is deferred to a `1.x` minor.
   current acks is right at any length.  Not shimmed: `sequenced` is opt-in,
   and a split that hides a rule's ambiguity is what zipline#146 was about.
   The shape is a strict `xfail` in the suite, and flips when the fix lands.
+- **`capture-gap` is the specification's word now, and nothing this tree
+  writes changes** ([#28](https://github.com/adamkjonsson/python-zipline-wire/issues/28)).
+  Spec `0.21` answers [zipline#147](https://github.com/adamkjonsson/zipline/issues/147),
+  filed from #17, by naming the exit `0.3.0` already took for a hole of 2³¹
+  or more between consecutive records: end the session, open another on the
+  same key with no `isn`, and the producer SHOULD write `capture-gap`.
+  `END_CAPTURE_GAP` was that value before the format fixed it, so the
+  change is a citation — the docstrings and the docs now point at
+  §Referencing the source by stream offset rather than deriving the rule
+  themselves — and one test for the half of the sentence the suite did not
+  check: the follow-on session is on the same key, both participants
+  declared, the client's `isn` *not* carried across, and its first record
+  at offset `0`.  The `u64 offset` Record option that would let one stream
+  span the hole is deferred upstream to a `1.x` minor, which is why a
+  converted stream still ends there.
 - **The python-zipline floor is `0.5.0`**, up from `0.4.0`
   ([#26](https://github.com/adamkjonsson/python-zipline-wire/issues/26)).
   No API this tree calls changed shape — `SessionWriter.participant()`

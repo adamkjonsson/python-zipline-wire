@@ -86,12 +86,20 @@ END_RST = "rst"
 END_CAPTURE_GAP = "capture-gap"
 """Session End reason when the capture skipped further than a session can span.
 
-The offset space is modular over 2**32 and records are ordered serially, so
-two records of one participant cannot be more than 2**31 apart with nothing
-between them.  A segment from that far ahead — the far side of a hole in the
-capture — therefore opens a new session, and this reason on the old one says
-the connection did not end: the file merely could not follow it across the
-hole.  Recognised by the TCP Timestamps option; see
+The specification's own value for *the unmeasurable hole* (`spec 0.21,
+§Referencing the source by stream offset
+<https://github.com/adamkjonsson/zipline/blob/v0.21/docs/
+zipline-payload-format.md#referencing-the-source-by-stream-offset>`__): a
+hole of 2**31 bytes or more between two consecutive records of one
+participant has no representation within one stream — a record 2**31 + *x*
+past its predecessor is, in serial arithmetic, 2**31 − *x* before it, and
+the ordering rule refuses the pair.  A producer that knows the far side is
+real ends the session at the hole and opens another on the same key with no
+``isn``, so the stream resumes at its first captured byte, and **SHOULD**
+write this reason, so that a consumer can tell a resumed conversation from a
+new one.  This reason on the old session therefore says the connection did
+not end: the file merely could not follow it across the hole.  The far side
+is recognised by the TCP Timestamps option; see
 :meth:`TcpFlow.splits_before`.
 """
 
@@ -640,8 +648,10 @@ class TcpFlow(FlowTracker):
         Both together, and the segment is from ahead — but not somewhere this
         session can put it.  Records are stored in serial order, so a record
         more than 2**31 past its predecessor with nothing between *precedes*
-        it, and the writer refuses it.  What the format can say is that one
-        session ended here, for :data:`END_CAPTURE_GAP`, and another began.
+        it, and the writer refuses it.  What the format can say — and, since
+        spec 0.21, says in as many words — is that one session ended here,
+        for :data:`END_CAPTURE_GAP`, and another began on the same key with
+        no ``isn``.
 
         Args:
             pkt: The segment about to be delivered.

@@ -728,6 +728,41 @@ def test_a_segment_from_past_the_wrap_opens_a_new_session(tmp_path: pathlib.Path
     assert out.stats.overlap_bytes == 0
 
 
+def test_the_session_after_a_capture_gap_is_on_the_same_key_with_no_isn(
+    tmp_path: pathlib.Path,
+):
+    """The specification's exit for the unmeasurable hole, in full (spec 0.21).
+
+    "Ends the session at the hole and opens another on the same key, with no
+    ``isn``, so the stream resumes at its first captured byte."  The reason
+    is asserted above; this is the rest of the sentence.  A handshake makes
+    it bite: the first session's client carries the ``isn`` it saw, and the
+    follow-on must *not* carry it forward — an ``isn`` there would put the
+    resumed stream's first record 2**31 bytes below its origin.  The checked
+    writer refuses that on its own (tried: it does), so what this test adds
+    is the sentence's positive half, that the follow-on is the same
+    conversation with its origin at the first captured byte.
+    """
+    out = to_zpf(capture_of(handshake() + [
+        Seg(ISN + 1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)).frame(ack=5001),
+        Seg(ISN + 1 + PAST_THE_WRAP, b"zzzz", flags=TCP_PSH,
+            timestamps=(900, 0)).frame(ack=5001),
+    ]), tmp_path)
+
+    before, after = out.sessions
+    assert (before.end_reason, after.end_reason) == ("capture-gap", "capture-end")
+    assert before.key == after.key
+    assert {p.endpoint for p in before.participants} == {p.endpoint for p in after.participants}
+    assert before.participant(CLIENT).isn == ISN
+    assert after.participant(CLIENT).isn is None
+    assert after.participant(SERVER).isn is None
+    assert out.diagnostics == [] and out.unplaceable == []
+    with zpf.open(out.path) as reader:
+        _, resumed = reader.sessions()
+        client = next(p for p in resumed.participants if p.endpoint == CLIENT)
+        assert resumed.ranges(client.participant_id) == ((0, 4),)
+
+
 @pytest.mark.parametrize("timestamps", [None, (90, 0)], ids=["no-option", "older-clock"])
 def test_without_a_newer_clock_the_far_side_of_a_hole_is_old_data(
     tmp_path: pathlib.Path, timestamps: tuple[int, int] | None,
