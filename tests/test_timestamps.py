@@ -338,6 +338,43 @@ def test_favor_acked_without_the_reverse_direction_falls_back(tmp_path: pathlib.
     assert acked_out.stats.acked_fallback_bytes == 5 * 524
 
 
+@pytest.mark.parametrize("seed", [1, 2, 3, 7])
+def test_favor_acked_swaps_once_per_generated_corruption(tmp_path: pathlib.Path, seed: int):
+    """The claim ``tcp_corrupt_ts`` makes, on a seeded stream that can vary it (#30).
+
+    packeteer's generator corrupts a data segment's last byte in flight,
+    labels it ``CORRUPT[i]``, and resends it clean; since packeteer ``0.16.0``
+    its receiver no longer acknowledges past the corrupted copy before the
+    resend arrives (packeteer#163), so the first covering ack echoes the
+    resend's TSval, as a real receiver's would.  ``favor-acked`` must then
+    swap exactly once per corruption, with no fallback, and land on the bytes
+    ``checksum="drop"`` reaches from the other side.
+    """
+    stream = generate_tcp_stream(
+        client_ip="10.0.0.1", server_ip="10.0.0.2", num_data_packets=40,
+        config=TCPStreamConfig(seed=seed, payload_corruption_probability=0.15),
+    )
+    corrupted = sum(1 for p in stream.packets if p.label.startswith("CORRUPT["))
+    buf = io.BytesIO()
+    write_pcap(stream.to_pcap_tuples(), file_object=buf)
+
+    def convert(name: str, options: ReassemblyOptions | None = None) -> object:
+        kwargs = {} if options is None else {"options": options}
+        return to_zpf(io.BytesIO(buf.getvalue()), tmp_path / name, **kwargs)
+
+    old = convert("old")
+    acked_out = convert("acked", ACKED)
+    dropped = convert("drop", ReassemblyOptions(checksum="drop"))
+
+    assert corrupted > 0, "the seed reaches a corruption"
+    assert acked_out.stats.acked_swaps == corrupted
+    assert acked_out.stats.acked_fallback_bytes == 0
+    assert streams(acked_out) == streams(dropped)
+    assert streams(acked_out) != streams(old), "favor-old keeps the corrupted copies"
+    for out in (old, acked_out, dropped):
+        assert out.diagnostics == [] and out.unplaceable == []  # type: ignore[attr-defined]
+
+
 @pytest.mark.parametrize("name", [n for n in REAL if n != "tcp_corrupt_ts.pcap"])
 def test_favor_acked_costs_nothing_where_copies_agree(tmp_path: pathlib.Path, name: str):
     """Every other resend in the corpus is byte-identical to its original."""
