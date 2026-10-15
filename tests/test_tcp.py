@@ -22,7 +22,7 @@ from helpers import (
     to_zpf,
 )
 
-from zpfwire import ReassemblyOptions
+from zpfwire import TS_ABSENT, ReassemblyOptions
 
 CLIENT = f"{CLIENT_IP}:{CLIENT_PORT}"
 SERVER = f"{SERVER_IP}:{SERVER_PORT}"
@@ -574,6 +574,63 @@ def test_a_trim_while_draining_is_judged_against_the_fill(tmp_path: pathlib.Path
     assert resend.only.stream(0) == copy.only.stream(0) == b"aaaabbbbcc"
     assert resend.stats.overlap_bytes == 2 and _flagged(resend) == [True]
     assert copy.stats.duplicate_bytes == 2 and _flagged(copy) == [False]
+
+
+def test_a_held_segment_wholly_superseded_by_the_fill_is_judged_and_flagged(
+    tmp_path: pathlib.Path,
+):
+    """Site five (#31): the fill covers the whole of a segment held behind the hole.
+
+    The sender resent the missing bytes and the held segment's with them, so
+    it sent the held segment's bytes twice, and the record covering them is
+    flagged as at the other four sites.  A copy with the same clock and
+    nothing from the peer between is a duplicate instead, and flags nothing.
+    """
+    resend = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", timestamps=(101, 0)),
+        Seg(5, b"bbbbcccc", flags=TCP_PSH, timestamps=(140, 0)),
+    ]), tmp_path / "resend")
+    no_option = to_zpf(tcp_segments([
+        Seg(1, b"aaaa"),
+        Seg(9, b"cccc"),
+        Seg(5, b"bbbbcccc", flags=TCP_PSH),
+    ]), tmp_path / "no-option")
+    copy = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", timestamps=(101, 0)),
+        Seg(5, b"bbbbcccc", flags=TCP_PSH, timestamps=(101, 0)),
+    ]), tmp_path / "copy")
+
+    for out in (resend, no_option, copy):
+        assert out.only.stream(0) == b"aaaabbbbcccc"
+        assert out.diagnostics == [] and out.unplaceable == []
+    assert resend.stats.overlap_bytes == 4 and _flagged(resend) == [True]
+    assert _reasons(resend) == ["overlap-discarded"]
+    assert no_option.stats.overlap_bytes == 4 and _flagged(no_option) == [True]
+    assert no_option.stats.ts_fallback == {TS_ABSENT: 1}
+    assert copy.stats.duplicate_bytes == 4 and _flagged(copy) == [False]
+    assert _reasons(copy) == ["duplicate-discarded"]
+
+
+def test_a_held_segment_superseded_by_another_held_one_is_flagged(tmp_path: pathlib.Path):
+    """Site five, reached inside one drain: the "fill" is a held segment drained first.
+
+    Two segments wait behind the hole and the second lies wholly inside the
+    first.  The hole's fill drains the first, which then covers the second
+    before the loop reaches it.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"ccccdddd", timestamps=(140, 0)),
+        Seg(13, b"dddd", timestamps=(101, 0)),
+        Seg(5, b"bbbb", flags=TCP_PSH, timestamps=(141, 0)),
+    ]), tmp_path)
+
+    assert out.only.stream(0) == b"aaaabbbbccccdddd"
+    assert out.stats.overlap_bytes == 4 and _flagged(out) == [True]
+    assert _reasons(out) == ["overlap-discarded"]
+    assert out.diagnostics == [] and out.unplaceable == []
 
 
 # ── the Timestamps option: why a byte was late ──────────────────────────

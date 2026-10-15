@@ -63,6 +63,19 @@ tree stores no pure ACKs, so nothing it writes is affected.
 
 ### Changed
 
+- **Breaking: a held segment that the fill covers wholly now flags the
+  record covering it `retransmit`**, when the repeat is judged a
+  retransmission ([#31](https://github.com/adamkjonsson/python-zipline-wire/issues/31)).
+  The shape: a segment arrives ahead of a hole and is held, then the hole is
+  filled by a resend that covers the held segment's whole range as well, so
+  the sender sent those bytes twice.  The other four sites where a repeat is
+  judged always set the flag for a retransmission.  This one discarded the
+  bytes, counted and cited them correctly, and set nothing, inherited from
+  `0.2.0` rather than decided.  It now flags like the rest; a capture-point
+  copy (same TSval, nothing from the peer between) is still a duplicate and
+  flags nothing.  Bytes move for a capture with the shape.  None of the 22
+  fixtures has it under either overlap policy, so no pin moves and every
+  fixture converts to the same bytes.
 - **The packeteer floor is `0.16.0`**, up from `0.15.0`, and it now names
   what the *suite* needs as well as the code: `0.16.0`'s generator no longer
   acknowledges past a corrupted segment before its resend

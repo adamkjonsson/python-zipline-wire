@@ -592,13 +592,20 @@ class TcpFlow(FlowTracker):
             if _delta(end, stream.next_seq) <= 0:
                 # Wholly superseded by what filled the hole.  The fill is the
                 # later arrival, so the held segment is the original and the
-                # fill the repeat; the verdict is the same either way round,
-                # and this site never set the flag, so it still does not.
+                # fill the repeat; the verdict is the same either way round.
+                # A retransmission flags the record covering the range, as at
+                # the other four sites, by decision (#31): the sender sent
+                # these bytes twice, once alone and once inside the fill.
+                # That record is always the open run.  The fill was appended
+                # in this same call, by _accept just before it drains or by an
+                # earlier pass of this loop, _commit_gap flushes *before* it
+                # drains, and _append never flushes; a held segment sits past
+                # the hole, so its range starts inside the run.
+                assert stream.run is not None, "a superseded held segment lies in the open run"
                 self._release(stream, seq)
                 verdict = self._judge(stream, seq, end, held.tsval, held.peer_count)
                 if not self._contested(stream, verdict, seq, end, held.data, held):
-                    self._discard(stream, verdict, held.payload_offset, 0, len(held.data),
-                                  mark=False)
+                    self._discard(stream, verdict, held.payload_offset, 0, len(held.data))
                 continue
             if _delta(seq, stream.next_seq) > 0:
                 return
@@ -940,8 +947,6 @@ class TcpFlow(FlowTracker):
         payload_offset: int | None,
         skip: int,
         length: int,
-        *,
-        mark: bool = True,
     ) -> None:
         """Count and cite a repeated range under its verdict, and flag the run if a resend."""
         if verdict == _DUPLICATE:
@@ -953,7 +958,7 @@ class TcpFlow(FlowTracker):
             self._stats.ts_fallback[verdict] += 1
         self._stats.overlap_bytes += length
         self._cite(payload_offset, skip, length, REASON_OVERLAP)
-        if mark and stream.run is not None:
+        if stream.run is not None:
             stream.run.retransmit = True
 
     # ── emission ────────────────────────────────────────────────────────

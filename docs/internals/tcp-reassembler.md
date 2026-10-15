@@ -87,8 +87,13 @@ is where reordering is actually undone.
 ### Judging a repeat
 
 Every discard of already-seen bytes — cases 1 and 2 above, a repeat of a
-held segment in `_hold`, and the trim of a held segment in `_drain` — goes
-through `_judge`, which returns one of four verdicts:
+held segment in `_hold`, and in `_drain` both the trim of a held segment and
+a held segment the fill covered wholly — goes through `_judge`, which
+returns one of four verdicts.  All five sites flag alike: until `0.5.0` the
+last one discarded without flagging, by inheritance rather than decision
+([#31](https://github.com/adamkjonsson/python-zipline-wire/issues/31)), and
+the record covering its range is always the open run, since the fill was
+appended in the same call.
 
 | Verdict | When | Counted as | Cited as | Flags the run |
 |---------|------|------------|----------|---------------|
