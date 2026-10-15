@@ -97,18 +97,17 @@ tree stores no pure ACKs, so nothing it writes is affected.
     `undecodable` and counted as `SKIP_FRAGMENTED_UDP`
     ([zipline#166](https://github.com/adamkjonsson/zipline/issues/166)).
     Fragmented TCP is one record, as on a capture.
-  - Two limits, both python-zipline's to lift on its `0.6.0` branch: the
-    output is binary only
-    ([python-zipline#89](https://github.com/adamkjonsson/python-zipline/issues/89)),
-    and a flow that resumes after its timeout, or past a `capture-gap`,
-    cannot have its second session yet
-    ([python-zipline#88](https://github.com/adamkjonsson/python-zipline/issues/88)).
+  - **A flow that resumes gets a second session** on the same key, after its
+    timeout or past a `capture-gap`, as on a capture.  The JSON-Lines face is
+    written as for a capture, and the File Header names `zpfwire` as its
+    `creator`.
 - **`zpfwire convert` takes a `.zpf` of packets** as well as a capture, told
   apart by its first bytes: `zpfwire convert packets.zpf -o inner.zpf`.
   **`--content-type LABEL`** selects a label other than `net:`'s, such as
   `dec:ip-packet`, and `--link-type` then says how to parse it; every filter
-  applies to the inner packets.  `--tick-hz`, and for now `--jsonl`, are
-  refused with a `.zpf`, and `--content-type` with a capture.  The summary
+  applies to the inner packets, and `--jsonl` writes the JSON-Lines
+  projection.  `--tick-hz` is refused with a `.zpf`, and `--content-type`
+  with a capture.  The summary
   opens with an `input` line counting the records read and selected, and
   when none was selected a note names `--content-type`.  `zpfwire info`
   refuses a `.zpf`.
@@ -184,11 +183,11 @@ tree stores no pure ACKs, so nothing it writes is affected.
 - **A guide page, *Converting decoded packets***, on the
   `packets.zpf → inner.zpf` hop: which records are packets, what the output
   says about every input byte, why records join across the input's seams,
-  the merge order, and the limits.  A new API page for `zpfwire.packets`,
-  the sink on the flow page, the `.zpf` input on the `convert` CLI page, a
-  *From a `.zpf` of packets* section in the specification mapping, and the
-  limits — fragmented UDP (zipline#166) and the three python-zipline open
-  for `0.6.0`.  `upstream-first.md`'s ledgers gain the issues this release
+  the merge order, and sessions that end and resume.  A new API page for
+  `zpfwire.packets`, the sink on the flow page, the `.zpf` input on the
+  `convert` CLI page, a *From a `.zpf` of packets* section in the
+  specification mapping, and the one limit — a fragmented UDP datagram
+  (zipline#166).  `upstream-first.md`'s ledgers gain the issues this release
   filed: packeteer#204; python-zipline#76, #86, #88, #89, #90 and #91;
   zipline#152, #153 and #166.
 - **`CLAUDE.md` said the tree writes spec `0.20`**, two versions stale; it

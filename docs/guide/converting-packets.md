@@ -137,15 +137,10 @@ order, since a `.zpf` records no order between them.  Within one input
 stream, records are read in stored order — which a stage writing packets in
 time order, as a decryptor does, satisfies.
 
-## Limits, for now
+## Sessions that end and resume
 
-Three are python-zipline's, open on its `0.6.0` milestone:
-
-- **A flow cannot get a second session** on the same key, so a conversation
-  that resumes after `--session-timeout`, or past a `capture-gap`, cannot be
-  converted from a `.zpf` (python-zipline#88).  A capture can.
-- **The output is binary only**; `--jsonl` is refused for a `.zpf` input
-  (python-zipline#89).
-- **Ending a session re-reads the input** to measure its extent, so a
-  conversion with many flows is slower than it needs to be
-  (python-zipline#91).
+A conversation that falls silent past `--session-timeout` and resumes, or
+that crosses a `capture-gap`, gets a second session on the same key, exactly
+as a capture conversion writes it: the first ends `timeout` or `capture-gap`,
+and the second follows on the same key — after a `capture-gap` with no `isn`,
+so the stream resumes at its first captured byte.

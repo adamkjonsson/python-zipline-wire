@@ -466,9 +466,8 @@ def packets_to_zpf(
         tcp: Convert TCP conversations.
         udp: Convert UDP conversations.
         packet_filter: Called per packet; return ``False`` to exclude it.
-        face: ``"binary"`` only, for now: the stage writing the output takes
-            no face (`python-zipline#89
-            <https://github.com/adamkjonsson/python-zipline/issues/89>`_).
+        face: ``"binary"`` for a `.zpf`, ``"jsonl"`` for the JSON-Lines
+            projection.
         sequenced: Store each TCP session's records in a causal order and
             mark it ``SEQUENCED``; see :func:`~zpfwire.convert.convert`.
         produced_at: When this file was built: ``"now"``, an ``int`` (Unix
@@ -480,9 +479,9 @@ def packets_to_zpf(
         What the conversion did.
 
     Raises:
-        ValueError: If both *tcp* and *udp* are disabled, *face* is
-            ``"jsonl"``, *produced_at* is ``None``, or the selection is
-            inconsistent or names a link type packeteer cannot parse.
+        ValueError: If both *tcp* and *udp* are disabled, *produced_at* is
+            ``None``, or the selection is inconsistent or names a link type
+            packeteer cannot parse.
 
     Example:
         >>> stats = packets_to_zpf("packets.zpf", "inner.zpf")
@@ -491,11 +490,6 @@ def packets_to_zpf(
     """
     if not (tcp or udp):
         raise ValueError("at least one of 'tcp' or 'udp' must be enabled")
-    if face != "binary":
-        raise ValueError(
-            "a .zpf input is written in the binary face only, until the sessionization "
-            "stage takes one (python-zipline#89)"
-        )
     if produced_at is None:
         raise ValueError("a file derived from a .zpf must say when it was built; pass produced_at")
     select = _selection(content_type, link_type)
@@ -509,10 +503,12 @@ def packets_to_zpf(
         source,
         sink,
         decoder=(DECODER_NAME, version),
+        creator=f"zpfwire {version}",
         produced_by=f"zpfwire {version}",
         produced_at=_produced_at(produced_at),  # type: ignore[arg-type]
         params_digest=options.params_digest(),
         comment=f"packets: the input records labelled {labels}",
+        face=face,
     ) as stage:
         streams = stage.streams()
         origins = _Origins(streams)

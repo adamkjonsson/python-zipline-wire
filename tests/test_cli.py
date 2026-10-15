@@ -390,7 +390,6 @@ def test_a_private_label_is_selected_with_content_type(
 
 @pytest.mark.parametrize(("source", "flags", "message"), [
     (TUNNEL, ("--tick-hz", "1000"), "states its own tick rate"),
-    (TUNNEL, ("--jsonl",), "python-zipline#89"),
     (CAPTURES / "udp.pcap", ("--content-type", "net:ip"), "this is a capture"),
     (TUNNEL, ("--content-type", "net:ip", "--link-type", "1"), "means link type 101"),
 ])
@@ -413,3 +412,13 @@ def test_info_refuses_a_zpf(
 
     assert exit_info.value.code == 1
     assert "convert a .zpf of packets" in capsys.readouterr().err
+
+
+def test_convert_writes_the_jsonl_face_from_a_zpf(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+):
+    out = tmp_path / "inner.jsonl"
+    run(monkeypatch, "convert", str(TUNNEL), "-o", str(out), "--jsonl", "-q")
+
+    assert out.read_text().startswith("{")
+    assert clean(out) == []

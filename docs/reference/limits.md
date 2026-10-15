@@ -157,18 +157,6 @@ would have them reassembled in that order.  Two records in different streams
 sharing a timestamp are taken in stream order, since a `.zpf` records no
 order between them.
 
-**Three limits are python-zipline's**, open on its `0.6.0` milestone, and go
-when that release ships with them fixed:
-
-- A flow that resumes after `session_timeout`, or past a `capture-gap`,
-  cannot be given its second session on the same key
-  ([python-zipline#88](https://github.com/adamkjonsson/python-zipline/issues/88)).
-- The output is binary only, and has no `creator`
-  ([python-zipline#89](https://github.com/adamkjonsson/python-zipline/issues/89)).
-- Ending a session re-reads the input to measure its extent, so time grows
-  with flows × input
-  ([python-zipline#91](https://github.com/adamkjonsson/python-zipline/issues/91)).
-
 ## Bounded by memory
 
 **Sequenced sessions buffer.** A causal order needs both directions in hand,

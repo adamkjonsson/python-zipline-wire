@@ -72,10 +72,10 @@ documented limit of `--sequenced` until the format answers.
 | #75 | `verify_sequenced` and the linearize guard refuse a valid linearization past 2 GiB when the peer's last recorded `ack` is stale — a pure-ACK peer's is its SYN-ACK's | `0.6.0`: an ack is a position, unwrapped along its sender's records into the peer's offset space (spec `0.22`); `verify_sequenced` takes each participant's `isn`.  The strict `xfail` here became an ordinary test (0.5.0) |
 | #76 | No sessionization stage that fans out: `decode_stage` mirrors its input one to one, so the decrypted-tunnel hop had only the primitive writer API | `sessionize_stage` (0.6.0), which this tree's `.zpf` input is built on |
 | #86 | `FlowSession.record` took no `ts_first`, and going around it through `flow.writer` skipped the stage's coverage | `ts_first=` on the stage's record, derived with `ts` when both are omitted (0.6.0) |
-| #88 | `sessionize_stage` returns the *ended* session for a key used before, so a flow that resumes after a timeout or past a `capture-gap` cannot open its second | **Open** — on its `0.6.0` milestone; a strict `xfail` here |
-| #89 | `sessionize_stage` and `decode_stage` take no `face` or `creator`, so a stage writes binary only | **Open** — on its `0.6.0` milestone; `--jsonl` is refused for a `.zpf` input |
-| #90 | `check_splice` reports a transport record with `seq_start` crossing an input Discontinuity, which spec `0.22` permits | **Open** — on its `0.6.0` milestone; a strict `xfail` here |
-| #91 | `FlowSession.end` re-reads the whole input to measure `input_extents`, once per output session — quadratic under fan-out | **Open** — on its `0.6.0` milestone; not worked around |
+| #88 | `sessionize_stage` returns the *ended* session for a key used before, so a flow that resumes after a timeout or past a `capture-gap` cannot open its second | `session(key)` opens a new session once the key's last one has ended (0.6.0); the two strict `xfail`s here became tests |
+| #89 | `sessionize_stage` and `decode_stage` take no `face` or `creator`, so a stage writes binary only | `face=` and `creator=` on both stages (0.6.0); `--jsonl` works for a `.zpf` input, and its File Header names `zpfwire` |
+| #90 | `check_splice` reports a transport record with `seq_start` crossing an input Discontinuity, which spec `0.22` permits | A transport record carrying `seq_start` is not checked (0.6.0); the strict `xfail` here became a test, and the differential checks both input shapes |
+| #91 | `FlowSession.end` re-reads the whole input to measure `input_extents`, once per output session — quadratic under fan-out | Each input stream's extent and gaps are measured once per stage and kept (0.6.0): `http_stream_1.pcap`'s 20 flows convert in 1.4 s, down from 5.2 s |
 
 **zipline** (the specification):
 

@@ -154,11 +154,6 @@ def _convert_capture(args: argparse.Namespace) -> ConversionStats:
 def _convert_packets(args: argparse.Namespace) -> ConversionStats:
     if args.tick_hz is not None:
         raise ValueError("a .zpf states its own tick rate; --tick-hz is for a capture")
-    if args.jsonl:
-        raise ValueError(
-            "a .zpf input is written as a binary .zpf only, until python-zipline's "
-            "sessionization stage takes a face (python-zipline#89)"
-        )
     return packets_to_zpf(
         args.input,
         args.output,
@@ -168,6 +163,7 @@ def _convert_packets(args: argparse.Namespace) -> ConversionStats:
         tcp=not args.no_tcp,
         udp=not args.no_udp,
         packet_filter=matcher(_build_packet_filter(args)),
+        face="jsonl" if args.jsonl else "binary",
         sequenced=args.sequenced,
     )
 

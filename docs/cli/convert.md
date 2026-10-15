@@ -87,9 +87,9 @@ unchanged, filters included, to the inner packets.
 | `--content-type LABEL` | The label that makes a record a packet. The default selects `net:ip` and `net:ethernet`, the format's own; pass a decoder's private label, such as zipline-kober's `dec:ip-packet`, to select that instead |
 | `--link-type N` | How to parse records under a label outside `net:`; raw IP (`101`) if omitted. A `net:` label names its own, and one that disagrees is refused |
 
-Refused with a `.zpf`, exit `1`: `--tick-hz`, since the file states its own,
-and for now `--jsonl` (python-zipline#89).  `--content-type` is refused with a
-capture.  The summary gains a first line counting the input's records:
+Refused with a `.zpf`, exit `1`: `--tick-hz`, since the file states its own.
+`--content-type` is refused with a capture.  `--jsonl` writes the JSON-Lines
+projection, as it does for a capture.  The summary gains a first line counting the input's records:
 
 ```
 input        181 records, 33 selected as packets

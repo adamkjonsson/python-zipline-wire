@@ -129,9 +129,9 @@ def test_a_packets_file_converts_to_the_sessions_of_its_capture(
     assert zpf.check_coverage(inner, packets) == []
     assert zpf.check_extents(inner) == []
     assert_cites_whole_packets(inner, packets)
-    if adjacency == zpf.Adjacency.UNITS:
-        # Every seam a break, crossed under seq_start, which 0.22 permits.
-        assert zpf.check_splice(inner, packets) == []
+    # Every seam a break (units), or one declared Discontinuity (contiguous):
+    # either way crossed under seq_start, which spec 0.22 permits.
+    assert zpf.check_splice(inner, packets) == []
 
 
 def assert_cites_whole_packets(inner: pathlib.Path, packets: pathlib.Path) -> None:
@@ -161,15 +161,15 @@ def assert_cites_whole_packets(inner: pathlib.Path, packets: pathlib.Path) -> No
                     assert sum(b - a for _, _, a, b in covered) <= span.off_end - span.off_start
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="python-zipline#90: check_splice reports a transport record that crosses an "
-           "input Discontinuity under seq_start, which spec 0.22 permits (zipline#152)",
-)
 def test_a_splice_check_accepts_a_transport_record_crossing_a_declared_break(
     tmp_path: pathlib.Path,
 ):
-    """The vector's shape: one declared Discontinuity, which a TCP record may cross."""
+    """The vector's shape: one declared Discontinuity, which a TCP record may cross.
+
+    Spec ``0.22`` lets a transport record carrying ``seq_start`` cite across
+    an input break (zipline#152); python-zipline's checker reported it until
+    python-zipline#90.  ``packet_loss.pcap`` has a record that does.
+    """
     _, _, _, inner, packets = convert_both(CAPTURES / "packet_loss.pcap", tmp_path,
                                            adjacency=zpf.Adjacency.CONTIGUOUS)
 
@@ -270,40 +270,44 @@ def test_fragmented_tcp_is_one_record(tmp_path: pathlib.Path):
     assert shape(inner) == shape(direct)
 
 
-@pytest.mark.xfail(
-    raises=zpf.ZpfError, strict=True,
-    reason="python-zipline#88: sessionize_stage returns the ended session for a key used "
-           "before, so a flow that resumes after its timeout cannot open a new one",
-)
 def test_a_flow_that_resumes_after_a_timeout_gets_a_new_session(tmp_path: pathlib.Path):
-    """The capture conversion writes two sessions on one key; the stage cannot yet."""
+    """Two sessions on one key, as a capture conversion writes them.
+
+    The stage gives a key a new session once its last one has ended
+    (python-zipline#88); before that, the second session could not be opened.
+    """
     silent = capture_of(
         [Seg(1, b"early", flags=TCP_PSH).frame(), Seg(6, b"late", flags=TCP_PSH).frame()],
         step_us=60_000_000,
     )
-    direct_stats, direct, _, inner, _ = convert_both(
+    direct_stats, direct, _, inner, packets = convert_both(
         silent, tmp_path, options=ReassemblyOptions(session_timeout=10.0),
     )
 
     assert direct_stats.sessions == 2
     assert shape(inner) == shape(direct)
+    assert [s[2] for s in shape(inner)] == ["timeout", "capture-end"]
+    assert zpf.check_coverage(inner, packets) == []
+    assert zpf.check_extents(inner) == []
 
 
-@pytest.mark.xfail(
-    raises=zpf.ZpfError, strict=True,
-    reason="python-zipline#88: sessionize_stage returns the ended session for a key used "
-           "before, so the session after a capture-gap cannot open on the same key",
-)
 def test_the_session_after_a_capture_gap_is_on_the_same_key(tmp_path: pathlib.Path):
-    """The specification's exit for the unmeasurable hole: end the session, open another."""
+    """The specification's exit for the unmeasurable hole: end the session, open another.
+
+    "On the same key, with no ``isn``" — which ``shape`` compares, together
+    with the two Session End reasons.
+    """
     gapped = capture_of(handshake() + [
         Seg(ISN + 1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)).frame(ack=5001),
         Seg(ISN + 1 + PAST_THE_WRAP, b"zzzz", flags=TCP_PSH, timestamps=(900, 0)).frame(ack=5001),
     ])
-    direct_stats, direct, _, inner, _ = convert_both(gapped, tmp_path)
+    direct_stats, direct, _, inner, packets = convert_both(gapped, tmp_path)
 
     assert direct_stats.sessions == 2
     assert shape(inner) == shape(direct)
+    assert [s[2] for s in shape(inner)] == ["capture-gap", "capture-end"]
+    assert zpf.check_coverage(inner, packets) == []
+    assert zpf.check_extents(inner) == []
 
 
 # ── selection ───────────────────────────────────────────────────────────
@@ -335,7 +339,6 @@ def test_ethernet_frames_are_parsed_as_ethernet(tmp_path: pathlib.Path):
     ({"link_type": 101}, "needs a content_type"),
     ({"content_type": "net:ppp"}, "not a net: label"),
     ({"content_type": "net:ip", "link_type": 1}, "means link type 101"),
-    ({"face": "jsonl"}, "python-zipline#89"),
     ({"produced_at": None}, "must say when it was built"),
     ({"tcp": False, "udp": False}, "at least one"),
 ])
@@ -352,3 +355,16 @@ def test_an_input_is_told_apart_by_its_first_bytes():
     assert input_kind(CAPTURES / "dns_example.pcapng") == "capture"
     assert input_kind(VECTORS / "tunnel" / "packets.zpf") == "zpf"
     assert input_kind(VECTORS / "tunnel" / "packets.jsonl") == "zpf"
+
+
+def test_the_jsonl_face_is_written_and_names_its_creator(tmp_path: pathlib.Path):
+    """The JSON-Lines projection, as for a capture, with the File Header's ``creator``."""
+    binary, jsonl = tmp_path / "inner.zpf", tmp_path / "inner.jsonl"
+    packets_to_zpf(VECTORS / "tunnel" / "packets.zpf", binary, produced_at=PINNED)
+    packets_to_zpf(VECTORS / "tunnel" / "packets.zpf", jsonl, produced_at=PINNED, face="jsonl")
+
+    header = json.loads(jsonl.read_text().splitlines()[0])
+    assert header["creator"] == header["produced_by"]
+    assert header["creator"].startswith("zpfwire ")
+    assert shape(jsonl) == shape(binary)
+    assert zpf.check_coverage(jsonl, VECTORS / "tunnel" / "packets.zpf") == []

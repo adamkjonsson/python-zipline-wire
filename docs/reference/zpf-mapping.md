@@ -198,7 +198,6 @@ Every field above keeps its meaning; these change, because the input is a
 | Block, field | Value |
 |--------------|-------|
 | File Header `tick_hz`, `time_epoch` | The input's |
-| File Header `creator` | Absent — the stage takes none (python-zipline#89) |
 | File Header `comment` | Which labels were selected as packets |
 | Source `kind` | `zpf-input`, with the input's `uri` and `sha256` `digest` |
 | Record `spans` | **Present**: every input packet the record was built from, whole, in the input's namespace — adjacent packets merged into one range.  A record carrying `seq_start` may cite several, across the input's seams (spec `0.22`) |
