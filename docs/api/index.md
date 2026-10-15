@@ -6,7 +6,10 @@ pages below group it by the stage of a conversion it belongs to.
 **Conversion** is {func}`~zpfwire.convert.capture_to_zpf` — capture in, `.zpf`
 out — with {func}`~zpfwire.convert.convert` as the lower half for callers who
 built their own reader, and {func}`~zpfwire.convert.describe_source` for the
-digest a Source Descriptor needs.  What a conversion did comes back as
+digest a Source Descriptor needs.  {func}`~zpfwire.packets.packets_to_zpf`
+is the same conversion from a `.zpf` of packets — a decrypted tunnel's inner
+traffic — and {func}`~zpfwire.packets.input_kind` tells the two inputs
+apart.  What a conversion did comes back as
 {class}`~zpfwire.stats.ConversionStats`.
 
 **Reading a capture** is {class}`~zpfwire.capture.CaptureReader`, which yields
@@ -21,7 +24,7 @@ file's decoder descriptor.
 **The flow layer** — {class}`~zpfwire.flow.FlowKey`,
 {class}`~zpfwire.flow.FlowTracker`, {class}`~zpfwire.tcp.TcpFlow`,
 {class}`~zpfwire.udp.UdpFlow` — turns grouped packets into a session's
-records.  It is public so that a caller can extend the conversion, not because
+records, written through a {class}`~zpfwire.flow.RecordSink`.  It is public so that a caller can extend the conversion, not because
 an ordinary conversion needs it.
 
 **Looking without writing** is {func}`~zpfwire.survey.survey`, returning
@@ -32,6 +35,7 @@ an ordinary conversion needs it.
 :maxdepth: 1
 
 convert
+packets
 capture
 options
 stats

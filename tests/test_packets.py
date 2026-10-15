@@ -32,6 +32,7 @@ from helpers import (
 from packeteer.generate.ethernet import EthernetHeader
 from packeteer.generate.fragmentation import fragment_ipv4
 from packeteer.generate.ip import IPHeader
+from test_tcp import ISN, PAST_THE_WRAP, handshake
 
 from zpfwire import (
     OVERLAP_POLICIES,
@@ -162,8 +163,8 @@ def assert_cites_whole_packets(inner: pathlib.Path, packets: pathlib.Path) -> No
 
 @pytest.mark.xfail(
     strict=True,
-    reason="python-zipline: check_splice reports a transport record that crosses an input "
-           "Discontinuity under seq_start, which spec 0.22 permits (zipline#152)",
+    reason="python-zipline#90: check_splice reports a transport record that crosses an "
+           "input Discontinuity under seq_start, which spec 0.22 permits (zipline#152)",
 )
 def test_a_splice_check_accepts_a_transport_record_crossing_a_declared_break(
     tmp_path: pathlib.Path,
@@ -283,6 +284,23 @@ def test_a_flow_that_resumes_after_a_timeout_gets_a_new_session(tmp_path: pathli
     direct_stats, direct, _, inner, _ = convert_both(
         silent, tmp_path, options=ReassemblyOptions(session_timeout=10.0),
     )
+
+    assert direct_stats.sessions == 2
+    assert shape(inner) == shape(direct)
+
+
+@pytest.mark.xfail(
+    raises=zpf.ZpfError, strict=True,
+    reason="python-zipline#88: sessionize_stage returns the ended session for a key used "
+           "before, so the session after a capture-gap cannot open on the same key",
+)
+def test_the_session_after_a_capture_gap_is_on_the_same_key(tmp_path: pathlib.Path):
+    """The specification's exit for the unmeasurable hole: end the session, open another."""
+    gapped = capture_of(handshake() + [
+        Seg(ISN + 1, b"aaaa", flags=TCP_PSH, timestamps=(100, 0)).frame(ack=5001),
+        Seg(ISN + 1 + PAST_THE_WRAP, b"zzzz", flags=TCP_PSH, timestamps=(900, 0)).frame(ack=5001),
+    ])
+    direct_stats, direct, _, inner, _ = convert_both(gapped, tmp_path)
 
     assert direct_stats.sessions == 2
     assert shape(inner) == shape(direct)

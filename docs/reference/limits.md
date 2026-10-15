@@ -139,6 +139,36 @@ discard from such a datagram is counted as `unlocatable_bytes` and not cited.
 The contributing records are known, so emitting one block per fragment is
 possible; it is not done.
 
+## A `.zpf` of packets as input
+
+**A fragmented UDP datagram is not converted.**  Its fragments are separate
+input records, and only a record carrying `seq_start` may cite several input
+units (spec `0.22`); a UDP record has none.  The fragments are marked
+`undecodable` and counted under `SKIP_FRAGMENTED_UDP`.  Whether the
+permission should extend to a datagram reassembled from IP fragments, whose
+offsets prove the join as sequence numbers do, is
+[zipline#166](https://github.com/adamkjonsson/zipline/issues/166), filed from
+this project.  Fragmented TCP is unaffected.
+
+**Each input stream is read in stored order**, and the streams are merged by
+timestamp.  A decryptor writes each tunnel direction in time order, which is
+all this needs; a stage that stored one stream's packets out of time order
+would have them reassembled in that order.  Two records in different streams
+sharing a timestamp are taken in stream order, since a `.zpf` records no
+order between them.
+
+**Three limits are python-zipline's**, open on its `0.6.0` milestone, and go
+when that release ships with them fixed:
+
+- A flow that resumes after `session_timeout`, or past a `capture-gap`,
+  cannot be given its second session on the same key
+  ([python-zipline#88](https://github.com/adamkjonsson/python-zipline/issues/88)).
+- The output is binary only, and has no `creator`
+  ([python-zipline#89](https://github.com/adamkjonsson/python-zipline/issues/89)).
+- Ending a session re-reads the input to measure its extent, so time grows
+  with flows × input
+  ([python-zipline#91](https://github.com/adamkjonsson/python-zipline/issues/91)).
+
 ## Bounded by memory
 
 **Sequenced sessions buffer.** A causal order needs both directions in hand,

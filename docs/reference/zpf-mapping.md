@@ -1,10 +1,12 @@
 # Specification mapping
 
 What each of zpfwire's objects becomes in the written file, field by field.
-Everything here follows from one fact: the output is **capture-sourced** and
-**transport-layer**.  Where a field is absent, the rule that forbids it is
-named — an absent field in this format is usually a statement, not an
-omission.
+Everything here follows from one fact: the output is **transport-layer**.  It
+is **capture-sourced** when the input is a capture, which is what most of this
+page describes; when the input is a `.zpf` of packets it is **zpf-sourced**,
+and {ref}`zpf-sourced` says what changes.  Where a field is absent, the rule
+that forbids it is named — an absent field in this format is usually a
+statement, not an omission.
 
 The specification is `zipline-payload-format`, version `zpf.SPEC_VERSION`.
 
@@ -148,7 +150,7 @@ bytes in the capture — see {doc}`../guide/provenance` and
 | Field | Why |
 |-------|-----|
 | `content_type` | **Forbidden** at the transport layer — a byte run has no media type. The writer raises on it. |
-| `spans` | Every span must reference a `zpf-input` source, and ours is a capture. This is why `ts_first` exists. |
+| `spans` | Every span must reference a `zpf-input` source, and a capture is not one. This is why `ts_first` exists. A `.zpf` input's records carry them — see {ref}`zpf-sourced`. |
 
 ## Undecoded
 
@@ -183,7 +185,30 @@ range no record covers.
 | Block | Why |
 |-------|-----|
 | `Discontinuity` | Decoded-layer only. A transport stream expresses its gaps in its offsets — absolute `seq_start` values make a hole visible by arithmetic — and carrying both would be two accounts of the same missing bytes. |
-| Any `zpf-input` Source | There is no predecessor `.zpf`; the input is a capture. |
+
+(zpf-sourced)=
+
+## From a `.zpf` of packets
+
+{func}`~zpfwire.packets.packets_to_zpf` writes the same sessions,
+participants and records, through python-zipline's sessionization stage.
+Every field above keeps its meaning; these change, because the input is a
+`.zpf` rather than a capture.
+
+| Block, field | Value |
+|--------------|-------|
+| File Header `tick_hz`, `time_epoch` | The input's |
+| File Header `creator` | Absent — the stage takes none (python-zipline#89) |
+| File Header `comment` | Which labels were selected as packets |
+| Source `kind` | `zpf-input`, with the input's `uri` and `sha256` `digest` |
+| Record `spans` | **Present**: every input packet the record was built from, whole, in the input's namespace — adjacent packets merged into one range.  A record carrying `seq_start` may cite several, across the input's seams (spec `0.22`) |
+| Undecoded `session_id`, `participant_id` | The input stream's, in its own namespace |
+| Undecoded `off_start`, `off_end` | The whole packet's range in the input stream's offset space — a packet is marked only when no record cites any of it |
+| Undecoded `reason` | As on a capture for what reassembly discarded; `undecodable` for a selected record that is not a packet; `skipped`, written by the stage, for whatever nothing cited or marked |
+| Session End `input_extents` | The **whole** extent of every input stream the session cited, the same in every session that cited it |
+
+What the file says about every input byte, and why a packet is cited whole,
+is worked through in {doc}`../guide/converting-packets`.
 
 ## Two rules that shaped the reassembler
 

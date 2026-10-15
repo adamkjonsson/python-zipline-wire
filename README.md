@@ -52,6 +52,9 @@ zpfwire convert capture.pcap -o https.zpf --dst-port 443 --src 10.0.0.0/24
 
 # Store each TCP session in causal order rather than capture order
 zpfwire convert capture.pcap -o capture.zpf --sequenced
+
+# The sessions inside a .zpf of decrypted packets, such as a tunnel's
+zpfwire convert packets.zpf -o inner.zpf
 ```
 
 ```python
@@ -64,10 +67,22 @@ print(stats.summary())
 Everything the CLI does is available from the API; the CLI is a thin wrapper
 over it.
 
+### A `.zpf` of packets
+
+A stage that decrypts a tunnel leaves its inner traffic as records, one per
+packet, labelled `net:ip`.  `zpfwire convert` takes that `.zpf` as readily as a
+capture — `zpfwire.packets_to_zpf(...)` from Python — and writes the sessions
+inside it, with the same reassembly, each record citing the input packets it
+was built from.  It is the `packets.zpf → inner.zpf` hop of the
+specification's decrypted-tunnel example; see
+`docs/guide/converting-packets.md`.
+
 ## What it writes
 
 A **capture-sourced, transport-layer** file — the top-left cell of the
-specification's provenance/layer table. Concretely:
+specification's provenance/layer table — or, from a `.zpf` of packets, a
+**zpf-sourced** one whose records carry `spans` back to the input. For a
+capture, concretely:
 
 | Block | What goes in it |
 |---|---|

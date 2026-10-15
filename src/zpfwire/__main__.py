@@ -1,7 +1,8 @@
 """zpfwire — turn network captures into Zipline Payload Format files.
 
 Commands:
-  convert   write a .zpf (or its JSON-Lines projection) from a capture
+  convert   write a .zpf (or its JSON-Lines projection) from a capture, or
+            from a .zpf of packets such as a decrypted tunnel's
   info      list the conversations a capture holds, without writing anything
 
 Examples:
@@ -23,6 +24,12 @@ Examples:
   # Discard corrupt segments the way a receiver does, keeping the retransmission
   zpfwire convert lossy.pcap -o lossy.zpf --checksum drop
 
+  # The sessions inside a .zpf of decrypted packets (records labelled net:ip)
+  zpfwire convert packets.zpf -o inner.zpf
+
+  # The same, for a decoder that labels its packets with a private type
+  zpfwire convert packets.zpf -o inner.zpf --content-type dec:ip-packet
+
 """
 
 from __future__ import annotations
@@ -38,6 +45,7 @@ from zpfwire.capture import CaptureReader
 from zpfwire.convert import convert, describe_source
 from zpfwire.filter import matcher
 from zpfwire.options import CHECKSUM_POLICIES, OVERLAP_POLICIES, ReassemblyOptions
+from zpfwire.packets import input_kind, packets_to_zpf
 from zpfwire.stats import ConversionStats
 from zpfwire.survey import survey
 
@@ -103,21 +111,34 @@ def _undecodable(reader: CaptureReader) -> str:
 
 
 def _cmd_convert(args: argparse.Namespace) -> None:
-    reader = CaptureReader(path=args.capture, link_type=args.link_type, tick_hz=args.tick_hz)
+    if args.no_tcp and args.no_udp:
+        raise ValueError("--no-tcp and --no-udp leave nothing to convert")
+    zpf_input = input_kind(args.input) == "zpf"
+    stats = _convert_packets(args) if zpf_input else _convert_capture(args)
+
+    if not args.quiet:
+        print(stats.summary())
+        sys.stdout.flush()
+        if stats.records_read and not stats.records_selected:
+            print(f"Note: {_selection_advice(args)}", file=sys.stderr)
+        elif not stats.lossless:
+            print(f"Note: {_loss_advice(stats)}", file=sys.stderr)
+
+
+def _convert_capture(args: argparse.Namespace) -> ConversionStats:
+    if args.content_type is not None:
+        raise ValueError("--content-type selects records of a .zpf, and this is a capture")
+    reader = CaptureReader(path=args.input, link_type=args.link_type, tick_hz=args.tick_hz)
     # A file that would be valid and empty is not a conversion, any more than
     # one with both transports switched off; the API will still write it.
     if not reader.link_type_supported:
         raise ValueError(f"{_undecodable(reader)}: nothing to convert")
-    digest, uri = describe_source(args.capture)
-    wanted = {name for name, on in (("tcp", not args.no_tcp), ("udp", not args.no_udp)) if on}
-    if not wanted:
-        raise ValueError("--no-tcp and --no-udp leave nothing to convert")
-
-    stats = convert(
+    digest, uri = describe_source(args.input)
+    return convert(
         reader,
         args.output,
         options=_options(args),
-        wanted=wanted,
+        wanted={name for name, on in (("tcp", not args.no_tcp), ("udp", not args.no_udp)) if on},
         digest=digest,
         uri=uri,
         packet_filter=matcher(_build_packet_filter(args)),
@@ -125,11 +146,36 @@ def _cmd_convert(args: argparse.Namespace) -> None:
         sequenced=args.sequenced,
     )
 
-    if not args.quiet:
-        print(stats.summary())
-        if not stats.lossless:
-            sys.stdout.flush()
-            print(f"Note: {_loss_advice(stats)}", file=sys.stderr)
+
+def _convert_packets(args: argparse.Namespace) -> ConversionStats:
+    if args.tick_hz is not None:
+        raise ValueError("a .zpf states its own tick rate; --tick-hz is for a capture")
+    if args.jsonl:
+        raise ValueError(
+            "a .zpf input is written as a binary .zpf only, until python-zipline's "
+            "sessionization stage takes a face (python-zipline#89)"
+        )
+    return packets_to_zpf(
+        args.input,
+        args.output,
+        content_type=args.content_type,
+        link_type=args.link_type,
+        options=_options(args),
+        tcp=not args.no_tcp,
+        udp=not args.no_udp,
+        packet_filter=matcher(_build_packet_filter(args)),
+        sequenced=args.sequenced,
+    )
+
+
+def _selection_advice(args: argparse.Namespace) -> str:
+    """Say why a .zpf input gave no packets, and what to pass instead."""
+    labels = args.content_type or "net:ip or net:ethernet"
+    return (
+        f"no input record was labelled {labels}, so there was nothing to convert. "
+        "Pass --content-type with the label the decoder gave its packets "
+        "(zipline-kober's WireGuard decode writes dec:ip-packet)."
+    )
 
 
 def _loss_advice(stats: ConversionStats) -> str:
@@ -154,10 +200,12 @@ def _loss_advice(stats: ConversionStats) -> str:
 
 
 def _cmd_info(args: argparse.Namespace) -> None:
-    reader = CaptureReader(path=args.capture, link_type=args.link_type, tick_hz=args.tick_hz)
+    if input_kind(args.input) == "zpf":
+        raise ValueError("info surveys a capture; convert a .zpf of packets, and read the summary")
+    reader = CaptureReader(path=args.input, link_type=args.link_type, tick_hz=args.tick_hz)
     flows = survey(reader, packet_filter=matcher(_build_packet_filter(args)))
 
-    print(f"{args.capture}: {reader.packet_count} packets, tick_hz {reader.tick_hz}")
+    print(f"{args.input}: {reader.packet_count} packets, tick_hz {reader.tick_hz}")
     if not reader.link_type_supported:
         print(_undecodable(reader))
     print(f"{len(flows)} conversation(s) would become sessions\n")
@@ -174,10 +222,9 @@ def _cmd_info(args: argparse.Namespace) -> None:
 # ── entry point ─────────────────────────────────────────────────────────
 
 
-def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("capture", help="pcap or pcapng file to read")
-    parser.add_argument("--link-type", type=int, default=None,
-                        help="override the capture's link type")
+def _add_common(parser: argparse.ArgumentParser, *, inputs: str, link_type: str) -> None:
+    parser.add_argument("input", help=inputs)
+    parser.add_argument("--link-type", type=int, default=None, help=link_type)
     parser.add_argument("--tick-hz", type=_positive_int, default=None,
                         help="override the tick rate derived from the capture header")
 
@@ -208,11 +255,22 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     convert_parser = subparsers.add_parser(
-        "convert", help="write a .zpf from a capture",
-        description="Convert a capture into a capture-sourced, transport-layer .zpf file.",
+        "convert", help="write a .zpf from a capture, or from a .zpf of packets",
+        description="Convert a capture, or a .zpf of packets such as a decrypted tunnel's, "
+                    "into a transport-layer .zpf file.",
     )
-    _add_common(convert_parser)
+    _add_common(
+        convert_parser,
+        inputs="pcap, pcapng, or a .zpf of packets (binary or JSON-Lines)",
+        link_type="a capture's link type, overriding its header; for a .zpf, the link type "
+                  "of records selected by a --content-type outside net: (default: raw IP)",
+    )
     convert_parser.add_argument("-o", "--output", required=True, help="file to write")
+    convert_parser.add_argument(
+        "--content-type", default=None, metavar="LABEL",
+        help="for a .zpf input, the content_type that makes a record a packet "
+             "(default: net:ip and net:ethernet)",
+    )
     convert_parser.add_argument("--jsonl", action="store_true",
                                 help="write the JSON-Lines projection instead of the container")
     convert_parser.add_argument("--no-tcp", action="store_true", help="skip TCP conversations")
@@ -253,7 +311,8 @@ def main() -> None:
         "info", help="list the conversations a capture holds",
         description="Report what a conversion would produce, without writing anything.",
     )
-    _add_common(info_parser)
+    _add_common(info_parser, inputs="pcap or pcapng file to read",
+                link_type="override the capture's link type")
     info_parser.set_defaults(func=_cmd_info)
 
     args = parser.parse_args()

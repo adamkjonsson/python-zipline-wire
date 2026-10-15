@@ -1120,8 +1120,10 @@ def _hints(run: _Run) -> tuple[int, int, int | None]:
 
     ``ts`` is the specification's rule — the time of the LAST packet that
     contributed bytes, the moment the unit became complete — and ``ts_first``
-    the time it began, which spans could carry but ours cannot since they
-    must reference a zpf-input source.  The ack is the serial MAXIMUM rather
+    the time it began, which spans would carry if they could name a
+    capture: they may only name a zpf-input source, so a capture conversion
+    has no other way to say it, and a ``.zpf`` input's records state both.
+    The ack is the serial MAXIMUM rather
     than the last arrival's, which for a drained run is the earlier packet's
     and for any other the later one's — a value taken from no rule.  Acks are
     cumulative, so one observed on any contributor is still true when the run
