@@ -1,0 +1,13 @@
+{"type":"file","format":"zipline-payload/0.23","tick_hz":1000000,"produced_by":"zpf-sessionize 1.0","produced_at":1719700100}
+{"type":"source","source_id":1,"kind":"zpf-input","uri":"packets.zpf","digest":"sha256:8727ffad34c4f37edeeeff3519cdf2222cbf2bd3a22101e8343ce43a748fac37"}
+{"type":"decoder","decoder_id":1,"output_layer":"transport","name":"tcp-reassembly","version":"1.1","params_digest":"sha256:2f60"}
+{"type":"session","session_id":10,"proto":"tcp","key":"10.8.0.2:44300 -> 10.8.0.9:80"}
+{"type":"participant","session_id":10,"pid":0,"adjacency":"contiguous","endpoint":["10.8.0.2:44300"],"isn":1000}
+{"type":"record","session_id":10,"sender_pid":0,"source_id":1,"ts":1000,"flags":["psh"],"payload":"YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==","decoder_id":1,"spans":[{"source_id":1,"session_id":5,"pid":0,"off_start":0,"off_end":80}],"seq_start":1001,"ack":7001}
+{"type":"record","session_id":10,"sender_pid":0,"source_id":1,"ts":1300,"flags":["psh"],"payload":"YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJi","decoder_id":1,"spans":[{"source_id":1,"session_id":5,"pid":0,"off_start":140,"off_end":210}],"seq_start":1081,"ack":7001}
+{"type":"session_end","session_id":10,"input_extents":[{"source_id":1,"session_id":5,"pid":0,"extent":210}]}
+{"type":"session","session_id":11,"proto":"tcp","key":"10.8.0.2:44301 -> 10.8.0.9:53"}
+{"type":"participant","session_id":11,"pid":0,"adjacency":"contiguous","endpoint":["10.8.0.2:44301"],"isn":5000}
+{"type":"record","session_id":11,"sender_pid":0,"source_id":1,"ts":1100,"flags":["psh"],"payload":"Y2NjY2NjY2NjY2NjY2NjY2NjY2M=","decoder_id":1,"spans":[{"source_id":1,"session_id":5,"pid":0,"off_start":80,"off_end":140}],"seq_start":5001,"ack":9001}
+{"type":"session_end","session_id":11,"input_extents":[{"source_id":1,"session_id":5,"pid":0,"extent":210}]}
+{"type":"end"}
