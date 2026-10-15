@@ -33,6 +33,60 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+Writes spec **v0.23** (`zpf.SPEC_VERSION == (0, 23)`), up from `0.21`,
+against packeteer **0.17.0** and python-zipline **0.6.0**
+([#38](https://github.com/adamkjonsson/python-zipline-wire/issues/38)).
+No python-zipline release implements `0.22`, which `0.23` followed the same
+day, and this release takes both.  The floors are python-zipline `0.6.0`,
+the first release that implements `0.23`, and packeteer `0.16.0`.  The `0.x`
+rule as before: a `0.21` reader refuses the files this release writes, and
+a `0.23` reader refuses `0.4.0`'s.  For the same input and options nothing
+else moves: every fixture, under both overlap policies and with and without
+`--sequenced`, converts to the bytes `0.4.0` wrote but for the version
+stamp in the File Header.
+
+**Spec `0.22` and `0.23`** answer three issues filed from this project, and
+fix one more found upstream.  An **`ack` is now a position**, unwrapped
+along its sender's records into the peer's offset space as offsets have
+been since `0.21`, so the causal check compares plain integers at any
+stream length ([zipline#151](https://github.com/adamkjonsson/zipline/issues/151),
+the one shape `0.4.0` could not write).  A **sequence-anchored transport
+output may cite across its input's seams**
+([zipline#152](https://github.com/adamkjonsson/zipline/issues/152)), and
+**`net:ip` and `net:ethernet`** name one network packet
+([zipline#153](https://github.com/adamkjonsson/zipline/issues/153)); both
+are for a stage that reads a `.zpf` of packets, which this tree does not
+yet.  A record's end is now **one past the last sequence number it
+occupies**, so a stored pure ACK draws no edge
+([zipline#160](https://github.com/adamkjonsson/zipline/issues/160)); this
+tree stores no pure ACKs, so nothing it writes is affected.
+
+### Changed
+
+- **The packeteer floor is `0.16.0`**, up from `0.15.0`, and it now names
+  what the *suite* needs as well as the code: `0.16.0`'s generator no longer
+  acknowledges past a corrupted segment before its resend
+  ([packeteer#163](https://github.com/adamkjonsson/packeteer/issues/163)),
+  which the generated `favor-acked` test depends on
+  ([#30](https://github.com/adamkjonsson/python-zipline-wire/issues/30)).
+- **The python-zipline floor is `0.6.0`**, up from `0.5.0`
+  ([#38](https://github.com/adamkjonsson/python-zipline-wire/issues/38)).
+
+### Fixed
+
+- **A sequenced conversion of a direction longer than 2 GiB whose peer only
+  acknowledges is written again**
+  ([zipline#151](https://github.com/adamkjonsson/zipline/issues/151),
+  [python-zipline#75](https://github.com/adamkjonsson/python-zipline/issues/75)).
+  An ordinary upload: the server records nothing after its SYN-ACK, whose
+  `ack` stays `isn + 1`, and spec `0.21`'s causal check compared it with
+  client record ends by serial arithmetic, so from 2 GiB on every record
+  read as already acknowledged and `0.4.0` raised `zpf.SemanticError` at the
+  writer.  Since `0.22` the comparison is between positions, and the order
+  the shape always had is written and verifies on the read-back.  The strict
+  `xfail` that stood for it is an ordinary test, and the limit it documented
+  is gone from the docs.
+
 ---
 
 ## [0.4.0] - 2026-09-19

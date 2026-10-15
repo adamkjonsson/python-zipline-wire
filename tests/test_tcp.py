@@ -901,22 +901,27 @@ def test_a_long_stream_sequences_cleanly(tmp_path: pathlib.Path):
         zpf.verify_sequenced(session.records, participant_count=len(session.participants))
 
 
-@pytest.mark.xfail(
-    raises=zpf.SemanticError, strict=True,
-    reason="zipline#151: the causal edge rule compares a record's end against the "
-           "peer's last *recorded* ack with serial arithmetic; a pure-ACK peer's last "
-           "record is its SYN-ACK, and 2 GiB later the comparison inverts",
-)
 def test_a_sequenced_upload_past_2_gib_with_a_pure_ack_peer(tmp_path: pathlib.Path):
     """The ordinary upload: the server only acks, so its ack is never *recorded* again.
 
-    Plain conversion of the same capture is one clean session — see the
-    tests above — and ``0.3.0`` sequenced it by splitting every 2 GiB, which
-    reset the comparison before it could invert.  Deleting that shim exposed
-    this; it is filed upstream and this test flips when the fix lands.
+    Its last record is the SYN-ACK, whose ``ack`` stays ``isn + 1`` for the
+    whole session.  Through spec ``0.21`` the causal edge rule compared that
+    ack with client record ends by serial arithmetic, so every record 2 GiB
+    past it read as *below* it, and ``0.4.0`` refused the conversion with a
+    ``SemanticError`` (zipline#151).  Since ``0.22`` an ack is a position,
+    unwrapped along the acker's records, and the order the shape always had
+    is written — and verified on the read-back, with each participant's
+    ``isn`` anchoring its offsets.
     """
-    to_zpf(capture_of(_upload(4, peer="pure-ack")), tmp_path,
-           options=ReassemblyOptions(reorder_window=0), sequenced=True)
+    out = to_zpf(capture_of(_upload(4, peer="pure-ack")), tmp_path,
+                 options=ReassemblyOptions(reorder_window=0), sequenced=True)
+
+    assert len(out.sessions) == 1
+    assert out.only.sequenced
+    assert out.diagnostics == [] and out.unplaceable == []
+    with zpf.open(out.path) as reader:
+        for session in reader.sessions():
+            session.verify()
 
 
 # ── overlap="favor-acked": the copy the receiver kept ───────────────────

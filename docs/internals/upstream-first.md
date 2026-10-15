@@ -68,7 +68,7 @@ documented limit of `--sequenced` until the format answers.
 | #49 | No writer-side support for causal output ordering | `begin_session(linearize=True)` and a write-time order guard |
 | #63 | A zero-length SYN record at the `isn` sat one below the stream origin, and `check_coverage` measured the stream as 2³²−1 bytes | The writer refuses a `syn` record whose `seq_start` is not `isn + 1`, and `FileReader.unplaceable` reports what the offset space cannot place (0.3.0) |
 | #70 | On a stream with no `isn`, records past 2 GiB were given zero-width ranges while none was reported unplaceable — the reader's two answers disagreed | `0.4.0` applied the origin floor without an `isn`; `0.5.0`'s unwrapping walk places them (spec `0.21`) |
-| #75 | `verify_sequenced` and the linearize guard refuse a valid linearization past 2 GiB when the peer's last recorded `ack` is stale — a pure-ACK peer's is its SYN-ACK's | **Open** — downstream of zipline#151; the shape is a strict `xfail` here |
+| #75 | `verify_sequenced` and the linearize guard refuse a valid linearization past 2 GiB when the peer's last recorded `ack` is stale — a pure-ACK peer's is its SYN-ACK's | `0.6.0`: an ack is a position, unwrapped along its sender's records into the peer's offset space (spec `0.22`); `verify_sequenced` takes each participant's `isn`.  The strict `xfail` here became an ordinary test (0.5.0) |
 
 **zipline** (the specification):
 
@@ -77,7 +77,7 @@ documented limit of `--sequenced` until the format answers.
 | #142 | The `retransmit` flag's "retransmission/overlap" carries two readings — the sender resent, or the reassembler discarded — and a duplicated capture tells them apart | Spec `0.20`: the flag names the sender's act; a producer that cannot tell a copy from a resend SHOULD treat it as one, which is what this tree did until `0.3.0` read the option (#17) |
 | #146 | A transport record was placed against the origin by serial arithmetic, so a stream stopped at 2 GiB: an ordinary large download could not be represented | Spec `0.21`: offsets unwrap along stored order — each record's is its predecessor's plus the signed serial delta — and a stream is placed at any length.  The shim this tree carried for one release is gone (0.4.0) |
 | #147 | A hole of 2³¹ or more between consecutive records of one participant had no representation and no name — the far side reads as *before* the near side | Spec `0.21`: no representation, by design — the pair is an ordering violation by construction — and the exit this tree already took is now the standard: end the session, open another on the same key with no `isn`, and the producer SHOULD write `capture-gap`.  The `u64 offset` option is held for a `1.x` minor |
-| #151 | The causal edge rule compares a record's end against a peer record's `ack` with serial arithmetic, and the two can be a whole stream apart when the peer only sends pure ACKs; #146's shape on the ack axis | **Open** — found by deleting the #146 shim; a documented limit of `--sequenced` here |
+| #151 | The causal edge rule compares a record's end against a peer record's `ack` with serial arithmetic, and the two can be a whole stream apart when the peer only sends pure ACKs; #146's shape on the ack axis | Spec `0.22`: an ack's position is the previous ack's plus the signed serial delta, the first measured from the peer's origin, and the edge compares plain integers.  Found by deleting the #146 shim; `--sequenced` converts the shape again (0.5.0) |
 
 Two of packeteer's fixes went further than asked — #73 added `iter_packets`
 in response to the composition problem, and #76 put the tick rate on the
@@ -131,9 +131,11 @@ arithmetic and so could not reach past 2³¹ — waited on
 `0.3.0` and was deleted in `0.4.0` when spec `0.21` unwrapped offsets along
 stored order.  Deleting it exposed
 [zipline#151](https://github.com/adamkjonsson/zipline/issues/151), the same
-ambiguity on the ack axis, which the split had been hiding; that one is
-**not** shimmed — it is a documented limit of `--sequenced` and a strict
-`xfail`, because a split that hides a rule's ambiguity is what #146 was about.
+ambiguity on the ack axis, which the split had been hiding.  That one was
+**not** shimmed — for one release it was a documented limit of `--sequenced`
+and a strict `xfail`, because a split that hides a rule's ambiguity is what
+#146 was about — and spec `0.22` answered it, so `0.5.0` turned the `xfail`
+into an ordinary test.
 
 A shim looks like this: a comment naming the issue, and a note in the
 current release plan under `plans/` saying which phase is waiting.  When the

@@ -38,23 +38,14 @@ stream is placed at any length and through a sequence wrap
 from this project).  Through `0.20` every record was measured against the
 origin, which stopped at 2³¹, and `0.3.0` split such a direction into a new
 session every 2 GiB to get past it; that split, its `offset-limit` reason
-and its counter are gone.  The one shape one session cannot hold is the
-hole below.
-
-**A sequenced conversion of a direction longer than 2 GiB can be refused
-when the peer only acknowledges.**  The specification's causal check
-compares each record's end against the peer's latest *recorded* `ack` with
-serial arithmetic, and a peer that sends pure ACKs writes no record after
-its SYN-ACK — an ordinary upload — so from 2 GiB on the comparison inverts
-and the writer refuses the record as *already acknowledged*
+and its counter are gone.  A `--sequenced` conversion of such a direction
+orders and verifies at any length too: since spec `0.22` an `ack` is
+unwrapped along the acker's records the same way
 ([zipline#151](https://github.com/adamkjonsson/zipline/issues/151),
 [python-zipline#75](https://github.com/adamkjonsson/python-zipline/issues/75),
-both filed from this project).  A plain conversion of the same capture is
-one clean session; the limit is `--sequenced`'s alone.  `0.3.0`'s 2 GiB
-split happened to sidestep it, which is how it went unseen; it is not
-kept, since a split that hides a rule's ambiguity is what zipline#146 was
-about.  When the peer's records carry current acks — any exchange, not just
-an upload — the check is right at any length.
+both filed from this project).  `0.4.0` refused one whose peer only
+acknowledged — an ordinary upload, whose server records nothing after its
+SYN-ACK.  The one shape one session cannot hold is the hole below.
 
 **A hole wider than 2³¹ bytes in one direction splits the session.**  This
 is the specification's stated exit for what it calls *the unmeasurable
