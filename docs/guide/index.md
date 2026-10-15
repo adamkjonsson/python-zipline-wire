@@ -10,6 +10,7 @@ Everything public is importable from the top-level `zpfwire` package:
 |------|------------|
 | `capture_to_zpf` | The one-call conversion: capture in, `.zpf` out |
 | `packets_to_zpf`, `input_kind` | The same, from a `.zpf` of packets such as a decrypted tunnel's |
+| `packets_to_pcap`, `PcapExport` | Those packets written to a pcap, for Wireshark |
 | `convert` | The lower half, for a caller who built their own reader |
 | `describe_source` | Hash a capture, for the Source Descriptor |
 | `CaptureReader`, `PacketView`, `SkipReason` | Reading a capture as convertible packets |

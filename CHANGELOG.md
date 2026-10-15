@@ -112,6 +112,16 @@ tree stores no pure ACKs, so nothing it writes is affected.
   opens with an `input` line counting the records read and selected, and
   when none was selected a note names `--content-type`.  `zpfwire info`
   refuses a `.zpf`.
+- **The packets of a `.zpf` export to a pcap**, for Wireshark
+  ([#36](https://github.com/adamkjonsson/python-zipline-wire/issues/36)):
+  **`zpfwire pcap packets.zpf -o inner.pcap`**, and
+  **`zpfwire.packets_to_pcap(source, sink, …)`** returning a **`PcapExport`**.
+  The same records `packets_to_zpf` selects, merged into time order, each
+  written exactly as stored — padding kept, fragments as fragments — under
+  the link type its label names; a selection of two link types is refused.
+  An export for analysis: a pcap cites nothing, so `convert` is what keeps
+  the chain.  It streams, since packeteer's writer takes any iterable
+  ([packeteer#204](https://github.com/adamkjonsson/packeteer/issues/204)).
 - **`zpfwire.input_kind(source)`** says whether an input is a `.zpf` or a
   capture, by the format's own check of its first bytes.
 - **`PacketRecordReader`**, the `.zpf` counterpart of `CaptureReader`;

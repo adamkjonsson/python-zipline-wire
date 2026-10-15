@@ -57,7 +57,9 @@ from zpfwire.packets import (
     SKIP_FRAGMENTED_UDP,
     PacketRecordReader,
     PacketSink,
+    PcapExport,
     input_kind,
+    packets_to_pcap,
     packets_to_zpf,
 )
 from zpfwire.stats import ConversionStats
@@ -105,6 +107,7 @@ __all__ = [
     "PacketRecordReader",
     "PacketSink",
     "PacketView",
+    "PcapExport",
     "ReassemblyOptions",
     "RecordSink",
     "SkipReason",
@@ -118,6 +121,7 @@ __all__ = [
     "format_endpoint",
     "input_kind",
     "matcher",
+    "packets_to_pcap",
     "packets_to_zpf",
     "spec_of",
     "survey",

@@ -5,14 +5,15 @@ After installation the `zpfwire` command is available on your PATH.  Running
 entry-point script is not on the PATH, or when you need to target a specific
 Python interpreter.
 
-zpfwire provides two subcommands:
+zpfwire provides three subcommands:
 
 | Subcommand | Input | Output | Purpose |
 |------------|-------|--------|---------|
 | `info` | pcap / pcapng | text report | Report the conversations a capture holds, without writing anything |
-| `convert` | pcap / pcapng | `.zpf` or JSON-Lines | Reassemble the capture into a capture-sourced, transport-layer file |
+| `convert` | pcap / pcapng, or a `.zpf` of packets | `.zpf` or JSON-Lines | Reassemble the input into a transport-layer file |
+| `pcap` | a `.zpf` of packets | pcap | Export the packets, for Wireshark |
 
-They are meant to be used in that order.  `info` applies the same filters and
+The first two are meant to be used in that order.  `info` applies the same filters and
 the same flow grouping as `convert` does, so it answers "what would I get?"
 before you commit to an output file:
 
@@ -71,4 +72,5 @@ the same fact and continues.
 
 info
 convert
+pcap
 ```

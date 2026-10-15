@@ -55,6 +55,9 @@ zpfwire convert capture.pcap -o capture.zpf --sequenced
 
 # The sessions inside a .zpf of decrypted packets, such as a tunnel's
 zpfwire convert packets.zpf -o inner.zpf
+
+# The same packets as a pcap, to open in Wireshark
+zpfwire pcap packets.zpf -o inner.pcap
 ```
 
 ```python

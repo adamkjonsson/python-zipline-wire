@@ -33,12 +33,13 @@ import heapq
 import os
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from typing import IO, Literal
+from dataclasses import dataclass
+from typing import IO, Literal, Protocol
 
 import zpf
 from packeteer.generate.udp import UDPHeader
 from packeteer.parse import AssembledFrame, Defragmenter, parse_packet, supports_link_type
-from packeteer.pcap import LINKTYPE_RAW
+from packeteer.pcap import LINKTYPE_RAW, write_pcap
 
 from zpfwire.capture import PacketView, SkipReason, packet_view, skip_reason
 from zpfwire.convert import _drive, _produced_at
@@ -51,7 +52,9 @@ __all__ = [
     "SKIP_FRAGMENTED_UDP",
     "PacketRecordReader",
     "PacketSink",
+    "PcapExport",
     "input_kind",
+    "packets_to_pcap",
     "packets_to_zpf",
 ]
 
@@ -99,6 +102,31 @@ _Mark = Callable[[Sequence[_Part], str, str | None], None]
 
 _Keyed = tuple[tuple[int, int, int], int, zpf.Datagram]
 """An input record with its merge key and its stream's index."""
+
+
+class _Datagrams(Protocol):
+    """An input stream read one record at a time: a stage's or a plain reader's view."""
+
+    def datagrams(self) -> Iterator[zpf.Datagram]:
+        """Yield the stream's records in stored order."""
+        ...  # pragma: no cover
+
+
+def _merged(streams: Sequence[_Datagrams]) -> Iterator[tuple[int, zpf.Datagram]]:
+    """Yield every record of *streams*, with its stream's index, in timestamp order.
+
+    A decrypting stage writes one participant per tunnel direction and stores
+    one direction's records before the other's, so the file's stored order is
+    not wire order.  Each stream is read lazily, in its own stored order,
+    and the streams are merged by timestamp; ties break on the stream's
+    index and then the record's offset, so the order is total.
+    """
+    def keyed(index: int, stream: _Datagrams) -> Iterator[_Keyed]:
+        for datagram in stream.datagrams():
+            yield (datagram.ts, index, datagram.off_start), index, datagram
+
+    for _key, index, datagram in heapq.merge(*(keyed(i, s) for i, s in enumerate(streams))):
+        yield index, datagram
 
 
 class _Origins:
@@ -216,7 +244,7 @@ class PacketRecordReader:
         self.packet_count = self.records_read = self.records_selected = 0
         self.skipped.clear()
         engines: dict[int, Defragmenter] = {}
-        for index, datagram in self._merged():
+        for index, datagram in _merged(self._streams):
             self.records_read += 1
             link_type = self._select.get(datagram.record.content_type or "")
             if link_type is None:
@@ -237,20 +265,6 @@ class PacketRecordReader:
                 self.skipped[SkipReason.INCOMPLETE_DATAGRAM] += 1
                 self._mark(lost.tokens, REASON_UNDECODABLE,
                            f"a fragment of a datagram that never completed ({lost.reason})")
-
-    def _merged(self) -> Iterator[tuple[int, zpf.Datagram]]:
-        """Yield every input record, with its stream's index, in timestamp order.
-
-        Ties break on the stream's index and then the record's offset, so the
-        order is total and each stream's own order is kept.
-        """
-        def keyed(index: int, stream: zpf.InputStream) -> Iterator[_Keyed]:
-            for datagram in stream.datagrams():
-                yield (datagram.ts, index, datagram.off_start), index, datagram
-
-        merged = heapq.merge(*(keyed(i, s) for i, s in enumerate(self._streams)))
-        for _key, index, datagram in merged:
-            yield index, datagram
 
     def _view(self, assembled: AssembledFrame, link_type: int, ts: int) -> PacketView | None:
         """Parse one whole packet, or account for why it is not one."""
@@ -519,6 +533,150 @@ def packets_to_zpf(
         stats.records_read = reader.records_read
         stats.records_selected = reader.records_selected
     return stats
+
+
+@dataclass
+class PcapExport:
+    """What :func:`packets_to_pcap` wrote.
+
+    Attributes:
+        records_read: Records in the input.
+        records_selected: Of those, records whose ``content_type`` selected
+            them as packets.
+        packets: Records written to the pcap, one each.
+        filtered: Selected records a *packet_filter* left out, including every
+            one that is not a whole TCP segment or UDP datagram for it to judge.
+        link_type: The pcap's link type.
+
+    """
+
+    records_read: int = 0
+    records_selected: int = 0
+    packets: int = 0
+    filtered: int = 0
+    link_type: int = LINKTYPE_RAW
+
+    def summary(self) -> str:
+        """Render a short report.
+
+        Returns:
+            One line per figure.
+
+        """
+        lines = [
+            f"input        {self.records_read} records, "
+            f"{self.records_selected} selected as packets",
+            f"written      {self.packets} packets, link type {self.link_type}",
+        ]
+        if self.filtered:
+            lines.append(f"filtered     {self.filtered}")
+        return "\n".join(lines)
+
+
+def packets_to_pcap(
+    source: str | os.PathLike[str] | IO[bytes],
+    sink: str | os.PathLike[str] | IO[bytes],
+    *,
+    content_type: str | None = None,
+    link_type: int | None = None,
+    packet_filter: Callable[[PacketView], bool] | None = None,
+) -> PcapExport:
+    """Write the packets of a `.zpf` to a pcap, for Wireshark and the tools that read one.
+
+    An **export for analysis**, not a step in the provenance chain: a pcap
+    has nowhere to say which input record a packet came from, so the file
+    cites nothing, and :func:`packets_to_zpf` is what keeps the chain.  The
+    selection and the order are that function's — the same records, merged
+    across the input's streams into timestamp order — but nothing is
+    interpreted: each record is written as the bytes it holds, padding
+    included, and a fragment as the fragment it is, for the reader to
+    reassemble.
+
+    Args:
+        source: Path to the input ``.zpf``, binary or JSONL, or an open
+            binary stream.
+        sink: Path to write, or an open binary stream.
+        content_type: The label that makes a record a packet; as for
+            :func:`packets_to_zpf`, ``None`` selects ``net:ip`` and
+            ``net:ethernet``.
+        link_type: The link type of a *content_type* outside ``net:``.
+        packet_filter: Called per packet; return ``False`` to exclude it.  It
+            sees a record only when the record parses as one whole TCP
+            segment or UDP datagram, so with a filter given, fragments and
+            records of other protocols are left out.
+
+    Returns:
+        What was written.
+
+    Raises:
+        ValueError: If the selection is inconsistent, or selects records of
+            two link types, which one pcap cannot hold.
+
+    Example:
+        >>> export = packets_to_pcap("packets.zpf", "inner.pcap")
+        >>> print(export.summary())
+
+    """
+    select = _selection(content_type, link_type)
+    export = PcapExport()
+    with zpf.open(source) as reader:
+        streams = [view for session in reader.sessions() for view in session.reassemble()]
+        tick_hz = reader.header.tick_hz
+        epoch = reader.header.time_epoch or 0
+        export.link_type = _one_link_type(streams, select)
+        nanoseconds = tick_hz > 1_000_000
+        unit = 1_000_000_000 if nanoseconds else 1_000_000
+
+        def records() -> Iterator[tuple[bytes, int, int]]:
+            for _index, datagram in _merged(streams):
+                export.records_read += 1
+                label_link = select.get(datagram.record.content_type or "")
+                if label_link is None:
+                    continue
+                export.records_selected += 1
+                if packet_filter is not None and not _passes(datagram, label_link, packet_filter):
+                    export.filtered += 1
+                    continue
+                export.packets += 1
+                seconds, rest = divmod(epoch + datagram.ts, tick_hz)
+                yield datagram.data, seconds, rest * unit // tick_hz
+
+        where = (
+            {"path": sink} if isinstance(sink, (str, os.PathLike)) else {"file_object": sink}
+        )
+        write_pcap(records(), link_type=export.link_type, nanoseconds=nanoseconds,
+                   **where)  # type: ignore[arg-type]
+    return export
+
+
+def _one_link_type(streams: Sequence[_Datagrams], select: Mapping[str, int]) -> int:
+    """Return the one link type the selected records share, refusing a mix."""
+    kinds = set(select.values())
+    if len(kinds) > 1:
+        kinds = {
+            select[label]
+            for stream in streams
+            for datagram in stream.datagrams()
+            if (label := datagram.record.content_type or "") in select
+        }
+    if len(kinds) > 1:
+        raise ValueError(
+            "the selected records are of two link types, which one pcap cannot hold; "
+            "pass content_type to export one of them"
+        )
+    return kinds.pop() if kinds else LINKTYPE_RAW
+
+
+def _passes(
+    datagram: zpf.Datagram, link_type: int, packet_filter: Callable[[PacketView], bool],
+) -> bool:
+    """Ask *packet_filter* about one record, when it is a packet the filter can judge."""
+    packet = parse_packet(datagram.data, link_type=link_type, decode_app=False)
+    if skip_reason(packet, headerless=link_type == LINKTYPE_RAW) is not None:
+        return False
+    view = packet_view(packet, packet_num=0, ts_ticks=datagram.ts, payload_offset=None,
+                       fragment_count=1)
+    return packet_filter(view)
 
 
 def _selection(content_type: str | None, link_type: int | None) -> dict[str, int]:

@@ -4,6 +4,7 @@ Commands:
   convert   write a .zpf (or its JSON-Lines projection) from a capture, or
             from a .zpf of packets such as a decrypted tunnel's
   info      list the conversations a capture holds, without writing anything
+  pcap      write the packets of a .zpf to a pcap, for Wireshark
 
 Examples:
   # Convert a capture, TCP reassembly included
@@ -30,6 +31,9 @@ Examples:
   # The same, for a decoder that labels its packets with a private type
   zpfwire convert packets.zpf -o inner.zpf --content-type dec:ip-packet
 
+  # Those decrypted packets as a pcap, to open in Wireshark
+  zpfwire pcap packets.zpf -o inner.pcap
+
 """
 
 from __future__ import annotations
@@ -45,7 +49,7 @@ from zpfwire.capture import CaptureReader
 from zpfwire.convert import convert, describe_source
 from zpfwire.filter import matcher
 from zpfwire.options import CHECKSUM_POLICIES, OVERLAP_POLICIES, ReassemblyOptions
-from zpfwire.packets import input_kind, packets_to_zpf
+from zpfwire.packets import input_kind, packets_to_pcap, packets_to_zpf
 from zpfwire.stats import ConversionStats
 from zpfwire.survey import survey
 
@@ -196,6 +200,26 @@ def _loss_advice(stats: ConversionStats) -> str:
     )
 
 
+# ── pcap subcommand ─────────────────────────────────────────────────────
+
+
+def _cmd_pcap(args: argparse.Namespace) -> None:
+    if input_kind(args.input) != "zpf":
+        raise ValueError("pcap exports the packets of a .zpf; this is a capture already")
+    export = packets_to_pcap(
+        args.input,
+        args.output,
+        content_type=args.content_type,
+        link_type=args.link_type,
+        packet_filter=matcher(_build_packet_filter(args)),
+    )
+    if not args.quiet:
+        print(export.summary())
+        sys.stdout.flush()
+        if export.records_read and not export.records_selected:
+            print(f"Note: {_selection_advice(args)}", file=sys.stderr)
+
+
 # ── info subcommand ─────────────────────────────────────────────────────
 
 
@@ -222,11 +246,14 @@ def _cmd_info(args: argparse.Namespace) -> None:
 # ── entry point ─────────────────────────────────────────────────────────
 
 
-def _add_common(parser: argparse.ArgumentParser, *, inputs: str, link_type: str) -> None:
+def _add_common(
+    parser: argparse.ArgumentParser, *, inputs: str, link_type: str, tick_hz: bool = True,
+) -> None:
     parser.add_argument("input", help=inputs)
     parser.add_argument("--link-type", type=int, default=None, help=link_type)
-    parser.add_argument("--tick-hz", type=_positive_int, default=None,
-                        help="override the tick rate derived from the capture header")
+    if tick_hz:
+        parser.add_argument("--tick-hz", type=_positive_int, default=None,
+                            help="override the tick rate derived from the capture header")
 
     group = parser.add_argument_group(
         "filtering",
@@ -306,6 +333,28 @@ def main() -> None:
                             help="what to do with a packet whose transport checksum "
                                  "does not verify (default: ignore)")
     convert_parser.set_defaults(func=_cmd_convert)
+
+    pcap_parser = subparsers.add_parser(
+        "pcap", help="write the packets of a .zpf to a pcap",
+        description="Export the packet records of a .zpf, such as a decrypted tunnel's, to a "
+                    "pcap for Wireshark. An export for analysis: the pcap cites nothing, so "
+                    "'convert' is what keeps the provenance chain.",
+    )
+    _add_common(
+        pcap_parser,
+        inputs="a .zpf of packets (binary or JSON-Lines)",
+        link_type="the link type of records selected by a --content-type outside net: "
+                  "(default: raw IP)",
+        tick_hz=False,
+    )
+    pcap_parser.add_argument("-o", "--output", required=True, help="pcap file to write")
+    pcap_parser.add_argument(
+        "--content-type", default=None, metavar="LABEL",
+        help="the content_type that makes a record a packet (default: net:ip and net:ethernet)",
+    )
+    pcap_parser.add_argument("-q", "--quiet", action="store_true",
+                             help="do not print the summary")
+    pcap_parser.set_defaults(func=_cmd_pcap)
 
     info_parser = subparsers.add_parser(
         "info", help="list the conversations a capture holds",

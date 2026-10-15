@@ -18,6 +18,19 @@ it.  See {doc}`../guide/converting-packets` for what the output says and why.
 
 ---
 
+## Exporting to a pcap
+
+```{eval-rst}
+.. autofunction:: zpfwire.packets.packets_to_pcap
+```
+
+```{eval-rst}
+.. autoclass:: zpfwire.packets.PcapExport
+   :members:
+```
+
+---
+
 ## The reader
 
 The counterpart of {class}`~zpfwire.capture.CaptureReader`: it selects,

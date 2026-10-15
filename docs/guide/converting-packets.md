@@ -41,6 +41,11 @@ to a pcap and converting that is the chain: a loss in `http.zpf` traces back
 through `inner.zpf`'s sequence hole and `packets.zpf`'s failed decryption to
 ciphertext in `outer.zpf`.  A pcap would cut it.
 
+When the goal is Wireshark rather than the chain, export the packets
+instead — {func}`~zpfwire.packets.packets_to_pcap`, or `zpfwire pcap` (see
+{doc}`../cli/pcap`).  The same records are selected, in the same order,
+and written exactly as stored; the pcap cites nothing.
+
 ## Which records are packets
 
 A record is a packet when its `content_type` says so.  The default selects
