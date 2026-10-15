@@ -55,14 +55,74 @@ output may cite across its input's seams**
 ([zipline#152](https://github.com/adamkjonsson/zipline/issues/152)), and
 **`net:ip` and `net:ethernet`** name one network packet
 ([zipline#153](https://github.com/adamkjonsson/zipline/issues/153)); both
-are for a stage that reads a `.zpf` of packets, which this tree does not
-yet.  A record's end is now **one past the last sequence number it
+are what a stage reading a `.zpf` of packets needs, and this release is
+the first to have one — see *Added*.  A record's end is now **one past the last sequence number it
 occupies**, so a stored pure ACK draws no edge
 ([zipline#160](https://github.com/adamkjonsson/zipline/issues/160)); this
 tree stores no pure ACKs, so nothing it writes is affected.
 
+### Added
+
+- **A `.zpf` of packets converts into sessions**
+  ([#35](https://github.com/adamkjonsson/python-zipline-wire/issues/35)):
+  **`zpfwire.packets_to_zpf(source, sink, …)`**, the
+  `packets.zpf → inner.zpf` hop of the specification's decrypted-tunnel
+  chain.  A stage that decrypts a tunnel leaves its inner traffic as
+  records, one per packet; this runs the same reassembly a capture gets over
+  them and writes a transport-layer file whose every record cites the input
+  packets it was built from.  It is built on python-zipline's
+  `sessionize_stage`, which keeps the coverage guarantee, the `skipped`
+  auto-fill and each Session End's whole-stream `input_extents`.  Its
+  keywords are `capture_to_zpf`'s, less `tick_hz` and `link_type`, which a
+  `.zpf` states itself, plus the selection:
+  - **`content_type=None` selects `net:ip` and `net:ethernet`**, the
+    format's own labels since spec `0.22`, each parsed as the link type it
+    names.  Another label selects records a decoder typed privately, such as
+    zipline-kober's `dec:ip-packet`, parsed as raw IP unless `link_type`
+    says otherwise.
+  - **A packet is cited whole**, headers included, by every record its bytes
+    or flags reached; a packet this tree discarded is marked with the reason
+    it would carry on a capture (`duplicate-discarded`, `late-arrival`,
+    `bad-checksum` …); anything else nothing cited — a pure ACK, a record
+    that is not a packet, a filtered flow — is left to the stage's `skipped`.
+  - **Records coalesce over the input's seams**, as zipline#152 allows a
+    record carrying `seq_start`, so over every fixture the sessions, records,
+    hints, flags and timestamps are those of the capture they came from.
+  - **The input is merged into timestamp order** across its streams, since a
+    decrypting stage stores one tunnel direction before the other.  Two
+    directions' records sharing a timestamp have no order in a `.zpf`, and
+    are taken by input stream.
+  - **A fragmented UDP datagram is not converted**: no record without
+    `seq_start` may cite several input units, so its fragments are marked
+    `undecodable` and counted as `SKIP_FRAGMENTED_UDP`
+    ([zipline#166](https://github.com/adamkjonsson/zipline/issues/166)).
+    Fragmented TCP is one record, as on a capture.
+  - Two limits, both python-zipline's to lift on its `0.6.0` branch: the
+    output is binary only
+    ([python-zipline#89](https://github.com/adamkjonsson/python-zipline/issues/89)),
+    and a flow that resumes after its timeout, or past a `capture-gap`,
+    cannot have its second session yet
+    ([python-zipline#88](https://github.com/adamkjonsson/python-zipline/issues/88)).
+- **`zpfwire.input_kind(source)`** says whether an input is a `.zpf` or a
+  capture, by the format's own check of its first bytes.
+- **`PacketRecordReader`**, the `.zpf` counterpart of `CaptureReader`;
+  **`RecordSink`**, with **`CaptureSink`** and **`PacketSink`**, where a
+  tracker's session goes; **`REASON_UNDECODABLE`** and
+  **`SKIP_FRAGMENTED_UDP`**; and **`ConversionStats.records_read`** and
+  **`records_selected`**, with an `input` summary line for a `.zpf` input.
+
 ### Changed
 
+- **Breaking: a `FlowTracker` writes through a sink, not a session.**  Its
+  constructor is `FlowTracker(key, sink, *, options, stats, tick_hz)`: the
+  `session`, `decoder`, `writer` and `source` arguments, and the `session`
+  attribute, are gone, and a subclass writes its records through
+  `self.sink.record(…, origins=…)`, naming the `payload_offset` of every
+  packet a record was built from.  That is what lets one tracker convert a
+  capture and a `.zpf` alike.  A subclass that called
+  `self.session.record(…, decoded=…)` calls `self.sink.record(…)` instead,
+  without `decoded`, which the sink supplies.  No capture conversion writes
+  a different byte.
 - **Breaking: a held segment that the fill covers wholly now flags the
   record covering it `retransmit`**, when the repeat is judged a
   retransmission ([#31](https://github.com/adamkjonsson/python-zipline-wire/issues/31)).

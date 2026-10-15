@@ -108,6 +108,11 @@ class ConversionStats:
             block because their place in the capture cannot be named — a
             datagram reassembled from several fragments occupies discontiguous
             ranges.  Counted rather than quietly uncited.
+        records_read: Records in the input, when it is a ``.zpf`` of packets
+            rather than a capture; ``0`` for a capture.
+        records_selected: Of those, records whose ``content_type`` selected
+            them as packets.  The rest are not packets, and the stage writing
+            the output declares their ranges ``skipped``.
 
     """
 
@@ -135,6 +140,8 @@ class ConversionStats:
     truncated: int = 0
     undecoded_regions: int = 0
     unlocatable_bytes: int = 0
+    records_read: int = 0
+    records_selected: int = 0
 
     @property
     def lossless(self) -> bool:
@@ -149,7 +156,13 @@ class ConversionStats:
             listed only when they are non-zero.
 
         """
-        lines = [
+        lines = []
+        if self.records_read:
+            lines.append(
+                f"input        {self.records_read} records, "
+                f"{self.records_selected} selected as packets",
+            )
+        lines += [
             f"packets      {self.packets}",
             f"converted    {self.converted}",
             f"sessions     {self.sessions}",

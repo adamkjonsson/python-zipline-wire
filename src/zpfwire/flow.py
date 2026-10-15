@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+import zpf
 
 from zpfwire.capture import PacketView, format_endpoint
 
 if TYPE_CHECKING:  # pragma: no cover
-    from zpf import DecoderHandle, FileWriter, ParticipantHandle, SessionWriter, SourceHandle
+    from zpf import (
+        DecoderHandle,
+        FileWriter,
+        Hints,
+        ParticipantHandle,
+        RecordFlags,
+        SessionWriter,
+        SourceHandle,
+    )
 
     from zpfwire.options import ReassemblyOptions
     from zpfwire.stats import ConversionStats
@@ -24,8 +35,10 @@ __all__ = [
     "REASON_LATE_RETRANSMITTED",
     "REASON_OVERLAP",
     "REASON_PAWS",
+    "CaptureSink",
     "FlowKey",
     "FlowTracker",
+    "RecordSink",
     "cite_undecoded",
 ]
 
@@ -216,16 +229,211 @@ def cite_undecoded(
     stats.undecoded_regions += 1
 
 
+class RecordSink(ABC):
+    """Where one tracker's session is written.
+
+    A tracker decides what the records of a conversation are; the sink
+    decides what writing one means, which depends on what the conversion
+    reads.  Over a capture it is a session of the output file, with
+    Undecoded blocks at capture byte offsets (:class:`CaptureSink`).  Over a
+    ``.zpf`` of packets it is a session of a sessionization stage, whose
+    records cite the input records they came from
+    (:class:`zpfwire.packets.PacketSink`).
+
+    A tracker locates the bytes it handles by the
+    :attr:`~zpfwire.capture.PacketView.payload_offset` of the packet they
+    came from, plus how far into the payload they sit.  That is the whole of
+    what a sink is told about where bytes came from, so each input gives the
+    number its own meaning: a byte offset into the capture file, or a slot in
+    a space that names one input packet.
+    """
+
+    @abstractmethod
+    def participant(self, endpoint: str, **declaration: object) -> ParticipantHandle:
+        """Declare a participant of this session.
+
+        Args:
+            endpoint: The participant's ``ip:port``.
+            **declaration: ``isn`` and ``tcp_role``, where known.
+
+        Returns:
+            The participant handle.
+
+        """
+
+    @abstractmethod
+    def record(
+        self,
+        sender: ParticipantHandle,
+        *,
+        ts: int,
+        payload: bytes,
+        origins: Sequence[int | None],
+        hints: Hints | None = None,
+        flags: RecordFlags | int = 0,
+        ts_first: int | None = None,
+    ) -> None:
+        """Write one transport-layer record.
+
+        Args:
+            sender: The participant that sent the bytes.
+            ts: The record's timestamp, in ticks.
+            payload: The record's bytes.
+            origins: The ``payload_offset`` of every packet the record was
+                built from, its flags included.  A capture conversion has
+                nothing to cite them as; a ``.zpf`` input cites each packet.
+            hints: ``seq_start`` and ``ack``, for TCP.
+            flags: The record's flags.
+            ts_first: When the first contributing packet arrived, where it
+                differs from ``ts``.
+
+        """
+
+    @abstractmethod
+    def undecoded(self, off_start: int | None, length: int, *, reason: str) -> None:
+        """Declare input bytes that reached no record.
+
+        Args:
+            off_start: Where the region starts, as a ``payload_offset`` plus
+                how far into that payload, or ``None`` when it cannot be
+                located.
+            length: How many bytes the region covers.
+            reason: Why the region went undecoded; see :data:`REASON_OVERLAP`
+                and the reasons beside it.
+
+        """
+
+    @abstractmethod
+    def end(self, reason: str) -> None:
+        """End the session.
+
+        Args:
+            reason: How it ended, from the specification's open vocabulary.
+
+        """
+
+
+class CaptureSink(RecordSink):
+    """A capture conversion's session: records in the output file, discards at capture offsets.
+
+    Attributes:
+        session: The output session being written.
+
+    """
+
+    def __init__(
+        self,
+        session: SessionWriter,
+        *,
+        writer: FileWriter,
+        source: SourceHandle,
+        decoder: DecoderHandle,
+        stats: ConversionStats,
+    ) -> None:
+        """Bind a sink to one output session.
+
+        Args:
+            session: The output session.
+            writer: The output file, which Undecoded blocks are written to.
+            source: The capture, which Undecoded blocks name.
+            decoder: The reassembler declared on the output, which every
+                record and Undecoded block names.
+            stats: Tally of what was written.
+
+        """
+        self.session = session
+        self._writer = writer
+        self._source = source
+        self._decoder = decoder
+        self._stats = stats
+
+    def participant(self, endpoint: str, **declaration: object) -> ParticipantHandle:
+        """Declare a participant of the output session.
+
+        Args:
+            endpoint: The participant's ``ip:port``.
+            **declaration: ``isn`` and ``tcp_role``, where known.
+
+        Returns:
+            The participant handle.
+
+        """
+        return self.session.participant(endpoint, **declaration)  # type: ignore[arg-type]
+
+    def record(
+        self,
+        sender: ParticipantHandle,
+        *,
+        ts: int,
+        payload: bytes,
+        origins: Sequence[int | None],
+        hints: Hints | None = None,
+        flags: RecordFlags | int = 0,
+        ts_first: int | None = None,
+    ) -> None:
+        """Write one record to the output session; *origins* are not cited.
+
+        A capture-sourced record carries no ``spans``: a span names a range
+        of an input ``.zpf``, and a capture is not one.
+
+        Args:
+            sender: The participant that sent the bytes.
+            ts: The record's timestamp, in ticks.
+            payload: The record's bytes.
+            origins: Unused here.
+            hints: ``seq_start`` and ``ack``, for TCP.
+            flags: The record's flags.
+            ts_first: When the first contributing packet arrived.
+
+        """
+        del origins
+        self.session.record(
+            sender,
+            ts=ts,
+            payload=payload,
+            hints=hints,
+            flags=flags,
+            decoded=zpf.Decoded(decoder=self._decoder),
+            ts_first=ts_first,
+        )
+
+    def undecoded(self, off_start: int | None, length: int, *, reason: str) -> None:
+        """Declare capture bytes that reached no record; see :func:`cite_undecoded`.
+
+        Args:
+            off_start: Byte offset of the region in the capture file, or
+                ``None`` when it cannot be located.
+            length: How many bytes the region covers.
+            reason: Why the region went undecoded.
+
+        """
+        cite_undecoded(
+            self._writer, self._source, off_start, length,
+            reason=reason, decoder=self._decoder, stats=self._stats,
+        )
+
+    def end(self, reason: str) -> None:
+        """End the output session.
+
+        Args:
+            reason: How it ended.
+
+        """
+        self.session.end(reason=reason)
+
+
 class FlowTracker(ABC):
     """Turns one conversation's packets into one session's records.
 
     Subclasses differ only in what a record *is* for their transport — a UDP
-    datagram, or a run of reassembled TCP bytes — so the writer wiring,
-    participant bookkeeping and end-reason handling live here.
+    datagram, or a run of reassembled TCP bytes — so the sink wiring,
+    participant bookkeeping and end-reason handling live here.  A subclass
+    writes through :attr:`sink`, so the same tracker converts a capture and
+    a ``.zpf`` of packets alike.
 
     Attributes:
         key: The conversation this tracker is responsible for.
-        session: The session being written.
+        sink: Where the session is written.
         last_ts: Capture timestamp of the most recent packet seen, in ticks.
         timed_out: Whether the flow was closed by the idle timeout.
 
@@ -234,50 +442,46 @@ class FlowTracker(ABC):
     def __init__(
         self,
         key: FlowKey,
-        session: SessionWriter,
+        sink: RecordSink,
         *,
-        decoder: DecoderHandle | None,
         options: ReassemblyOptions,
         stats: ConversionStats,
         tick_hz: int,
-        writer: FileWriter | None = None,
-        source: SourceHandle | None = None,
     ) -> None:
+        """Start tracking one conversation.
+
+        Args:
+            key: The conversation.
+            sink: Where its session is written.
+            options: The reassembly policy.
+            stats: Tally of what the conversion did.
+            tick_hz: Ticks per second of every timestamp it sees.
+
+        """
         self.key = key
-        self.session = session
+        self.sink = sink
         self.last_ts = 0
         self.timed_out = False
-        self._decoder = decoder
         self._options = options
         self._stats = stats
         self._tick_hz = tick_hz
-        self._writer = writer
-        self._source = source
         self._participants: dict[str, ParticipantHandle] = {}
 
     def undecoded(self, off_start: int | None, length: int, *, reason: str) -> None:
-        """Declare capture bytes that this stage did not turn into a record.
+        """Declare input bytes that this stage did not turn into a record.
 
-        The tracker-bound form of :func:`cite_undecoded`, which carries the
-        rules.
+        The tracker-bound form of :meth:`RecordSink.undecoded`.
 
         Args:
-            off_start: Byte offset of the region in the capture file, or
-                ``None`` when it cannot be located.
+            off_start: Where the region starts, as a ``payload_offset`` plus
+                how far into that payload, or ``None`` when it cannot be
+                located.
             length: How many bytes the region covers.
             reason: Why the region went undecoded; see :data:`REASON_OVERLAP`,
                 :data:`REASON_DUPLICATE` and :data:`REASON_LATE`.
 
         """
-        cite_undecoded(
-            self._writer,
-            self._source,
-            off_start,
-            length,
-            reason=reason,
-            decoder=self._decoder,
-            stats=self._stats,
-        )
+        self.sink.undecoded(off_start, length, reason=reason)
 
     def expired(self, now_ticks: int) -> bool:
         """Report whether this flow has been silent for longer than allowed.
@@ -352,7 +556,7 @@ class FlowTracker(ABC):
         """
         handle = self._participants.get(endpoint)
         if handle is None:
-            handle = self.session.participant(endpoint, **declaration)  # type: ignore[arg-type]
+            handle = self.sink.participant(endpoint, **declaration)
             self._participants[endpoint] = handle
         return handle
 

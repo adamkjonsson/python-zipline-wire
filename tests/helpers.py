@@ -18,11 +18,13 @@ from dataclasses import dataclass, field
 import zpf
 from packeteer.generate import PacketBuilder
 from packeteer.generate.tcp import TCP_ACK, TCP_FIN, TCP_PSH, TCP_RST, TCP_SYN, TCPOptions
+from packeteer.parse import iter_packets
 from packeteer.pcap import LINKTYPE_ETHERNET, SNAPLEN_UNLIMITED, write_pcap
 
 from zpfwire import ConversionStats, capture_to_zpf
 
 CAPTURES = pathlib.Path(__file__).parent / "captures"
+VECTORS = pathlib.Path(__file__).parent / "vectors"
 
 CLIENT_IP = "10.0.0.1"
 SERVER_IP = "10.0.0.2"
@@ -31,6 +33,7 @@ SERVER_PORT = 80
 
 __all__ = [
     "CAPTURES",
+    "VECTORS",
     "CLIENT_IP",
     "CLIENT_PORT",
     "SERVER_IP",
@@ -45,6 +48,7 @@ __all__ = [
     "SessionSnapshot",
     "capture_of",
     "decode_digest",
+    "packets_zpf",
     "fragmented_frames",
     "tcp_packet",
     "tcp_segments",
@@ -366,3 +370,93 @@ def decode_digest(path: pathlib.Path | str) -> str:
             h.update(len(canonical).to_bytes(4, "little"))
             h.update(canonical)
     return "sha256:" + h.hexdigest()
+
+
+def packets_zpf(
+    capture: pathlib.Path | str | io.BytesIO,
+    out: pathlib.Path,
+    *,
+    adjacency: zpf.Adjacency = zpf.Adjacency.UNITS,
+    label: str = zpf.NET_IP,
+    fields: bool = True,
+    interleave: bool = False,
+) -> pathlib.Path:
+    """Write a capture's packets as a `.zpf` of packet records — what a tunnel decryptor writes.
+
+    One session and two participants, standing for a tunnel's two
+    directions; each frame becomes one record labelled *label*.  Under
+    ``net:ethernet`` the record is the whole frame; under any other label it
+    is the frame from its IP header on, Ethernet padding included, as
+    zipline-kober's WireGuard decode keeps WireGuard's.  A frame with no IP
+    header is a ``prim:bytes`` record, which is not a packet.  It is a
+    capture-sourced *decoded* file, a legal cell of the
+    specification's two axes, so it needs no ``.zpf`` of its own to derive
+    from — and so its records cite nothing, since a span may only name a
+    ``.zpf`` input.
+
+    Args:
+        capture: The capture to repackage.
+        out: Where to write the ``.zpf``.
+        adjacency: ``UNITS`` for zipline-kober's field-granular shape, or
+            ``CONTIGUOUS``, which also gets one Discontinuity half way
+            through the first participant — the vector's shape.
+        label: The packets' ``content_type``.
+        fields: Interleave a one-byte ``prim:u8`` record before each packet,
+            as a field-granular decode writes its header fields, so that
+            selection by label is exercised.
+        interleave: Store the two participants' records interleaved in
+            capture order.  By default one participant's are all stored
+            before the other's, as zipline-kober stores them, so a reader
+            that trusts the file's stored order across participants is
+            caught; interleaving gives the same records another order.
+
+    Returns:
+        *out*.
+
+    """
+    where = {"file_object": capture} if isinstance(capture, io.BytesIO) else {"path": capture}
+    if isinstance(capture, io.BytesIO):
+        capture.seek(0)
+    with iter_packets(**where, decode_app=False, defragment=False) as packets:  # type: ignore[arg-type]
+        tick_hz = packets.header.tick_hz
+        link_type = packets.header.link_type
+        frames = [(p.ts_sec * tick_hz + p.ts_frac, p, p.source_records[0]) for p in packets]
+    sides: dict[int, list[tuple[int, bytes, str]]] = {0: [], 1: []}
+    stored: list[tuple[int, int]] = []
+    for ts, packet, record in frames:
+        side = 0 if packet.ip is None or packet.ip.src <= packet.ip.dst else 1
+        frame = record.data
+        ip_at = packet.offsets.get("ip")
+        if label == zpf.NET_ETHERNET:
+            payload, content_type = frame, label
+        elif ip_at is None:
+            payload, content_type = frame, "prim:bytes"
+        else:
+            payload, content_type = frame[ip_at:], label
+        if fields:
+            stored.append((side, len(sides[side])))
+            sides[side].append((ts, frame[:1], "prim:u8"))
+        stored.append((side, len(sides[side])))
+        sides[side].append((ts, payload, content_type))
+    if not interleave:
+        stored = [(side, i) for side in (0, 1) for i in range(len(sides[side]))]
+
+    with zpf.create(out, tick_hz=tick_hz, produced_by="zpfwire tests",
+                    produced_at=1_700_000_000) as writer:
+        uri = None if isinstance(capture, io.BytesIO) else str(capture)
+        writer.add_source("capture", uri=uri, link_type=link_type)
+        decoder = writer.add_decoder("tunnel", output_layer=zpf.OutputLayer.DECODED,
+                                     version="0")
+        session = writer.begin_session(proto="ip", key="tunnel")
+        handles = [session.participant(f"tunnel-{side}", adjacency=adjacency) for side in (0, 1)]
+        middle = len(sides[0]) // 2
+        for side, i in stored:
+            ts, payload, content_type = sides[side][i]
+            if adjacency == zpf.Adjacency.CONTIGUOUS and side == 0 and i == middle:
+                session.discontinuity(handles[side], reason="decrypt-failed")
+            session.record(
+                handles[side], ts=ts, payload=payload,
+                decoded=zpf.Decoded(decoder=decoder, content_type=content_type),
+            )
+        session.end()
+    return out
