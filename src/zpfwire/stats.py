@@ -93,8 +93,9 @@ class ConversionStats:
         bad_checksum: Packets whose transport checksum did not verify.
             Counted under either policy, so a conversion that kept them still
             says how many there were.
-        checksum_dropped_bytes: Payload bytes discarded because of a failed
-            checksum, which is zero unless the policy is ``"drop"``. Like
+        checksum_dropped_bytes: TCP payload bytes discarded because of a failed
+            checksum, which is zero unless the policy is ``"drop"``; a UDP
+            datagram is never discarded for one, only counted. Like
             :attr:`filtered` this is a deliberate exclusion rather than a
             loss: the bytes reached no receiver either.
         truncated: Packets that reached a session carrying less than was sent,

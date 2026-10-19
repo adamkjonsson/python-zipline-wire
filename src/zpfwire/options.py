@@ -38,7 +38,7 @@ is.  See :attr:`ReassemblyOptions.overlap`.
 """
 
 CHECKSUM_POLICIES = ("ignore", "drop")
-"""What to do with a packet whose transport checksum does not verify."""
+"""What to do with a TCP segment whose checksum does not verify; UDP is always kept."""
 
 
 def tool_version() -> str:
@@ -83,13 +83,17 @@ class ReassemblyOptions:
         coalesce: Join contiguous segments into one record, flushing on PSH
             and at every boundary. When ``False``, each segment becomes its
             own record.
-        checksum: What to do with a packet whose transport checksum does not
+        checksum: What to do with a TCP segment whose checksum does not
             verify. A receiver discards it and takes the retransmission that
             follows, which is what ``"drop"`` does; ``"ignore"`` converts it
             anyway. The default is ``"ignore"`` because checksum offload makes
             a capture taken on a sending host report wrong checksums for
             traffic that was correct on the wire — dropping those by default
-            would gut such a capture.
+            would gut such a capture. A **UDP** datagram is kept under either
+            policy, and counted: a UDP stream's offsets are not
+            sequence-anchored, so a datagram left out would leave no trace in
+            it, and the specification forbids a transport-layer stage to
+            withhold content from such a stream.
 
     """
 

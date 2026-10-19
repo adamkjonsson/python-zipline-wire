@@ -13,7 +13,7 @@ capture file
 PacketView                    one TCP segment or UDP datagram, reduced
    │  tcp / udp wanted?       a transport switched off is `<proto>-not-requested`
    │  packet_filter           optional predicate; rejects counted as `filtered`
-   │  checksum policy         a bad checksum is counted; under "drop" it ends here, cited
+   │  checksum policy         a bad checksum is counted; under "drop" a TCP one ends here, cited
    ▼
 FlowKey.of(pkt)               direction-free conversation identity
    │

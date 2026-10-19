@@ -326,8 +326,9 @@ def main() -> None:
     reassembly.add_argument("--no-coalesce", action="store_true",
                             help="emit one record per segment instead of per byte run")
     reassembly.add_argument("--checksum", choices=CHECKSUM_POLICIES, default="ignore",
-                            help="what to do with a packet whose transport checksum "
-                                 "does not verify (default: ignore)")
+                            help="what to do with a TCP segment whose checksum does "
+                                 "not verify (default: ignore); a UDP datagram is "
+                                 "always kept, and counted")
     convert_parser.set_defaults(func=_cmd_convert)
 
     pcap_parser = subparsers.add_parser(

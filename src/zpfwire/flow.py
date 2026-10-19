@@ -92,10 +92,12 @@ as a repeat, whatever its clock.
 """
 
 REASON_CHECKSUM = "bad-checksum"
-"""Undecoded reason for a packet discarded because its checksum did not verify.
+"""Undecoded reason for a TCP segment discarded because its checksum did not verify.
 
-Doubles as the skip key for the same packets, since a packet dropped before it
-reaches a session is skipped in exactly the sense the tally means.
+Written only under ``checksum="drop"``, and never for UDP, which is kept: a UDP
+stream's offsets could not show a datagram missing.  Doubles as the skip key
+for the same packets, since a packet dropped before it reaches a session is
+skipped in exactly the sense the tally means.
 """
 
 _BYTES_EXIST = "bytes"

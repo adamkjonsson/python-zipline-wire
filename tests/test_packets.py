@@ -22,12 +22,15 @@ import pytest
 import zpf
 from helpers import (
     CAPTURES,
+    TCP_ACK,
     TCP_PSH,
     VECTORS,
     Seg,
     capture_of,
     packets_zpf,
+    tcp_packet,
     tcp_segments,
+    udp_packet,
 )
 from packeteer.generate.ethernet import EthernetHeader
 from packeteer.generate.fragmentation import fragment_ipv4
@@ -308,6 +311,32 @@ def test_the_session_after_a_capture_gap_is_on_the_same_key(tmp_path: pathlib.Pa
     assert [s[2] for s in shape(inner)] == ["capture-gap", "capture-end"]
     assert zpf.check_coverage(inner, packets) == []
     assert zpf.check_extents(inner) == []
+
+
+def test_drop_discards_a_corrupt_segment_and_keeps_a_corrupt_datagram(tmp_path: pathlib.Path):
+    """``checksum="drop"`` over a `.zpf`, as over a capture: TCP only.
+
+    The corrupt segment's packet is marked ``bad-checksum`` whole, and its
+    resend supplies the bytes.  The corrupt datagram is written, since a UDP
+    stream cannot show one missing.
+    """
+    capture = capture_of([
+        tcp_packet(seq=1, payload=b"BAD!", flags=TCP_ACK | TCP_PSH, checksum=0x1234),
+        tcp_packet(seq=1, payload=b"good", flags=TCP_ACK | TCP_PSH),
+        udp_packet(payload=b"junk", checksum=0x1234),
+    ])
+    direct_stats, direct, inner_stats, inner, packets = convert_both(
+        capture, tmp_path, options=ReassemblyOptions(checksum="drop"),
+    )
+
+    assert shape(inner) == shape(direct)
+    assert inner_stats.bad_checksum == direct_stats.bad_checksum == 2
+    assert inner_stats.checksum_dropped_bytes == direct_stats.checksum_dropped_bytes == 4
+    with zpf.open(inner) as reader:
+        payloads = sorted(r.payload for s in reader.sessions() for r in s.records() if r.payload)
+        assert payloads == [b"good", b"junk"]
+        assert [u.reason for u in reader.undecoded if u.reason != "skipped"] == ["bad-checksum"]
+    assert zpf.check_coverage(inner, packets) == []
 
 
 # ── selection ───────────────────────────────────────────────────────────

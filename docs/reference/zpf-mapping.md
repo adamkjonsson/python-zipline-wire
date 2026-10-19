@@ -161,7 +161,7 @@ Written for bytes that are in the capture and reached no record.
 | `source_id` | The capture source |
 | `session_id`, `participant_id` | **`0`** — against a capture source there is no input `.zpf`, so there is no id namespace to name |
 | `off_start`, `off_end` | Byte offsets **into the capture file**, half-open |
-| `reason` | `overlap-discarded` or `duplicate-discarded` for a repeat; `late-arrival`, `late-reordered` or `late-retransmitted` for a byte inside a committed gap; `paws-rejected`; `bad-checksum` under `checksum="drop"` — see {doc}`../api/flow` |
+| `reason` | `overlap-discarded` or `duplicate-discarded` for a repeat; `late-arrival`, `late-reordered` or `late-retransmitted` for a byte inside a committed gap; `paws-rejected`; `bad-checksum` for a TCP segment under `checksum="drop"` — see {doc}`../api/flow` |
 | `reason_class` | `bytes` |
 | `decoder_id` | The reassembly decoder |
 

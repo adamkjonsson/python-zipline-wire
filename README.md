@@ -130,7 +130,7 @@ Note: some bytes never reached the output. Raise --reorder-window or
 | `--overlap {favor-old,favor-acked}` | which copy wins when retransmitted bytes disagree — the first seen, or the one the receiver's acknowledgement echoed |
 | `--session-timeout SECONDS` | silence after which a conversation is closed |
 | `--no-coalesce` | one record per segment instead of per contiguous byte run |
-| `--checksum {ignore,drop}` | whether to discard a packet whose transport checksum does not verify |
+| `--checksum {ignore,drop}` | whether to discard a TCP segment whose checksum does not verify; a UDP datagram is always kept |
 
 These are hashed into the file's decoder descriptor, so a `.zpf` records the
 policy that produced it.

@@ -54,9 +54,10 @@ where the Timestamps option can say why, `late-reordered` /
 `duplicate-discarded` for a repeat of bytes already accepted — but never
 cites the hole itself.  `paws-rejected` cites an old segment dropped whole
 before it reaches `_accept`.  One more reason, `bad-checksum`, comes from
-`convert.py` rather than the reassembler: under `checksum="drop"` a packet
-that failed its checksum is discarded whole before it reaches a flow, and
-its payload is cited the same way.
+`convert.py` rather than the reassembler: under `checksum="drop"` a TCP
+segment that failed its checksum is discarded whole before it reaches a
+flow, and its payload is cited the same way.  A UDP datagram never is: a
+UDP stream's offsets could not show it missing.
 
 ### When it cannot be done
 

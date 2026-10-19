@@ -293,7 +293,14 @@ def _drive(
             continue
         if pkt.checksum_bad:
             stats.bad_checksum += 1
-            if options.checksum == "drop":
+            # TCP only.  A UDP stream's offsets are not sequence-anchored, so
+            # a datagram left out of it leaves no trace in the stream, and the
+            # specification forbids a transport-layer stage to withhold content
+            # from such a stream (§Discontinuity, *MUST NOT withhold content*).
+            # A corrupt datagram is therefore written like any other, and only
+            # counted.  A TCP segment left out is a sequence hole, which the
+            # stream's offsets show, and its resend fills it.
+            if options.checksum == "drop" and pkt.protocol == "tcp":
                 _drop(pkt, target, stats=stats)
                 continue
 

@@ -131,6 +131,21 @@ tree stores no pure ACKs, so nothing it writes is affected.
 
 ### Changed
 
+- **Breaking: `checksum="drop"` (`--checksum drop`) drops a corrupt TCP
+  segment only; a corrupt UDP datagram is kept**, as under `"ignore"`, and
+  still counted under `bad cksum`.  The specification forbids a
+  transport-layer stage to withhold content from a stream whose offsets are
+  not sequence-anchored (§Discontinuity): a TCP segment left out is a
+  sequence hole that its offsets show and its resend fills, but a UDP
+  stream's offsets are the payloads that arrived, so a datagram left out
+  leaves no trace, and the `bad-checksum` region naming it is declarative
+  only.  `0.4.0` dropped both.  Bytes move for a capture with a corrupt UDP
+  datagram converted under `drop`: the datagram is now a record, and no
+  `bad-checksum` region or skip is written for it.  No fixture has one, so
+  no pin moves.  A caller who relied on corrupt datagrams disappearing reads
+  `stats.bad_checksum` instead, and finds them in the input.  zipline-kober's
+  WireGuard example, whose corrupted tunnel datagrams are UDP, sees them
+  decoded as `decrypt-failed` under either policy now.
 - **Breaking: a `FlowTracker` writes through a sink, not a session.**  Its
   constructor is `FlowTracker(key, sink, *, options, stats, tick_hz)`: the
   `session`, `decoder`, `writer` and `source` arguments, and the `session`

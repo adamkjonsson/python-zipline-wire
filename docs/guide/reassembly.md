@@ -165,9 +165,10 @@ Coalescing also affects timestamps: a coalesced record is stamped with its
 
 ### `checksum` — trusting what the wire said
 
-A packet whose transport checksum does not verify was corrupted in flight.  A
+A segment whose TCP checksum does not verify was corrupted in flight.  A
 receiver drops it and takes the retransmission that follows; by default
-`zpfwire` keeps it.
+`zpfwire` keeps it.  The policy applies to **TCP only** — see *UDP is always
+kept*, below.
 
 ```python
 ReassemblyOptions(checksum="drop")           # discard it, as a receiver would
@@ -206,6 +207,15 @@ the checksum has no reason to trust the header either, so the segment's flags
 open and close nothing, and a corrupt packet never starts a session.  The
 payload is cited as an `Undecoded` block with reason `bad-checksum`, and the
 packet is tallied as a skip, so the accounting rule holds under either policy.
+
+**UDP is always kept.**  A UDP datagram whose checksum fails is written
+like any other, under either policy, and counted under `bad cksum`.  The
+specification forbids a transport-layer stage to *withhold content* from a
+stream whose offsets are not sequence-anchored: a TCP segment left out is a
+sequence hole the offsets show, and its resend fills it, but a UDP stream's
+offsets are the payloads that arrived, so a datagram left out would leave no
+trace.  A consumer that wants corrupt datagrams gone has the count to know
+they are there, and the input to find them in.
 
 Two things are deliberately *not* read as failures: an IPv4 UDP datagram whose
 checksum is `0`, which means *none was computed* (RFC 768) rather than a wrong

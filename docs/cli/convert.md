@@ -114,7 +114,7 @@ they turn up later.  These settings are what decide when that happens.
 | `--overlap {favor-old,favor-acked}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted: the first seen, or the one the receiver's acknowledgement echoed — see {doc}`../guide/reassembly` |
 | `--session-timeout SECONDS` | `300.0` | Silence after which a conversation is closed and a later packet starts a new session |
 | `--no-coalesce` | off | Emit one record per segment instead of one per contiguous byte run |
-| `--checksum {ignore,drop}` | `ignore` | What to do with a packet whose transport checksum does not verify. `drop` discards it as a receiver would, leaving the retransmission to supply the bytes |
+| `--checksum {ignore,drop}` | `ignore` | What to do with a TCP segment whose checksum does not verify. `drop` discards it as a receiver would, leaving the retransmission to supply the bytes. A UDP datagram is kept under either, and counted: a UDP stream could not show one missing |
 
 All six are hashed into the file's decoder descriptor as a `params_digest`,
 so a `.zpf` records the policy that produced it and a conversion can be
@@ -164,7 +164,7 @@ the output:
 | `acked` | Under `--overlap favor-acked`: ranges that took the receiver's copy, and contested bytes decided without ack evidence |
 | `ts fallback` | Repeats treated as retransmissions because the Timestamps option could not judge them, and why |
 | `bad cksum` | Packets whose transport checksum did not verify, whether or not they were dropped |
-| `dropped` | Payload bytes discarded under `--checksum drop` |
+| `dropped` | TCP payload bytes discarded under `--checksum drop` |
 | `undecoded` | Regions of the capture cited as reaching no record |
 | `uncited` | Discarded bytes whose place in the capture could not be named |
 
