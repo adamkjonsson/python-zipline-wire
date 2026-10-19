@@ -34,7 +34,7 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 -->
 
 Writes spec **v0.23** (`zpf.SPEC_VERSION == (0, 23)`), up from `0.21`,
-against packeteer **0.17.0** and python-zipline **0.6.0**
+against packeteer **0.18.0** and python-zipline **0.6.0**
 ([#38](https://github.com/adamkjonsson/python-zipline-wire/issues/38)).
 No python-zipline release implements `0.22`, which `0.23` followed the same
 day, and this release takes both.  The floors are python-zipline `0.6.0`,

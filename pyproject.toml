@@ -30,7 +30,8 @@ classifiers = [
 # The packeteer floor names what the suite needs, not only the code: 0.16.0's
 # generator no longer acknowledges past a corrupted segment before its resend
 # (packeteer#163), which the generated favor-acked test depends on (#30).
-# Built against packeteer 0.17.0.
+# Built against packeteer 0.18.0, of which this tree needs nothing: its pcap
+# writer streamed an iterable before 0.18.0 documented it (packeteer#204).
 #
 # The zpf floor is a development release while 0.5.0 is built against the
 # python-zipline 0.6.0 release candidate: PEP 440 sorts 0.6.0.dev0 below
