@@ -21,9 +21,10 @@ every *other* consumer of that library.  Filing it fixes it once.
 
 ## What it produced
 
-Twenty-nine issues so far; two are open, both found by the `0.4.0` release
-deleting a shim, and neither blocks anything — the shape they describe is a
-documented limit of `--sequenced` until the format answers.
+Thirty-nine issues so far, and one is open: zipline#166, a fragmented UDP
+datagram over a unit-sequence input, which this tree marks `undecodable`
+until the format answers.  Every other one has been answered upstream and
+released, most of them within days.
 
 **packeteer**, filed before a line of code was written:
 

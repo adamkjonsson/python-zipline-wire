@@ -7,8 +7,9 @@ sequencing is asked for.
 ## The path a packet takes
 
 ```
-capture file
-   │  CaptureReader           packeteer parses; fragments already reassembled
+capture file                  or a .zpf of packets
+   │  CaptureReader           PacketRecordReader: selects, merges by time,
+   │                          defragments and parses the input's records
    ▼
 PacketView                    one TCP segment or UDP datagram, reduced
    │  tcp / udp wanted?       a transport switched off is `<proto>-not-requested`
@@ -21,13 +22,15 @@ FlowKey.of(pkt)               direction-free conversation identity
 FlowTracker                   TcpFlow or UdpFlow, created on first packet
    │  .packet(pkt)
    ▼
-SessionWriter.record(...)     zpf validates before bytes reach the sink
+RecordSink.record(...)        CaptureSink: the output file's session
+   │                          PacketSink: a sessionization stage's, citing input
    ▼
-.zpf
+.zpf                          zpf validates before bytes reach the sink
 ```
 
-`convert.py` owns that loop.  It is deliberately short: everything
-interesting is either in the reader below it or the tracker beside it.
+`convert.py` owns that loop, `_drive`, and both inputs share it.  It is
+deliberately short: everything interesting is either in the reader below it,
+the tracker beside it, or the sink the tracker writes through.
 
 ## Why the layers are where they are
 
@@ -38,10 +41,12 @@ boundary is what let the module be rewritten from a hand-rolled layer walk to
 a single packeteer call without touching anything else — see
 {doc}`capture-seam`.
 
-**`flow.py` knows about the writer; the transports do not.**  Participant
-declaration, session end reasons, and the `Undecoded` helper live on
-`FlowTracker` because both transports need them identically.  `TcpFlow` and
-`UdpFlow` differ only in what a record *is*.
+**`flow.py` knows where a session is written; the transports do not.**
+Participant declaration, session end reasons, and the `Undecoded` helper live
+on `FlowTracker` because both transports need them identically, and they go
+through a `RecordSink` — the capture's output file, or a sessionization
+stage over a `.zpf` of packets — so neither transport knows which input it
+is converting.  `TcpFlow` and `UdpFlow` differ only in what a record *is*.
 
 **`tcp.py` knows about the specification's ordering rules.**  This is where
 the design stops being free — see {doc}`tcp-reassembler`.
@@ -121,9 +126,12 @@ made there.  The rule is that anything the CLI can do must be reachable from
 Python, so a flag that has no API equivalent is a bug in the API rather than a
 feature of the CLI.
 
-The two things it decides on its own are refusals, and both rest on a fact
-the API exposes: `convert` will not run with both transports switched off, or
-on a capture whose link type packeteer cannot decode
-(`CaptureReader.link_type_supported`).  Either would be a valid, empty file;
-the library will still write one if asked, and the CLI declines to, because
-nothing to convert is not a conversion.
+What it decides on its own are refusals, each resting on a fact the API
+exposes.  `convert` will not run with both transports switched off, or on a
+capture whose link type packeteer cannot decode
+(`CaptureReader.link_type_supported`): either would be a valid, empty file,
+which the library will still write if asked, and the CLI declines to,
+because nothing to convert is not a conversion.  And a flag that does not fit
+the input's kind (`input_kind`) is refused rather than ignored — `--tick-hz`
+with a `.zpf`, which states its own; `--content-type` with a capture — as are
+`info` given a `.zpf` and `pcap` given a capture.

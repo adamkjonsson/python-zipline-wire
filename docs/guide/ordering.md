@@ -3,7 +3,9 @@
 By default records are stored in **capture order**, which is not the order
 events happened.  Two packets recorded a microsecond apart may have crossed on
 the wire, and a file that stores them as recorded is asserting something the
-capture never established.
+capture never established.  Converting a `.zpf` of packets, the default order
+is the input's records merged by timestamp, which is no stronger a claim; the
+two inputs are sequenced alike.
 
 `sequenced=True` stores each TCP session in a valid causal linearization
 instead, and marks it `SEQUENCED` so a reader may act on the order:

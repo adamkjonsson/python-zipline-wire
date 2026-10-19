@@ -11,7 +11,9 @@ print(stats.summary())
 
 It opens the capture, hashes it, creates the writer, declares the source and
 the decoder, drives every conversation, and closes the file.  What comes back
-is a {class}`~zpfwire.stats.ConversionStats` describing what happened.
+is a {class}`~zpfwire.stats.ConversionStats` describing what happened.  A
+`.zpf` of packets — a decrypted tunnel's — converts the same way through
+{func}`~zpfwire.packets.packets_to_zpf`; see {doc}`converting-packets`.
 
 ## Sources and sinks
 
@@ -97,8 +99,11 @@ stats.undecoded_regions  # capture ranges cited as reaching no record
 stats.unlocatable_bytes  # discarded bytes whose capture range cannot be named
 
 stats.bad_checksum           # packets whose checksum did not verify, either policy
-stats.checksum_dropped_bytes # payload discarded with them, under checksum="drop"
+stats.checksum_dropped_bytes # TCP payload discarded with them, under checksum="drop"
 stats.truncated              # packets the capture's snaplen cut short
+
+stats.records_read           # a .zpf input's records, and those selected as packets;
+stats.records_selected       # both 0 for a capture
 ```
 
 The convenience predicate for "did anything get lost":

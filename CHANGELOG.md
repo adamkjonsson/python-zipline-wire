@@ -207,6 +207,20 @@ tree stores no pure ACKs, so nothing it writes is affected.
   zipline#152, #153 and #166.
 - **`CLAUDE.md` said the tree writes spec `0.20`**, two versions stale; it
   says `0.23`, and that the input may be a `.zpf` of packets.
+- **The release's documentation sweep** found pages still describing a
+  capture as the only input, and fixed them.  The overview said everything
+  zpfwire writes "sits in one cell" of the two axes.  The mapping said a
+  capture-sourced file is "the only kind zpfwire writes", and that nothing
+  here produces JSONL.  `architecture.md`'s packet path had no `.zpf` reader
+  or sink, and its CLI section counted two refusals.  `testing.md` counted
+  460 tests and listed neither new test module, nor the repackaged and
+  vendored inputs.  `upstream-first.md` counted twenty-nine issues with two
+  open.  The internals module map lacked `packets.py`.  `PacketView.payload_offset`
+  and `ConversionStats` described a capture only, and so did the new-transport
+  checklist, which now says to write through `self.sink` and name `origins`.
+  The README, the converting, filtering, surveying, provenance and ordering
+  guides, the CLI index and `limits.md` gained the sentence each lacked
+  about a `.zpf` input.
 
 ---
 

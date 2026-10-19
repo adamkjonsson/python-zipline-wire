@@ -15,9 +15,10 @@ whole architecture, not a gap.
 **No `content_type` on records.** Forbidden at the transport layer — a byte
 run has no media type.
 
-**No `spans` on records.** A span must reference a `zpf-input` source, and a
-capture-sourced file has none.  `ts_first` covers the one thing spans would
-otherwise have carried.
+**No `spans` on a capture conversion's records.** A span must reference a
+`zpf-input` source, and a capture-sourced file has none.  `ts_first` covers
+the one thing spans would otherwise have carried.  A conversion of a `.zpf`
+of packets is zpf-sourced, and its records do carry them.
 
 **No `Discontinuity` blocks.** A transport stream expresses its gaps in its
 offsets.  See {doc}`zpf-mapping`.

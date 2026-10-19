@@ -4,6 +4,10 @@ The output is a **capture-sourced, transport-layer** file: the top-left cell
 of the specification's provenance/layer table.  That one fact settles most of
 the encoding decisions made here, and the ones it does not are noted where
 they are taken.
+
+The loop that routes packets to flows, :func:`_drive`, is shared with
+:mod:`zpfwire.packets`, which converts a ``.zpf`` of packets through the same
+trackers into a zpf-sourced, transport-layer file.
 """
 
 from __future__ import annotations

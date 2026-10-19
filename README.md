@@ -4,9 +4,10 @@ Turn network captures into [Zipline Payload Format](https://github.com/adamkjons
 (`.zpf`) files — TCP reassembly included.
 
 A capture file answers *what was on the wire*. A `.zpf` answers *what did they
-say*. `zpfwire` is the step between: it reads a pcap, groups packets into
-conversations, reassembles each direction's byte stream, and writes the result
-as sessions, participants and records.
+say*. `zpfwire` is the step between: it reads a pcap — or a `.zpf` of
+packets, such as a decrypted tunnel's — groups packets into conversations,
+reassembles each direction's byte stream, and writes the result as sessions,
+participants and records.
 
 It is glue, and deliberately so:
 
@@ -196,7 +197,8 @@ ruff check src/ tests/ docs/                        # lint, must be silent
 ```
 
 Capture fixtures in `tests/captures/` are copied from packeteer's `testcases/`,
-plus three real HTTP captures added directly. Every test asserts that what was
+plus three real HTTP captures added directly, and `tests/vectors/` vendors the
+specification's `tunnel` vector for the `.zpf`-input path. Every test asserts that what was
 written reads back through `zpf.open` with no diagnostics and nothing
 unplaceable — a file that does not is not a conversion.
 

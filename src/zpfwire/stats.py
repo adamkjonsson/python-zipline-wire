@@ -10,9 +10,9 @@ __all__ = ["ConversionStats"]
 
 @dataclass
 class ConversionStats:
-    """Tally of one capture conversion.
+    """Tally of one conversion, of a capture or of a ``.zpf`` of packets.
 
-    Everything a capture contains is either converted or counted here.  The
+    Everything the input contains is either converted or counted here.  The
     loss-bearing fields — :attr:`skipped`, :attr:`gaps`, :attr:`late_bytes`,
     :attr:`overlap_bytes`, :attr:`duplicate_bytes` — exist so that a
     conversion never drops data silently; a caller is expected to surface

@@ -4,6 +4,9 @@ A capture-sourced file can say three things about where its contents came from
 that a transport stream cannot say on its own: which bytes of the capture
 reached no record, when a coalesced record *began*, and when the connection
 opened.  All three exist because the alternative is losing something quietly.
+This page is about a capture conversion; a conversion of a `.zpf` of packets
+cites its input packets in `spans` and owes the coverage guarantee, which
+{doc}`converting-packets` works through.
 
 ## The accounting rule
 

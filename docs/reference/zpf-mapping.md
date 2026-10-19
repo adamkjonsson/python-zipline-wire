@@ -84,17 +84,17 @@ a Discontinuity at every seam, for a stage that reorders a participant's
 records or a decoder whose units decompose one another (nested DNS, in
 [zipline#106](https://github.com/adamkjonsson/zipline/issues/106)).  On a
 transport-layer participant the field says nothing, since the offsets come
-from sequence numbers, and **a writer MUST NOT set `units` there**.  A
-capture-sourced, transport-layer file is the only kind zpfwire writes, so
+from sequence numbers, and **a writer MUST NOT set `units` there**.  Every
+file zpfwire writes is transport-layer, capture- or zpf-sourced, so
 `contiguous` is the only conformant value, and a test pins every participant
-of every fixture to it.  Dissection, when it comes, is the first layer at
+of every fixture to it — a `.zpf` input's `units` participants included,
+whose seams the output's sequence numbers carry instead.  Dissection, when it comes, is the first layer at
 which the field could say something.
 
 One visible consequence: **every participant line in a JSONL projection of a
 zpfwire file carries `"adjacency":"contiguous"`**, right after `"pid"`, as a
-body field always projects; a line without it is rejected.  Nothing in this
-tree produces or compares JSONL, but that is where the line's shape is
-looked up.
+body field always projects; a line without it is rejected.  The `--jsonl`
+face writes these lines, and this is where their shape is looked up.
 
 The far endpoint is declared even if it never sent anything.  The conversation
 had two ends whether or not both spoke; a session naming only the talker would

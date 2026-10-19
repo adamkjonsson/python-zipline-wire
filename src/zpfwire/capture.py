@@ -143,11 +143,16 @@ class PacketView:
         tcp_flags: Raw 8-bit TCP flags bitmask; ``0`` for UDP.
         tcp_options: Parsed TCP options, or ``None`` when the segment carried
             none.  SACK blocks and timestamps live here.
-        payload_offset: Byte offset of :attr:`payload`'s first byte within the
-            capture file, or ``None`` when there is no payload or the packet
-            was reassembled — a reassembled payload occupies several
-            discontiguous ranges, which one offset cannot express.
-        fragment_count: How many capture records the packet came from; ``1``
+        payload_offset: Where :attr:`payload` came from, as a number the
+            reassembler adds a payload-relative ``skip`` to when it names
+            discarded bytes.  From a capture, the byte offset of the payload's
+            first byte within the capture file, or ``None`` when there is no
+            payload or the packet was reassembled — a reassembled payload
+            occupies several discontiguous ranges, which one offset cannot
+            express.  From a ``.zpf`` of packets, a number naming the input
+            packet, which every ``payload_offset + skip`` still falls inside;
+            see :class:`~zpfwire.packets.PacketSink`.
+        fragment_count: How many input records the packet came from; ``1``
             unless it was reassembled.
         checksum_bad: Whether the transport checksum disagrees with the bytes
             it covers.  A receiver drops such a packet, so a conversion may

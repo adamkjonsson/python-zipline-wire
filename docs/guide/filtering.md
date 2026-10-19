@@ -11,6 +11,8 @@ stats = zpfwire.capture_to_zpf(
 print(stats.filtered)     # packets the predicate rejected
 ```
 
+The same predicate, and every CLI filter, applies unchanged to the inner
+packets of a `.zpf` input ({func}`~zpfwire.packets.packets_to_zpf`).
 Filtered packets are counted in
 {attr}`~zpfwire.stats.ConversionStats.filtered`, separately from
 {attr}`~zpfwire.stats.ConversionStats.skipped`.  The distinction is
