@@ -37,7 +37,7 @@ Verify the install:
 ```
 
 ```
-zpfwire 0.5.0.dev0 (zipline 0.23)
+zpfwire 0.5.0 (zipline 0.23)
 ```
 
 The second number is the **specification** version the `zpf` library

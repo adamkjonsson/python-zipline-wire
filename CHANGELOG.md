@@ -33,8 +33,13 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
-Writes spec **v0.23** (`zpf.SPEC_VERSION == (0, 23)`), up from `0.21`,
-against packeteer **0.18.0** and python-zipline **0.6.0**
+---
+
+## [0.5.0] - 2026-10-20
+
+**The `.zpf`-input release.**  Writes spec **v0.23**
+(`zpf.SPEC_VERSION == (0, 23)`), up from `0.21`, against packeteer
+**0.18.0** and python-zipline **0.6.0**
 ([#38](https://github.com/adamkjonsson/python-zipline-wire/issues/38)).
 No python-zipline release implements `0.22`, which `0.23` followed the same
 day, and this release takes both.  The floors are python-zipline `0.6.0`,
@@ -884,7 +889,8 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.1.0...v0.2.0

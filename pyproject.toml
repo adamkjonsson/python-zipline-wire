@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zpfwire"
-version = "0.5.0.dev0"
+version = "0.5.0"
 requires-python = ">=3.10"
 description = "Turn network captures into Zipline Payload Format (.zpf) files"
 authors = [ { name = "Adam Jonsson", email = "akj426@gmail.com" } ]
@@ -32,13 +32,10 @@ classifiers = [
 # (packeteer#163), which the generated favor-acked test depends on (#30).
 # Built against packeteer 0.18.0, of which this tree needs nothing: its pcap
 # writer streamed an iterable before 0.18.0 documented it (packeteer#204).
-#
-# The zpf floor is a development release while 0.5.0 is built against the
-# python-zipline 0.6.0 release candidate: PEP 440 sorts 0.6.0.dev0 below
-# 0.6.0, so ">=0.6.0" would refuse it.  It becomes ">=0.6.0" at release.
+# Built against python-zipline 0.6.0, the first release implementing 0.23.
 dependencies = [
     "packeteer>=0.16.0",
-    "zpf>=0.6.0.dev0",
+    "zpf>=0.6.0",
 ]
 
 [tool.setuptools]
