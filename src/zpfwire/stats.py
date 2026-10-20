@@ -10,9 +10,9 @@ __all__ = ["ConversionStats"]
 
 @dataclass
 class ConversionStats:
-    """Tally of one capture conversion.
+    """Tally of one conversion, of a capture or of a ``.zpf`` of packets.
 
-    Everything a capture contains is either converted or counted here.  The
+    Everything the input contains is either converted or counted here.  The
     loss-bearing fields — :attr:`skipped`, :attr:`gaps`, :attr:`late_bytes`,
     :attr:`overlap_bytes`, :attr:`duplicate_bytes` — exist so that a
     conversion never drops data silently; a caller is expected to surface
@@ -93,8 +93,9 @@ class ConversionStats:
         bad_checksum: Packets whose transport checksum did not verify.
             Counted under either policy, so a conversion that kept them still
             says how many there were.
-        checksum_dropped_bytes: Payload bytes discarded because of a failed
-            checksum, which is zero unless the policy is ``"drop"``. Like
+        checksum_dropped_bytes: TCP payload bytes discarded because of a failed
+            checksum, which is zero unless the policy is ``"drop"``; a UDP
+            datagram is never discarded for one, only counted. Like
             :attr:`filtered` this is a deliberate exclusion rather than a
             loss: the bytes reached no receiver either.
         truncated: Packets that reached a session carrying less than was sent,
@@ -108,6 +109,11 @@ class ConversionStats:
             block because their place in the capture cannot be named — a
             datagram reassembled from several fragments occupies discontiguous
             ranges.  Counted rather than quietly uncited.
+        records_read: Records in the input, when it is a ``.zpf`` of packets
+            rather than a capture; ``0`` for a capture.
+        records_selected: Of those, records whose ``content_type`` selected
+            them as packets.  The rest are not packets, and the stage writing
+            the output declares their ranges ``skipped``.
 
     """
 
@@ -135,6 +141,8 @@ class ConversionStats:
     truncated: int = 0
     undecoded_regions: int = 0
     unlocatable_bytes: int = 0
+    records_read: int = 0
+    records_selected: int = 0
 
     @property
     def lossless(self) -> bool:
@@ -149,7 +157,13 @@ class ConversionStats:
             listed only when they are non-zero.
 
         """
-        lines = [
+        lines = []
+        if self.records_read:
+            lines.append(
+                f"input        {self.records_read} records, "
+                f"{self.records_selected} selected as packets",
+            )
+        lines += [
             f"packets      {self.packets}",
             f"converted    {self.converted}",
             f"sessions     {self.sessions}",

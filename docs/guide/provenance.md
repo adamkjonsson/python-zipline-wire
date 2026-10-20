@@ -4,6 +4,9 @@ A capture-sourced file can say three things about where its contents came from
 that a transport stream cannot say on its own: which bytes of the capture
 reached no record, when a coalesced record *began*, and when the connection
 opened.  All three exist because the alternative is losing something quietly.
+This page is about a capture conversion; a conversion of a `.zpf` of packets
+cites its input packets in `spans` and owes the coverage guarantee, which
+{doc}`converting-packets` works through.
 
 ## The accounting rule
 
@@ -77,7 +80,7 @@ Those are the exact bytes the reassembler dropped.
 | `REASON_LATE_REORDERED` | `late-reordered` | Late, and the original: delayed by the network — a wider window would have kept it |
 | `REASON_LATE_RETRANSMITTED` | `late-retransmitted` | Late, and a resend of an original that was lost — nothing would have kept it |
 | `REASON_PAWS` | `paws-rejected` | An old segment from before a sequence wrap, dropped whole as a receiver drops it |
-| `REASON_CHECKSUM` | `bad-checksum` | A packet discarded because its checksum did not verify, under `checksum="drop"` |
+| `REASON_CHECKSUM` | `bad-checksum` | A TCP segment discarded because its checksum did not verify, under `checksum="drop"` |
 
 All are `reason_class="bytes"` — the *bytes-exist* class, meaning a consumer
 may follow the reference and fetch them.  The distinction matters: an overlap

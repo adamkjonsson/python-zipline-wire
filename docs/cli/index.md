@@ -5,14 +5,15 @@ After installation the `zpfwire` command is available on your PATH.  Running
 entry-point script is not on the PATH, or when you need to target a specific
 Python interpreter.
 
-zpfwire provides two subcommands:
+zpfwire provides three subcommands:
 
 | Subcommand | Input | Output | Purpose |
 |------------|-------|--------|---------|
 | `info` | pcap / pcapng | text report | Report the conversations a capture holds, without writing anything |
-| `convert` | pcap / pcapng | `.zpf` or JSON-Lines | Reassemble the capture into a capture-sourced, transport-layer file |
+| `convert` | pcap / pcapng, or a `.zpf` of packets | `.zpf` or JSON-Lines | Reassemble the input into a transport-layer file |
+| `pcap` | a `.zpf` of packets | pcap | Export the packets, for Wireshark |
 
-They are meant to be used in that order.  `info` applies the same filters and
+The first two are meant to be used in that order.  `info` applies the same filters and
 the same flow grouping as `convert` does, so it answers "what would I get?"
 before you commit to an output file:
 
@@ -21,13 +22,16 @@ pcap  --info--→  what is in here  --convert--→  .zpf
 ```
 
 The CLI is a thin wrapper.  Every option below maps onto an argument of
-{func}`~zpfwire.convert.capture_to_zpf` or a field of
+{func}`~zpfwire.convert.capture_to_zpf`,
+{func}`~zpfwire.packets.packets_to_zpf` or
+{func}`~zpfwire.packets.packets_to_pcap`, or a field of
 {class}`~zpfwire.options.ReassemblyOptions`, and anything the CLI can do is
 available from Python — see {doc}`../guide/index`.
 
-## Options shared by both subcommands
+## Options shared by the subcommands
 
-Both accept the same capture-reading and filtering options.
+All three take the input as their positional argument and accept the
+filtering options below; `--link-type` too, and `--tick-hz` for a capture.
 
 ### Reading
 
@@ -56,7 +60,7 @@ own `PacketFilter`.
 
 ## Exit status
 
-Both subcommands exit `0` on success and `1` on error, printing
+Every subcommand exits `0` on success and `1` on error, printing
 `Error: <message>` to stderr.  A conversion that loses bytes is **not** an
 error — it exits `0` and says so in the summary, because losing bytes is a
 documented outcome of the reassembly policy rather than a failure.
@@ -71,4 +75,5 @@ the same fact and continues.
 
 info
 convert
+pcap
 ```

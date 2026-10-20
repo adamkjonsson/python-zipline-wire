@@ -12,4 +12,7 @@ htmlcov/
 *.zpf
 *.jsonl
 !tests/golden/*.jsonl
+# The specification's own vectors, vendored byte for byte; see tests/vectors/README.md.
+!tests/vectors/**/*.zpf
+!tests/vectors/**/*.jsonl
 .DS_Store

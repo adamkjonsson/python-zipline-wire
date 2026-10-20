@@ -246,6 +246,9 @@ class _Run:
     retransmit: bool = False
     # Capture time when the run closed; what the favor-acked hold is timed from.
     closed_ts: int = 0
+    # Packets whose flags, not bytes, reached the run — a FIN or RST with no
+    # payload — named so a `.zpf` input can cite them; see RecordSink.record.
+    flag_origins: list[int] = field(default_factory=list)
 
     @property
     def end(self) -> int:
@@ -339,7 +342,7 @@ class TcpFlow(FlowTracker):
         if closing:
             stream.fin = stream.fin or bool(pkt.tcp_flags & TCP_FIN)
             stream.rst = stream.rst or bool(pkt.tcp_flags & TCP_RST)
-            self._attach_flags(stream, pkt)
+            self._attach_flags(stream, pkt, origin=pkt.payload_offset)
 
         # A run ends where the sender said it did (PSH), where the connection
         # ends, or at every segment when coalescing is off.
@@ -417,10 +420,11 @@ class TcpFlow(FlowTracker):
         if stream.syn_written or stream.isn is None or pkt.seq != stream.isn:
             return
         stream.syn_written = True
-        self.session.record(
+        self.sink.record(
             self.participant(stream.endpoint),
             ts=pkt.ts_ticks,
             payload=b"",
+            origins=(pkt.payload_offset,),
             hints=zpf.Hints(
                 seq_start=_advance(stream.isn, 1),
                 # The one place the ACK flag is consulted, and deliberately so:
@@ -432,7 +436,6 @@ class TcpFlow(FlowTracker):
                 ack=pkt.ack if pkt.tcp_flags & TCP_ACK else None,
             ),
             flags=RecordFlags.SYN,
-            decoded=zpf.Decoded(decoder=self._decoder),
         )
         self._stats.records += 1
 
@@ -592,13 +595,20 @@ class TcpFlow(FlowTracker):
             if _delta(end, stream.next_seq) <= 0:
                 # Wholly superseded by what filled the hole.  The fill is the
                 # later arrival, so the held segment is the original and the
-                # fill the repeat; the verdict is the same either way round,
-                # and this site never set the flag, so it still does not.
+                # fill the repeat; the verdict is the same either way round.
+                # A retransmission flags the record covering the range, as at
+                # the other four sites, by decision (#31): the sender sent
+                # these bytes twice, once alone and once inside the fill.
+                # That record is always the open run.  The fill was appended
+                # in this same call, by _accept just before it drains or by an
+                # earlier pass of this loop, _commit_gap flushes *before* it
+                # drains, and _append never flushes; a held segment sits past
+                # the hole, so its range starts inside the run.
+                assert stream.run is not None, "a superseded held segment lies in the open run"
                 self._release(stream, seq)
                 verdict = self._judge(stream, seq, end, held.tsval, held.peer_count)
                 if not self._contested(stream, verdict, seq, end, held.data, held):
-                    self._discard(stream, verdict, held.payload_offset, 0, len(held.data),
-                                  mark=False)
+                    self._discard(stream, verdict, held.payload_offset, 0, len(held.data))
                 continue
             if _delta(seq, stream.next_seq) > 0:
                 return
@@ -940,8 +950,6 @@ class TcpFlow(FlowTracker):
         payload_offset: int | None,
         skip: int,
         length: int,
-        *,
-        mark: bool = True,
     ) -> None:
         """Count and cite a repeated range under its verdict, and flag the run if a resend."""
         if verdict == _DUPLICATE:
@@ -953,14 +961,19 @@ class TcpFlow(FlowTracker):
             self._stats.ts_fallback[verdict] += 1
         self._stats.overlap_bytes += length
         self._cite(payload_offset, skip, length, REASON_OVERLAP)
-        if mark and stream.run is not None:
+        if stream.run is not None:
             stream.run.retransmit = True
 
     # ── emission ────────────────────────────────────────────────────────
 
-    def _attach_flags(self, stream: _Stream, pkt: PacketView) -> None:
+    def _attach_flags(
+        self, stream: _Stream, pkt: PacketView, *, origin: int | None = None,
+    ) -> None:
+        """OR *pkt*'s flags into the open run, naming *origin* when its flags alone reach it."""
         if stream.run is not None:
             stream.run.flags |= pkt.tcp_flags
+            if origin is not None:
+                stream.run.flag_origins.append(origin)
 
     def _flush(self, stream: _Stream) -> None:
         """Close the accumulated run: write it, or hold it for the peer's ack."""
@@ -1073,13 +1086,13 @@ class TcpFlow(FlowTracker):
             flags |= RecordFlags.RETRANSMIT
 
         ts, ts_first, ack = _hints(run)
-        self.session.record(
+        self.sink.record(
             self.participant(stream.endpoint),
             ts=ts,
             payload=bytes(run.data),
+            origins=[*(c.payload_offset for c in run.contributors), *run.flag_origins],
             hints=zpf.Hints(seq_start=run.seq_start, ack=ack),
             flags=flags,
-            decoded=zpf.Decoded(decoder=self._decoder),
             # Only worth stating when the run coalesced more than one packet;
             # for a single segment it would repeat `ts`.
             ts_first=ts_first if ts_first != ts else None,
@@ -1107,8 +1120,10 @@ def _hints(run: _Run) -> tuple[int, int, int | None]:
 
     ``ts`` is the specification's rule — the time of the LAST packet that
     contributed bytes, the moment the unit became complete — and ``ts_first``
-    the time it began, which spans could carry but ours cannot since they
-    must reference a zpf-input source.  The ack is the serial MAXIMUM rather
+    the time it began, which spans would carry if they could name a
+    capture: they may only name a zpf-input source, so a capture conversion
+    has no other way to say it, and a ``.zpf`` input's records state both.
+    The ack is the serial MAXIMUM rather
     than the last arrival's, which for a drained run is the earlier packet's
     and for any other the later one's — a value taken from no rule.  Acks are
     cumulative, so one observed on any contributor is still true when the run

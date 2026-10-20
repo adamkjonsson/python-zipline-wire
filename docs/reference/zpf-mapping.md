@@ -1,10 +1,12 @@
 # Specification mapping
 
 What each of zpfwire's objects becomes in the written file, field by field.
-Everything here follows from one fact: the output is **capture-sourced** and
-**transport-layer**.  Where a field is absent, the rule that forbids it is
-named — an absent field in this format is usually a statement, not an
-omission.
+Everything here follows from one fact: the output is **transport-layer**.  It
+is **capture-sourced** when the input is a capture, which is what most of this
+page describes; when the input is a `.zpf` of packets it is **zpf-sourced**,
+and {ref}`zpf-sourced` says what changes.  Where a field is absent, the rule
+that forbids it is named — an absent field in this format is usually a
+statement, not an omission.
 
 The specification is `zipline-payload-format`, version `zpf.SPEC_VERSION`.
 
@@ -82,17 +84,17 @@ a Discontinuity at every seam, for a stage that reorders a participant's
 records or a decoder whose units decompose one another (nested DNS, in
 [zipline#106](https://github.com/adamkjonsson/zipline/issues/106)).  On a
 transport-layer participant the field says nothing, since the offsets come
-from sequence numbers, and **a writer MUST NOT set `units` there**.  A
-capture-sourced, transport-layer file is the only kind zpfwire writes, so
+from sequence numbers, and **a writer MUST NOT set `units` there**.  Every
+file zpfwire writes is transport-layer, capture- or zpf-sourced, so
 `contiguous` is the only conformant value, and a test pins every participant
-of every fixture to it.  Dissection, when it comes, is the first layer at
+of every fixture to it — a `.zpf` input's `units` participants included,
+whose seams the output's sequence numbers carry instead.  Dissection, when it comes, is the first layer at
 which the field could say something.
 
 One visible consequence: **every participant line in a JSONL projection of a
 zpfwire file carries `"adjacency":"contiguous"`**, right after `"pid"`, as a
-body field always projects; a line without it is rejected.  Nothing in this
-tree produces or compares JSONL, but that is where the line's shape is
-looked up.
+body field always projects; a line without it is rejected.  The `--jsonl`
+face writes these lines, and this is where their shape is looked up.
 
 The far endpoint is declared even if it never sent anything.  The conversation
 had two ends whether or not both spoke; a session naming only the talker would
@@ -148,7 +150,7 @@ bytes in the capture — see {doc}`../guide/provenance` and
 | Field | Why |
 |-------|-----|
 | `content_type` | **Forbidden** at the transport layer — a byte run has no media type. The writer raises on it. |
-| `spans` | Every span must reference a `zpf-input` source, and ours is a capture. This is why `ts_first` exists. |
+| `spans` | Every span must reference a `zpf-input` source, and a capture is not one. This is why `ts_first` exists. A `.zpf` input's records carry them — see {ref}`zpf-sourced`. |
 
 ## Undecoded
 
@@ -159,7 +161,7 @@ Written for bytes that are in the capture and reached no record.
 | `source_id` | The capture source |
 | `session_id`, `participant_id` | **`0`** — against a capture source there is no input `.zpf`, so there is no id namespace to name |
 | `off_start`, `off_end` | Byte offsets **into the capture file**, half-open |
-| `reason` | `overlap-discarded` or `duplicate-discarded` for a repeat; `late-arrival`, `late-reordered` or `late-retransmitted` for a byte inside a committed gap; `paws-rejected`; `bad-checksum` under `checksum="drop"` — see {doc}`../api/flow` |
+| `reason` | `overlap-discarded` or `duplicate-discarded` for a repeat; `late-arrival`, `late-reordered` or `late-retransmitted` for a byte inside a committed gap; `paws-rejected`; `bad-checksum` for a TCP segment under `checksum="drop"` — see {doc}`../api/flow` |
 | `reason_class` | `bytes` |
 | `decoder_id` | The reassembly decoder |
 
@@ -183,7 +185,29 @@ range no record covers.
 | Block | Why |
 |-------|-----|
 | `Discontinuity` | Decoded-layer only. A transport stream expresses its gaps in its offsets — absolute `seq_start` values make a hole visible by arithmetic — and carrying both would be two accounts of the same missing bytes. |
-| Any `zpf-input` Source | There is no predecessor `.zpf`; the input is a capture. |
+
+(zpf-sourced)=
+
+## From a `.zpf` of packets
+
+{func}`~zpfwire.packets.packets_to_zpf` writes the same sessions,
+participants and records, through python-zipline's sessionization stage.
+Every field above keeps its meaning; these change, because the input is a
+`.zpf` rather than a capture.
+
+| Block, field | Value |
+|--------------|-------|
+| File Header `tick_hz`, `time_epoch` | The input's |
+| File Header `comment` | Which labels were selected as packets |
+| Source `kind` | `zpf-input`, with the input's `uri` and `sha256` `digest` |
+| Record `spans` | **Present**: every input packet the record was built from, whole, in the input's namespace — adjacent packets merged into one range.  A record carrying `seq_start` may cite several, across the input's seams (spec `0.22`) |
+| Undecoded `session_id`, `participant_id` | The input stream's, in its own namespace |
+| Undecoded `off_start`, `off_end` | The whole packet's range in the input stream's offset space — a packet is marked only when no record cites any of it |
+| Undecoded `reason` | As on a capture for what reassembly discarded; `undecodable` for a selected record that is not a packet; `skipped`, written by the stage, for whatever nothing cited or marked |
+| Session End `input_extents` | The **whole** extent of every input stream the session cited, the same in every session that cited it |
+
+What the file says about every input byte, and why a packet is cited whole,
+is worked through in {doc}`../guide/converting-packets`.
 
 ## Two rules that shaped the reassembler
 

@@ -4,6 +4,10 @@ The output is a **capture-sourced, transport-layer** file: the top-left cell
 of the specification's provenance/layer table.  That one fact settles most of
 the encoding decisions made here, and the ones it does not are noted where
 they are taken.
+
+The loop that routes packets to flows, :func:`_drive`, is shared with
+:mod:`zpfwire.packets`, which converts a ``.zpf`` of packets through the same
+trackers into a zpf-sourced, transport-layer file.
 """
 
 from __future__ import annotations
@@ -11,13 +15,21 @@ from __future__ import annotations
 import datetime
 import hashlib
 import os
-from collections.abc import Callable, Iterable
-from typing import IO, Literal
+from collections import Counter
+from collections.abc import Callable, Iterable, Iterator
+from typing import IO, Literal, Protocol
 
 import zpf
 
 from zpfwire.capture import CaptureReader, PacketView
-from zpfwire.flow import REASON_CHECKSUM, FlowKey, FlowTracker, cite_undecoded
+from zpfwire.flow import (
+    REASON_CHECKSUM,
+    CaptureSink,
+    FlowKey,
+    FlowTracker,
+    RecordSink,
+    cite_undecoded,
+)
 from zpfwire.options import DECODER_NAME, ReassemblyOptions, tool_version
 from zpfwire.stats import ConversionStats
 from zpfwire.tcp import TcpFlow
@@ -26,6 +38,73 @@ from zpfwire.udp import UdpFlow
 __all__ = ["capture_to_zpf", "convert", "describe_source"]
 
 _TRACKERS: dict[str, type[FlowTracker]] = {"tcp": TcpFlow, "udp": UdpFlow}
+
+
+class _Packets(Protocol):
+    """What a conversion reads: packet views, and an account of what it skipped.
+
+    :class:`~zpfwire.capture.CaptureReader` is one, over a capture;
+    :class:`~zpfwire.packets.PacketRecordReader` is the other, over a
+    ``.zpf`` of packets.
+    """
+
+    tick_hz: int
+    packet_count: int
+    skipped: Counter[str]
+
+    def __iter__(self) -> Iterator[PacketView]:
+        """Yield every convertible packet."""
+        ...  # pragma: no cover
+
+
+class _Target(Protocol):
+    """What a conversion writes to: a session per flow, and packets no flow takes."""
+
+    def begin(self, key: FlowKey, *, sequenced: bool) -> RecordSink:
+        """Open the session for one flow and return where its records go."""
+        ...  # pragma: no cover
+
+    def drop(self, pkt: PacketView, *, reason: str) -> None:
+        """Declare a packet discarded before it reached any flow."""
+        ...  # pragma: no cover
+
+
+class _CaptureTarget:
+    """A capture conversion's output: one file, citing the capture by byte offset."""
+
+    def __init__(
+        self,
+        writer: zpf.FileWriter,
+        *,
+        source: zpf.SourceHandle,
+        decoder: zpf.DecoderHandle,
+        stats: ConversionStats,
+    ) -> None:
+        self._writer = writer
+        self._source = source
+        self._decoder = decoder
+        self._stats = stats
+
+    def begin(self, key: FlowKey, *, sequenced: bool) -> RecordSink:
+        # A TCP session's causal order follows from seq/ack alone. `linearize`
+        # buffers the session and emits it in that order at end(), which is
+        # what lets the reassembler go on producing each direction in its own
+        # order — the only order it has.
+        causal = sequenced and key.protocol == "tcp"
+        session = self._writer.begin_session(
+            proto=key.protocol,
+            key=key.text,
+            sequenced=causal,
+            linearize=causal,
+        )
+        return CaptureSink(session, writer=self._writer, source=self._source,
+                           decoder=self._decoder, stats=self._stats)
+
+    def drop(self, pkt: PacketView, *, reason: str) -> None:
+        cite_undecoded(
+            self._writer, self._source, pkt.payload_offset, len(pkt.payload),
+            reason=reason, decoder=self._decoder, stats=self._stats,
+        )
 
 
 def capture_to_zpf(
@@ -183,51 +262,82 @@ def convert(
             params_digest=options.params_digest(),
         )
 
-        flows: dict[FlowKey, FlowTracker] = {}
-        for pkt in reader:
-            if pkt.protocol not in wanted:
-                stats.skipped[f"{pkt.protocol}-not-requested"] += 1
-                continue
-            if packet_filter is not None and not packet_filter(pkt):
-                stats.filtered += 1
-                continue
-            if pkt.checksum_bad:
-                stats.bad_checksum += 1
-                if options.checksum == "drop":
-                    _drop(pkt, writer, source, decoder=decoder, stats=stats)
-                    continue
-
-            key = FlowKey.of(pkt)
-            tracker = flows.get(key)
-            if tracker is not None and tracker.expired(pkt.ts_ticks):
-                tracker.time_out()
-                _close(tracker, flows, key)
-                tracker = None
-            elif tracker is not None and tracker.splits_before(pkt):
-                _close(tracker, flows, key)
-                tracker = None
-            if tracker is None:
-                tracker = _begin(writer, key, decoder=decoder, options=options,
-                                 stats=stats, tick_hz=reader.tick_hz, source=source,
-                                 sequenced=sequenced)
-                flows[key] = tracker
-                stats.sessions += 1
-
-            tracker.packet(pkt)
-            stats.converted += 1
-            if pkt.truncated:
-                stats.truncated += 1
-
-        for key, tracker in list(flows.items()):
-            _close(tracker, flows, key)
-
-        # Whatever the reader could not turn into a packet is counted, not lost.
-        # Both figures come from the reader rather than the loop above, which
-        # only ever sees the packets that survived it.
-        stats.packets = reader.packet_count
-        stats.skipped.update(reader.skipped)
+        target = _CaptureTarget(writer, source=source, decoder=decoder, stats=stats)
+        _drive(reader, target, options=options, wanted=wanted, packet_filter=packet_filter,
+               sequenced=sequenced, stats=stats)
 
     return stats
+
+
+def _drive(
+    reader: _Packets,
+    target: _Target,
+    *,
+    options: ReassemblyOptions,
+    wanted: set[str],
+    packet_filter: Callable[[PacketView], bool] | None,
+    sequenced: bool,
+    stats: ConversionStats,
+) -> None:
+    """Route every packet to its flow's tracker, opening and closing sessions as flows come and go.
+
+    The one loop both inputs share: what a packet is and where a record goes
+    differ between a capture and a ``.zpf`` of packets, and that difference
+    lives in *reader* and *target*; everything decided here — what is not
+    requested, what is filtered, what a bad checksum costs, when a flow ends
+    — is the same for both.
+    """
+    flows: dict[FlowKey, FlowTracker] = {}
+    for pkt in reader:
+        if pkt.protocol not in wanted:
+            stats.skipped[f"{pkt.protocol}-not-requested"] += 1
+            continue
+        if packet_filter is not None and not packet_filter(pkt):
+            stats.filtered += 1
+            continue
+        if pkt.checksum_bad:
+            stats.bad_checksum += 1
+            # TCP only.  A UDP stream's offsets are not sequence-anchored, so
+            # a datagram left out of it leaves no trace in the stream, and the
+            # specification forbids a transport-layer stage to withhold content
+            # from such a stream (§Discontinuity, *MUST NOT withhold content*).
+            # A corrupt datagram is therefore written like any other, and only
+            # counted.  A TCP segment left out is a sequence hole, which the
+            # stream's offsets show, and its resend fills it.
+            if options.checksum == "drop" and pkt.protocol == "tcp":
+                _drop(pkt, target, stats=stats)
+                continue
+
+        key = FlowKey.of(pkt)
+        tracker = flows.get(key)
+        if tracker is not None and tracker.expired(pkt.ts_ticks):
+            tracker.time_out()
+            _close(tracker, flows, key)
+            tracker = None
+        elif tracker is not None and tracker.splits_before(pkt):
+            _close(tracker, flows, key)
+            tracker = None
+        if tracker is None:
+            tracker = _TRACKERS[key.protocol](
+                key, target.begin(key, sequenced=sequenced),
+                options=options, stats=stats, tick_hz=reader.tick_hz,
+            )
+            flows[key] = tracker
+            stats.sessions += 1
+
+        tracker.packet(pkt)
+        stats.converted += 1
+        if pkt.truncated:
+            stats.truncated += 1
+
+    for key, tracker in list(flows.items()):
+        _close(tracker, flows, key)
+
+    # Whatever the reader could not turn into a packet is counted, not lost.
+    # Both figures come from the reader rather than the loop above, which
+    # only ever sees the packets that survived it.
+    stats.packets = reader.packet_count
+    stats.skipped.update(reader.skipped)
 
 
 def _produced_at(
@@ -265,14 +375,7 @@ def _source_comment(reader: CaptureReader) -> str | None:
     return f"snaplen={reader.snaplen}"
 
 
-def _drop(
-    pkt: PacketView,
-    writer: zpf.FileWriter,
-    source: zpf.SourceHandle | None,
-    *,
-    decoder: zpf.DecoderHandle,
-    stats: ConversionStats,
-) -> None:
+def _drop(pkt: PacketView, target: _Target, *, stats: ConversionStats) -> None:
     """Discard a packet whose checksum did not verify, the way a receiver does.
 
     The whole packet goes, not just its payload: a receiver that fails the
@@ -281,55 +384,17 @@ def _drop(
     corrupt packet from being the one that starts a session.
 
     The payload is cited as an Undecoded region like any other bytes that
-    exist in the capture and reach no record, and the packet is tallied as a
+    exist in the input and reach no record, and the packet is tallied as a
     skip so that every packet is still converted, skipped or filtered.
     """
     stats.skipped[REASON_CHECKSUM] += 1
     stats.checksum_dropped_bytes += len(pkt.payload)
-    cite_undecoded(
-        writer, source, pkt.payload_offset, len(pkt.payload),
-        reason=REASON_CHECKSUM, decoder=decoder, stats=stats,
-    )
-
-
-def _begin(
-    writer: zpf.FileWriter,
-    key: FlowKey,
-    *,
-    decoder: zpf.DecoderHandle,
-    options: ReassemblyOptions,
-    stats: ConversionStats,
-    tick_hz: int,
-    source: zpf.SourceHandle | None = None,
-    sequenced: bool = False,
-) -> FlowTracker:
-    # A TCP session's causal order follows from seq/ack alone. `linearize`
-    # buffers the session and emits it in that order at end(), which is what
-    # lets the reassembler go on producing each direction in its own order —
-    # the only order it has.
-    causal = sequenced and key.protocol == "tcp"
-    session = writer.begin_session(
-        proto=key.protocol,
-        key=key.text,
-        sequenced=causal,
-        linearize=causal,
-    )
-    tracker_type = _TRACKERS[key.protocol]
-    return tracker_type(
-        key,
-        session,
-        decoder=decoder,
-        options=options,
-        stats=stats,
-        tick_hz=tick_hz,
-        writer=writer,
-        source=source,
-    )
+    target.drop(pkt, reason=REASON_CHECKSUM)
 
 
 def _close(tracker: FlowTracker, flows: dict[FlowKey, FlowTracker], key: FlowKey) -> None:
     reason = tracker.finish()
-    tracker.session.end(reason=reason)
+    tracker.sink.end(reason)
     flows.pop(key, None)
 
 

@@ -4,7 +4,16 @@ import pathlib
 
 import pytest
 import zpf
-from helpers import CAPTURES, capture_of, tcp_packet
+from helpers import (
+    CAPTURES,
+    TCP_PSH,
+    VECTORS,
+    Seg,
+    capture_of,
+    packets_zpf,
+    tcp_packet,
+    tcp_segments,
+)
 
 from zpfwire.__main__ import main
 
@@ -339,3 +348,77 @@ def test_negative_numeric_flags_are_rejected(tmp_path: pathlib.Path,
             "-o", str(tmp_path / "o.zpf"), "--reorder-window", "-1")
 
     assert exit_info.value.code == 2
+
+
+# ── convert, from a .zpf of packets ─────────────────────────────────────
+
+TUNNEL = VECTORS / "tunnel" / "packets.zpf"
+
+
+def test_convert_takes_a_zpf_of_packets(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+):
+    """The spec's tunnel: one positional for either input, told apart by its first bytes."""
+    out = tmp_path / "inner.zpf"
+    run(monkeypatch, "convert", str(TUNNEL), "-o", str(out))
+
+    assert clean(out) == []
+    text = capsys.readouterr().out
+    assert "input        3 records, 3 selected as packets" in text
+    assert "sessions     2" in text
+
+
+def test_a_private_label_is_selected_with_content_type(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+):
+    """A decoder-private label: the default finds no packets, and says what to pass."""
+    packets = packets_zpf(tcp_segments([Seg(1, b"hello", flags=TCP_PSH)]),
+                          tmp_path / "packets.zpf", label="dec:ip-packet")
+
+    run(monkeypatch, "convert", str(packets), "-o", str(tmp_path / "none.zpf"))
+    first = capsys.readouterr()
+    run(monkeypatch, "convert", str(packets), "-o", str(tmp_path / "some.zpf"),
+        "--content-type", "dec:ip-packet")
+    second = capsys.readouterr()
+
+    assert "0 selected as packets" in first.out
+    assert "--content-type" in first.err and "dec:ip-packet" in first.err
+    assert "1 selected as packets" in second.out and "records      1" in second.out
+    assert second.err == ""
+    assert clean(tmp_path / "some.zpf") == []
+
+
+@pytest.mark.parametrize(("source", "flags", "message"), [
+    (TUNNEL, ("--tick-hz", "1000"), "states its own tick rate"),
+    (CAPTURES / "udp.pcap", ("--content-type", "net:ip"), "this is a capture"),
+    (TUNNEL, ("--content-type", "net:ip", "--link-type", "1"), "means link type 101"),
+])
+def test_a_flag_that_does_not_fit_the_input_is_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    source: pathlib.Path, flags: tuple[str, ...], message: str,
+):
+    with pytest.raises(SystemExit) as exit_info:
+        run(monkeypatch, "convert", str(source), "-o", str(tmp_path / "out.zpf"), *flags)
+
+    assert exit_info.value.code == 1
+    assert message in capsys.readouterr().err
+
+
+def test_info_refuses_a_zpf(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+):
+    with pytest.raises(SystemExit) as exit_info:
+        run(monkeypatch, "info", str(TUNNEL))
+
+    assert exit_info.value.code == 1
+    assert "convert a .zpf of packets" in capsys.readouterr().err
+
+
+def test_convert_writes_the_jsonl_face_from_a_zpf(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+):
+    out = tmp_path / "inner.jsonl"
+    run(monkeypatch, "convert", str(TUNNEL), "-o", str(out), "--jsonl", "-q")
+
+    assert out.read_text().startswith("{")
+    assert clean(out) == []

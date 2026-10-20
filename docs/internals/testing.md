@@ -1,6 +1,6 @@
 # Testing
 
-Some 460 tests, native pytest style, in a top-level `tests/`.  Run them with:
+Some 590 tests, native pytest style, in a top-level `tests/`.  Run them with:
 
 ```bash
 .venv/bin/pytest
@@ -40,7 +40,7 @@ assert out.diagnostics == []
 assert out.only.stream(0) == b"..."
 ```
 
-## Two ways to get a capture
+## Three ways to get an input
 
 **Synthesised, for precision.**  packeteer's own `PacketBuilder` writes frames
 into an `io.BytesIO`, which gives exact control over sequence numbers,
@@ -85,6 +85,18 @@ Several tests are parametrised over all of them — `ALL_CAPTURES` globs the
 directory, so a new fixture is swept the moment it lands — which is how the
 empty-session sequencing bug was caught.
 
+**Repackaged, for a `.zpf` input.**  `tests/helpers.py::packets_zpf` writes
+any capture as a `.zpf` of packet records, the shape a tunnel decryptor
+writes: one record per frame, labelled `net:ip` (or `net:ethernet`, or a
+private label), in two participants standing for the tunnel's directions,
+either as a `units` unit sequence with a one-byte field record before each
+packet, as zipline-kober writes, or `contiguous` with one declared break, as
+the specification's vector does.  `test_packets.py` converts every fixture
+both ways and asserts that the `.zpf` input gives the capture's sessions,
+records, hints and timestamps, with the coverage, extent and splice checks
+clean.  `tests/vectors/` vendors the specification's own `tunnel` vector at
+a tag, byte for byte; its `packets.zpf` must rebuild its `inner.zpf`.
+
 **Pinned, for the ones that must not move.**  `test_pins.py` records what the
 `0.2.0` reassembler decided for each of the sixteen fixtures that predate the
 Timestamps work, and asserts it on every run.  The six `tcp_*_ts.pcap`
@@ -114,6 +126,8 @@ be added to one list or the other, and a test says so.
 | `test_truncation.py` | Snaplen-cut captures: the count, the Source comment, and corruption staying unreportable |
 | `test_pins.py` | The sixteen pre-Timestamps fixtures' decodes, pinned |
 | `test_timestamps.py` | What the six real Timestamps captures say, rule by rule |
+| `test_packets.py` | A `.zpf` of packets as input: the differential against each fixture's capture conversion, the tunnel vector, selection, coverage |
+| `test_pcap_export.py` | The packets of a `.zpf` exported to a pcap |
 | `test_cli.py` | Argument handling and output |
 | `test_package.py` | What the package declares about itself — the specification URL held to `zpf.SPEC_VERSION` |
 

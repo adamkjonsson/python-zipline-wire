@@ -7,12 +7,17 @@ It is glue: it owns no file format and no packet parser of its own.
 
 - **packeteer** (`../packeteer`) parses captures and packets.
 - **zpf** (`../python-zipline`, import name `zpf`) reads and writes `.zpf`
-  against **spec v0.20** — `zpf.SPEC_VERSION` is the single source of truth.
+  against **spec v0.23** — `zpf.SPEC_VERSION` is the single source of truth.
 - The specification itself lives in `../zipline/docs/zipline-payload-format.md`.
 
 The output of a capture conversion is a **capture-sourced, transport-layer**
 file — the top-left cell of the spec's two-axes table. That single fact settles
-most encoding questions; see `plans/PLAN.md`.
+most encoding questions; see `plans/PLAN.md`. Since `0.5.0` the input may also
+be a `.zpf` of packets — a decrypted tunnel's inner traffic — and the output is
+then a **zpf-sourced, transport-layer** file, written through python-zipline's
+`sessionize_stage` (`src/zpfwire/packets.py`). The reassembly is the same; what
+changes is that every record cites its input packets and the file owes the
+coverage guarantee.
 
 This code consists of a CLI defined in `src/zpfwire/__main__.py` and a Python
 API which the CLI uses. It is important that all functionality implemented in

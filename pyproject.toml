@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zpfwire"
-version = "0.4.0"
+version = "0.5.0"
 requires-python = ">=3.10"
 description = "Turn network captures into Zipline Payload Format (.zpf) files"
 authors = [ { name = "Adam Jonsson", email = "akj426@gmail.com" } ]
@@ -25,15 +25,17 @@ classifiers = [
 ]
 # Floors, not ranges: neither sibling is on PyPI, so these document what this
 # release was built against as much as they resolve anything.  Both are
-# required — the tree writes spec 0.21, which python-zipline first implements
-# in 0.5.0, and reads the TCP Timestamps option packeteer parses since 0.14.0
-# — with the capture-point duplication impairment (`duplicate_probability`,
-# 0.15.0) as the generated half of the test material, which is where the
-# floor sits.  Built against packeteer 0.16.0, whose real Timestamps captures
-# are carried in tests/captures/.
+# required — the tree writes spec 0.23, which python-zipline first implements
+# in 0.6.0, and reads the TCP Timestamps option packeteer parses since 0.14.0.
+# The packeteer floor names what the suite needs, not only the code: 0.16.0's
+# generator no longer acknowledges past a corrupted segment before its resend
+# (packeteer#163), which the generated favor-acked test depends on (#30).
+# Built against packeteer 0.18.0, of which this tree needs nothing: its pcap
+# writer streamed an iterable before 0.18.0 documented it (packeteer#204).
+# Built against python-zipline 0.6.0, the first release implementing 0.23.
 dependencies = [
-    "packeteer>=0.15.0",
-    "zpf>=0.5.0",
+    "packeteer>=0.16.0",
+    "zpf>=0.6.0",
 ]
 
 [tool.setuptools]
@@ -55,4 +57,4 @@ zpfwire = "zpfwire.__main__:main"
 
 [project.urls]
 Repository = "https://github.com/adamkjonsson/python-zipline-wire.git"
-Specification = "https://github.com/adamkjonsson/zipline/blob/v0.21/docs/zipline-payload-format.md"
+Specification = "https://github.com/adamkjonsson/zipline/blob/v0.23/docs/zipline-payload-format.md"

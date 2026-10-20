@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import zpf
 from zpf import RecordFlags
 
 from zpfwire.capture import PacketView
@@ -33,12 +32,12 @@ class UdpFlow(FlowTracker):
         # not just the half of it that happened to speak.
         self.participant(pkt.dst_endpoint)
 
-        self.session.record(
+        self.sink.record(
             sender,
             ts=pkt.ts_ticks,
             payload=pkt.payload,
+            origins=(pkt.payload_offset,),
             flags=RecordFlags.MESSAGE,
-            decoded=zpf.Decoded(decoder=self._decoder),
         )
         self._stats.records += 1
         self._stats.payload_bytes += len(pkt.payload)

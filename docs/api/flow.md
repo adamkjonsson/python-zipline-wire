@@ -42,6 +42,24 @@ whenever it is knowable at all.
 
 ---
 
+## Where a session is written
+
+A tracker writes through a sink, so the same tracker converts a capture and a
+`.zpf` of packets.  {class}`~zpfwire.flow.CaptureSink` is the capture's;
+{class}`~zpfwire.packets.PacketSink` is the `.zpf`'s.
+
+```{eval-rst}
+.. autoclass:: zpfwire.flow.RecordSink
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: zpfwire.flow.CaptureSink
+   :members:
+```
+
+---
+
 ## Per-transport trackers
 
 ```{eval-rst}

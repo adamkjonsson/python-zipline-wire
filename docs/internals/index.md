@@ -20,16 +20,17 @@ contributing
 
 ## Module map
 
-Roughly 2,400 lines of source, and the ordering below is the order data moves
+Roughly 4,500 lines of source, and the ordering below is the order data moves
 through them.
 
 | Module | Purpose |
 |--------|---------|
 | `zpfwire/capture.py` | The packeteer seam — capture file to `PacketView` stream, and the skip tally |
-| `zpfwire/flow.py` | `FlowKey` (direction-free conversation identity) and `FlowTracker` (the writer wiring every transport shares) |
+| `zpfwire/packets.py` | A `.zpf` of packets as input: the reader, the sink that cites input packets, `packets_to_zpf` and `packets_to_pcap` |
+| `zpfwire/flow.py` | `FlowKey` (direction-free conversation identity), `FlowTracker` (what every transport shares), and `RecordSink` (where a session is written) |
 | `zpfwire/tcp.py` | `TcpFlow` — the reassembler: reorder buffer, gap policy, run coalescing |
 | `zpfwire/udp.py` | `UdpFlow` — one datagram, one record |
-| `zpfwire/convert.py` | Orchestration: open, hash, declare, drive the flows, close |
+| `zpfwire/convert.py` | Orchestration: open, hash, declare, drive the flows, close — the loop shared by both inputs |
 | `zpfwire/options.py` | `ReassemblyOptions` and the `params_digest` that makes a conversion reproducible |
 | `zpfwire/stats.py` | `ConversionStats` — the accounting that stops loss being silent |
 | `zpfwire/survey.py` | `survey` — what a conversion *would* produce |
@@ -43,6 +44,7 @@ one job each, and neither knows about the other:
 
 ```
 capture ──packeteer──→ ParsedPacket ──zpfwire──→ sessions/records ──zpf──→ .zpf
+.zpf of packets ──zpf──→ records ──packeteer──→ ParsedPacket ──zpfwire──→ …
 ```
 
 Everything here is the middle arrow.  Two consequences run through the whole

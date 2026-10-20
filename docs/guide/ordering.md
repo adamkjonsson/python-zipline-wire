@@ -3,7 +3,9 @@
 By default records are stored in **capture order**, which is not the order
 events happened.  Two packets recorded a microsecond apart may have crossed on
 the wire, and a file that stores them as recorded is asserting something the
-capture never established.
+capture never established.  Converting a `.zpf` of packets, the default order
+is the input's records merged by timestamp, which is no stronger a claim; the
+two inputs are sequenced alike.
 
 `sequenced=True` stores each TCP session in a valid causal linearization
 instead, and marks it `SEQUENCED` so a reader may act on the order:
@@ -90,11 +92,12 @@ Mitigations, in the order worth trying:
   sessions, each buffered and released separately.
 * Filter to the conversations you care about.
 
-One shape `sequenced` cannot currently write at all: a direction longer than
-2 GiB whose peer only acknowledges, where the format's causal check inverts
-against the peer's stale recorded `ack` and the writer refuses the record.
-It is filed upstream and stated in {doc}`../reference/limits`; a plain
-conversion of the same capture is fine.
+`sequenced` writes a stream of any length.  `0.4.0` could not write one
+shape: a direction longer than 2 GiB whose peer only acknowledges, where the
+causal check compared against the peer's stale recorded `ack` and inverted.
+Since spec `0.22` an `ack` is unwrapped into the peer's offset space, as
+offsets are, and the shape is written and verifies; see
+{doc}`../reference/limits`.
 
 ## UDP sessions are not marked
 

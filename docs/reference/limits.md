@@ -15,9 +15,10 @@ whole architecture, not a gap.
 **No `content_type` on records.** Forbidden at the transport layer — a byte
 run has no media type.
 
-**No `spans` on records.** A span must reference a `zpf-input` source, and a
-capture-sourced file has none.  `ts_first` covers the one thing spans would
-otherwise have carried.
+**No `spans` on a capture conversion's records.** A span must reference a
+`zpf-input` source, and a capture-sourced file has none.  `ts_first` covers
+the one thing spans would otherwise have carried.  A conversion of a `.zpf`
+of packets is zpf-sourced, and its records do carry them.
 
 **No `Discontinuity` blocks.** A transport stream expresses its gaps in its
 offsets.  See {doc}`zpf-mapping`.
@@ -38,23 +39,14 @@ stream is placed at any length and through a sequence wrap
 from this project).  Through `0.20` every record was measured against the
 origin, which stopped at 2³¹, and `0.3.0` split such a direction into a new
 session every 2 GiB to get past it; that split, its `offset-limit` reason
-and its counter are gone.  The one shape one session cannot hold is the
-hole below.
-
-**A sequenced conversion of a direction longer than 2 GiB can be refused
-when the peer only acknowledges.**  The specification's causal check
-compares each record's end against the peer's latest *recorded* `ack` with
-serial arithmetic, and a peer that sends pure ACKs writes no record after
-its SYN-ACK — an ordinary upload — so from 2 GiB on the comparison inverts
-and the writer refuses the record as *already acknowledged*
+and its counter are gone.  A `--sequenced` conversion of such a direction
+orders and verifies at any length too: since spec `0.22` an `ack` is
+unwrapped along the acker's records the same way
 ([zipline#151](https://github.com/adamkjonsson/zipline/issues/151),
 [python-zipline#75](https://github.com/adamkjonsson/python-zipline/issues/75),
-both filed from this project).  A plain conversion of the same capture is
-one clean session; the limit is `--sequenced`'s alone.  `0.3.0`'s 2 GiB
-split happened to sidestep it, which is how it went unseen; it is not
-kept, since a split that hides a rule's ambiguity is what zipline#146 was
-about.  When the peer's records carry current acks — any exchange, not just
-an upload — the check is right at any length.
+both filed from this project).  `0.4.0` refused one whose peer only
+acknowledged — an ordinary upload, whose server records nothing after its
+SYN-ACK.  The one shape one session cannot hold is the hole below.
 
 **A hole wider than 2³¹ bytes in one direction splits the session.**  This
 is the specification's stated exit for what it calls *the unmeasurable
@@ -147,6 +139,24 @@ IP fragments occupies several discontiguous ranges of the capture, and an
 discard from such a datagram is counted as `unlocatable_bytes` and not cited.
 The contributing records are known, so emitting one block per fragment is
 possible; it is not done.
+
+## A `.zpf` of packets as input
+
+**A fragmented UDP datagram is not converted.**  Its fragments are separate
+input records, and only a record carrying `seq_start` may cite several input
+units (spec `0.22`); a UDP record has none.  The fragments are marked
+`undecodable` and counted under `SKIP_FRAGMENTED_UDP`.  Whether the
+permission should extend to a datagram reassembled from IP fragments, whose
+offsets prove the join as sequence numbers do, is
+[zipline#166](https://github.com/adamkjonsson/zipline/issues/166), filed from
+this project.  Fragmented TCP is unaffected.
+
+**Each input stream is read in stored order**, and the streams are merged by
+timestamp.  A decryptor writes each tunnel direction in time order, which is
+all this needs; a stage that stored one stream's packets out of time order
+would have them reassembled in that order.  Two records in different streams
+sharing a timestamp are taken in stream order, since a `.zpf` records no
+order between them.
 
 ## Bounded by memory
 

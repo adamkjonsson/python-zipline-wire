@@ -1,6 +1,8 @@
 # `zpfwire convert`
 
-Convert a capture into a capture-sourced, transport-layer `.zpf` file.
+Convert a capture, or a `.zpf` of packets such as a decrypted tunnel's, into a
+transport-layer `.zpf` file.  Which input it is comes from its first bytes;
+the second is under {ref}`from-a-zpf` below.
 
 ```bash
 zpfwire convert capture.pcap -o capture.zpf
@@ -65,6 +67,39 @@ Error: link type 999 is one packeteer cannot decode, so every packet in the capt
 The filtering flags described in {doc}`index` apply here too, and compose with
 these: `--no-udp --dst-port 443` keeps only TCP traffic to port 443.
 
+(from-a-zpf)=
+
+## From a `.zpf` of packets
+
+```bash
+zpfwire convert packets.zpf -o inner.zpf
+zpfwire convert packets.zpf -o inner.zpf --content-type dec:ip-packet
+```
+
+The input is a `.zpf`, binary or JSON-Lines, whose records are packets: the
+inner traffic a decryption stage leaves.  The output is the sessions inside
+it, each record citing the input packets it came from — see
+{doc}`../guide/converting-packets`.  Every other flag on this page applies
+unchanged, filters included, to the inner packets.
+
+| Flag | What it does |
+|------|--------------|
+| `--content-type LABEL` | The label that makes a record a packet. The default selects `net:ip` and `net:ethernet`, the format's own; pass a decoder's private label, such as zipline-kober's `dec:ip-packet`, to select that instead |
+| `--link-type N` | How to parse records under a label outside `net:`; raw IP (`101`) if omitted. A `net:` label names its own, and one that disagrees is refused |
+
+Refused with a `.zpf`, exit `1`: `--tick-hz`, since the file states its own.
+`--content-type` is refused with a capture.  `--jsonl` writes the JSON-Lines
+projection, as it does for a capture.  The summary gains a first line counting the input's records:
+
+```
+input        181 records, 33 selected as packets
+packets      33
+...
+```
+
+When no record was selected, a note on stderr says so and names
+`--content-type`.
+
 ## Reassembly policy
 
 These flags decide **which bytes reach the output**.  They are not performance
@@ -79,7 +114,7 @@ they turn up later.  These settings are what decide when that happens.
 | `--overlap {favor-old,favor-acked}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted: the first seen, or the one the receiver's acknowledgement echoed — see {doc}`../guide/reassembly` |
 | `--session-timeout SECONDS` | `300.0` | Silence after which a conversation is closed and a later packet starts a new session |
 | `--no-coalesce` | off | Emit one record per segment instead of one per contiguous byte run |
-| `--checksum {ignore,drop}` | `ignore` | What to do with a packet whose transport checksum does not verify. `drop` discards it as a receiver would, leaving the retransmission to supply the bytes |
+| `--checksum {ignore,drop}` | `ignore` | What to do with a TCP segment whose checksum does not verify. `drop` discards it as a receiver would, leaving the retransmission to supply the bytes. A UDP datagram is kept under either, and counted: a UDP stream could not show one missing |
 
 All six are hashed into the file's decoder descriptor as a `params_digest`,
 so a `.zpf` records the policy that produced it and a conversion can be
@@ -115,6 +150,7 @@ the output:
 
 | Line | Meaning |
 |------|---------|
+| `input` | For a `.zpf` input: its records, and how many were selected as packets |
 | `filtered` | Packets excluded by a filter — deliberate, not lost |
 | `skipped N (reason)` | Packets that carried no convertible stream, by reason |
 | `gaps` | Places where a record was written past bytes that never arrived |
@@ -128,7 +164,7 @@ the output:
 | `acked` | Under `--overlap favor-acked`: ranges that took the receiver's copy, and contested bytes decided without ack evidence |
 | `ts fallback` | Repeats treated as retransmissions because the Timestamps option could not judge them, and why |
 | `bad cksum` | Packets whose transport checksum did not verify, whether or not they were dropped |
-| `dropped` | Payload bytes discarded under `--checksum drop` |
+| `dropped` | TCP payload bytes discarded under `--checksum drop` |
 | `undecoded` | Regions of the capture cited as reaching no record |
 | `uncited` | Discarded bytes whose place in the capture could not be named |
 

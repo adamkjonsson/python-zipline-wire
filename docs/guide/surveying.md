@@ -1,7 +1,8 @@
 # Looking before converting
 
 {func}`~zpfwire.survey.survey` reports the conversations a capture holds
-without writing anything.  It is the same flow grouping a conversion uses, so
+without writing anything.  It reads captures only; for a `.zpf` of packets,
+convert it and read the summary.  It is the same flow grouping a conversion uses, so
 it answers "what would I get?" ahead of committing to an output file.
 
 ```python

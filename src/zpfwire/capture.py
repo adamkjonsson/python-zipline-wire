@@ -143,11 +143,16 @@ class PacketView:
         tcp_flags: Raw 8-bit TCP flags bitmask; ``0`` for UDP.
         tcp_options: Parsed TCP options, or ``None`` when the segment carried
             none.  SACK blocks and timestamps live here.
-        payload_offset: Byte offset of :attr:`payload`'s first byte within the
-            capture file, or ``None`` when there is no payload or the packet
-            was reassembled — a reassembled payload occupies several
-            discontiguous ranges, which one offset cannot express.
-        fragment_count: How many capture records the packet came from; ``1``
+        payload_offset: Where :attr:`payload` came from, as a number the
+            reassembler adds a payload-relative ``skip`` to when it names
+            discarded bytes.  From a capture, the byte offset of the payload's
+            first byte within the capture file, or ``None`` when there is no
+            payload or the packet was reassembled — a reassembled payload
+            occupies several discontiguous ranges, which one offset cannot
+            express.  From a ``.zpf`` of packets, a number naming the input
+            packet, which every ``payload_offset + skip`` still falls inside;
+            see :class:`~zpfwire.packets.PacketSink`.
+        fragment_count: How many input records the packet came from; ``1``
             unless it was reassembled.
         checksum_bad: Whether the transport checksum disagrees with the bytes
             it covers.  A receiver drops such a packet, so a conversion may
@@ -338,30 +343,16 @@ class CaptureReader:
         )
 
     def _view(self, packet: ParsedPacket, index: int) -> PacketView | None:
-        reason = _unconvertible(packet, headerless=self.link_type == LINKTYPE_RAW)
+        reason = skip_reason(packet, headerless=self.link_type == LINKTYPE_RAW)
         if reason is not None:
             self.skipped[reason] += 1
             return None
-
-        transport = packet.transport
-        tcp = transport if isinstance(transport, TCPHeader) else None
-        return PacketView(
+        return packet_view(
+            packet,
             packet_num=index,
             ts_ticks=self._ticks(packet),
-            protocol="tcp" if tcp is not None else "udp",
-            src=packet.ip.src,
-            dst=packet.ip.dst,
-            src_port=transport.src_port,
-            dst_port=transport.dst_port,
-            payload=packet.payload,
-            seq=tcp.seq if tcp is not None else 0,
-            ack=tcp.ack if tcp is not None else 0,
-            tcp_flags=tcp.flags if tcp is not None else 0,
-            tcp_options=tcp.options if tcp is not None else None,
             payload_offset=_payload_offset(packet),
             fragment_count=len(packet.source_records) or 1,
-            checksum_bad=_checksum_bad(packet),
-            truncated=packet.datagram_truncated,
         )
 
     def _ticks(self, packet: ParsedPacket) -> int:
@@ -378,11 +369,60 @@ class CaptureReader:
         return packet.ts_sec * self.tick_hz + (packet.ts_frac * self.tick_hz) // source_hz
 
 
-def _unconvertible(packet: ParsedPacket, *, headerless: bool) -> str | None:
+def packet_view(
+    packet: ParsedPacket,
+    *,
+    packet_num: int,
+    ts_ticks: int,
+    payload_offset: int | None,
+    fragment_count: int,
+) -> PacketView:
+    """Reduce a parsed TCP segment or UDP datagram to what reassembly needs.
+
+    Shared by both readers, so that a capture and a ``.zpf`` of packets
+    yield the same view of the same packet.  Call it only for a packet
+    :func:`skip_reason` accepts.
+
+    Args:
+        packet: The parsed packet.
+        packet_num: Its 1-based index in the input.
+        ts_ticks: Its timestamp, already on the reader's clock.
+        payload_offset: Where the reader says its payload is; see
+            :attr:`PacketView.payload_offset`.
+        fragment_count: How many input records it was reassembled from.
+
+    Returns:
+        The packet's view.
+
+    """
+    transport = packet.transport
+    assert isinstance(transport, (TCPHeader, UDPHeader)) and packet.ip is not None
+    tcp = transport if isinstance(transport, TCPHeader) else None
+    return PacketView(
+        packet_num=packet_num,
+        ts_ticks=ts_ticks,
+        protocol="tcp" if tcp is not None else "udp",
+        src=packet.ip.src,
+        dst=packet.ip.dst,
+        src_port=transport.src_port,
+        dst_port=transport.dst_port,
+        payload=packet.payload,
+        seq=tcp.seq if tcp is not None else 0,
+        ack=tcp.ack if tcp is not None else 0,
+        tcp_flags=tcp.flags if tcp is not None else 0,
+        tcp_options=tcp.options if tcp is not None else None,
+        payload_offset=payload_offset,
+        fragment_count=fragment_count,
+        checksum_bad=_checksum_bad(packet),
+        truncated=packet.datagram_truncated,
+    )
+
+
+def skip_reason(packet: ParsedPacket, *, headerless: bool) -> str | None:
     """Return why a packet carries no stream, or ``None`` when it does.
 
     Only called for a link type packeteer decodes; an unsupported one is
-    settled per file, not per packet.
+    settled per file, not per packet.  Shared by both readers.
 
     Args:
         packet: The parsed packet.

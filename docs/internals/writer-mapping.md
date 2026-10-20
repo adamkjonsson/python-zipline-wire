@@ -39,6 +39,14 @@ Because the reassembler only ever trims *leading* bytes, a discard is always a
 prefix of some segment's payload, so its file range is
 `payload_offset + skip` for a known `skip`.
 
+Over a `.zpf` of packets the same number means something else, and the
+reassembler cannot tell.  The reader gives each input packet a
+`payload_offset` that *names* it — the input stream, the record's offset and
+its length above the low 32 bits — so every `payload_offset + skip` the
+reassembler computes still falls inside the packet it came from, and
+`PacketSink` cites or marks that packet whole.  The arithmetic in `tcp.py` is
+untouched by the second input.
+
 ### The class rule
 
 Only the **bytes-exist** class may be declared against a capture source.  A
@@ -54,9 +62,10 @@ where the Timestamps option can say why, `late-reordered` /
 `duplicate-discarded` for a repeat of bytes already accepted — but never
 cites the hole itself.  `paws-rejected` cites an old segment dropped whole
 before it reaches `_accept`.  One more reason, `bad-checksum`, comes from
-`convert.py` rather than the reassembler: under `checksum="drop"` a packet
-that failed its checksum is discarded whole before it reaches a flow, and
-its payload is cited the same way.
+`convert.py` rather than the reassembler: under `checksum="drop"` a TCP
+segment that failed its checksum is discarded whole before it reaches a
+flow, and its payload is cited the same way.  A UDP datagram never is: a
+UDP stream's offsets could not show it missing.
 
 ### When it cannot be done
 
@@ -138,17 +147,24 @@ A new transport is a `FlowTracker` subclass and one entry in
 _TRACKERS: dict[str, type[FlowTracker]] = {"tcp": TcpFlow, "udp": UdpFlow}
 ```
 
-The base class gives you participant declaration, the session, the stats, the
+The base class gives you participant declaration, the sink, the stats, the
 options, and `undecoded()`.  What a subclass must provide is `packet()` and
-`finish()`.
+`finish()`, and it writes each record through
+`self.sink.record(sender, ts=…, payload=…, origins=…, hints=…, flags=…)`,
+never to a session directly, so that it converts a capture and a `.zpf` of
+packets alike.
 
-Three things to get right, in rough order of how easy they are to get wrong:
+Four things to get right, in rough order of how easy they are to get wrong:
 
 1. **Ascending `seq_start` per participant**, if your records carry one.
 2. **Declare participants before recording from them** — use
    `self.participant(endpoint, **declaration)`, which declares on first sight.
-3. **Count everything you drop**, and cite it when you can name its place in
-   the capture.
+3. **Count everything you drop**, and cite it through `self.undecoded()` when
+   you can name its place, as a `payload_offset` plus a `skip`.
+4. **Name every packet a record was built from** in `origins`, by its
+   `payload_offset` — flags-only packets included.  A capture conversion
+   ignores them; a `.zpf` input cites exactly those packets, and marks a
+   discarded packet only if no record names it.
 
 `UdpFlow` is some fifty lines and is the honest example of how little the
 base class leaves you to do.

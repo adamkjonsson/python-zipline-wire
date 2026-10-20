@@ -4,9 +4,10 @@ Turn network captures into [Zipline Payload Format](https://github.com/adamkjons
 (`.zpf`) files — TCP reassembly included.
 
 A capture file answers *what was on the wire*. A `.zpf` answers *what did they
-say*. `zpfwire` is the step between: it reads a pcap, groups packets into
-conversations, reassembles each direction's byte stream, and writes the result
-as sessions, participants and records.
+say*. `zpfwire` is the step between: it reads a pcap — or a `.zpf` of
+packets, such as a decrypted tunnel's — groups packets into conversations,
+reassembles each direction's byte stream, and writes the result as sessions,
+participants and records.
 
 It is glue, and deliberately so:
 
@@ -16,7 +17,7 @@ It is glue, and deliberately so:
   mapping onto the specification's model.
 
 **Status: early.** The format itself is `0.x` and says it is not ready for
-production; this is a first implementation against `0.21`.
+production; this is a first implementation against `0.23`.
 
 Full documentation lives in `docs/` — build it with `cd docs && make html`.
 This README is the short version.
@@ -52,6 +53,12 @@ zpfwire convert capture.pcap -o https.zpf --dst-port 443 --src 10.0.0.0/24
 
 # Store each TCP session in causal order rather than capture order
 zpfwire convert capture.pcap -o capture.zpf --sequenced
+
+# The sessions inside a .zpf of decrypted packets, such as a tunnel's
+zpfwire convert packets.zpf -o inner.zpf
+
+# The same packets as a pcap, to open in Wireshark
+zpfwire pcap packets.zpf -o inner.pcap
 ```
 
 ```python
@@ -64,10 +71,22 @@ print(stats.summary())
 Everything the CLI does is available from the API; the CLI is a thin wrapper
 over it.
 
+### A `.zpf` of packets
+
+A stage that decrypts a tunnel leaves its inner traffic as records, one per
+packet, labelled `net:ip`.  `zpfwire convert` takes that `.zpf` as readily as a
+capture — `zpfwire.packets_to_zpf(...)` from Python — and writes the sessions
+inside it, with the same reassembly, each record citing the input packets it
+was built from.  It is the `packets.zpf → inner.zpf` hop of the
+specification's decrypted-tunnel example; see
+`docs/guide/converting-packets.md`.
+
 ## What it writes
 
 A **capture-sourced, transport-layer** file — the top-left cell of the
-specification's provenance/layer table. Concretely:
+specification's provenance/layer table — or, from a `.zpf` of packets, a
+**zpf-sourced** one whose records carry `spans` back to the input. For a
+capture, concretely:
 
 | Block | What goes in it |
 |---|---|
@@ -112,7 +131,7 @@ Note: some bytes never reached the output. Raise --reorder-window or
 | `--overlap {favor-old,favor-acked}` | which copy wins when retransmitted bytes disagree — the first seen, or the one the receiver's acknowledgement echoed |
 | `--session-timeout SECONDS` | silence after which a conversation is closed |
 | `--no-coalesce` | one record per segment instead of per contiguous byte run |
-| `--checksum {ignore,drop}` | whether to discard a packet whose transport checksum does not verify |
+| `--checksum {ignore,drop}` | whether to discard a TCP segment whose checksum does not verify; a UDP datagram is always kept |
 
 These are hashed into the file's decoder descriptor, so a `.zpf` records the
 policy that produced it.
@@ -178,7 +197,8 @@ ruff check src/ tests/ docs/                        # lint, must be silent
 ```
 
 Capture fixtures in `tests/captures/` are copied from packeteer's `testcases/`,
-plus three real HTTP captures added directly. Every test asserts that what was
+plus three real HTTP captures added directly, and `tests/vectors/` vendors the
+specification's `tunnel` vector for the `.zpf`-input path. Every test asserts that what was
 written reads back through `zpf.open` with no diagnostics and nothing
 unplaceable — a file that does not is not a conversion.
 

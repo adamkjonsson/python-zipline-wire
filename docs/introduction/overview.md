@@ -20,14 +20,20 @@ print(stats.summary())
 
 The specification classifies every `.zpf` on two axes: where its data came
 from (**provenance**) and how far up the stack it has been decoded
-(**layer**).  Everything zpfwire writes sits in one cell of that table —
-**capture-sourced** and **transport-layer** — and most of the design follows
-from saying so out loud.
+(**layer**).  Everything zpfwire writes is **transport-layer**, and a
+capture conversion is also **capture-sourced** — the top-left cell of that
+table — and most of the design follows from saying so out loud.
 
 | Axis | Value | What it settles |
 |------|-------|-----------------|
 | Provenance | `capture` | The input is a pcap, not another `.zpf`. There is no upstream stream to reference, so `spans` cannot be used and `Undecoded` blocks address byte offsets in the capture file. |
 | Layer | `transport` | Records are byte runs, not parsed messages. `content_type` is forbidden, and a gap in a stream needs no marker — absolute sequence numbers make it visible by arithmetic. |
+
+The input can also be a `.zpf` of packets — the inner traffic of a tunnel a
+Zipline stage decrypted.  The same reassembly then writes a **zpf-sourced**,
+transport-layer file, the cell beside it: records cite the input packets they
+came from in `spans`, `Undecoded` blocks name input packets, and the file owes
+the coverage guarantee.  See {doc}`../guide/converting-packets`.
 
 The corollaries are worked through in {doc}`../reference/zpf-mapping`.  What
 matters at this level is that zpfwire does **not** decode application
@@ -87,6 +93,7 @@ repeat was *treated* as a retransmission rather than shown to be one; see
 |----------------|------|
 | Install it | {doc}`installation` |
 | Convert a capture from the command line | {doc}`../cli/index` |
+| Convert a decrypted tunnel's packets | {doc}`../guide/converting-packets` |
 | Drive it from Python | {doc}`../guide/index` |
 | Know which spec construct something becomes | {doc}`../reference/zpf-mapping` |
 | Work on zpfwire itself | {doc}`../internals/index` |

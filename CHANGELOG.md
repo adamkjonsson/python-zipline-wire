@@ -35,6 +35,200 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 
 ---
 
+## [0.5.0] - 2026-10-20
+
+**The `.zpf`-input release.**  Writes spec **v0.23**
+(`zpf.SPEC_VERSION == (0, 23)`), up from `0.21`, against packeteer
+**0.18.0** and python-zipline **0.6.0**
+([#38](https://github.com/adamkjonsson/python-zipline-wire/issues/38)).
+No python-zipline release implements `0.22`, which `0.23` followed the same
+day, and this release takes both.  The floors are python-zipline `0.6.0`,
+the first release that implements `0.23`, and packeteer `0.16.0`.  The `0.x`
+rule as before: a `0.21` reader refuses the files this release writes, and
+a `0.23` reader refuses `0.4.0`'s.  For the same input and options nothing
+else moves: every fixture, under both overlap policies and with and without
+`--sequenced`, converts to the bytes `0.4.0` wrote but for the version
+stamp in the File Header.
+
+**Spec `0.22` and `0.23`** answer three issues filed from this project, and
+fix one more found upstream.  An **`ack` is now a position**, unwrapped
+along its sender's records into the peer's offset space as offsets have
+been since `0.21`, so the causal check compares plain integers at any
+stream length ([zipline#151](https://github.com/adamkjonsson/zipline/issues/151),
+the one shape `0.4.0` could not write).  A **sequence-anchored transport
+output may cite across its input's seams**
+([zipline#152](https://github.com/adamkjonsson/zipline/issues/152)), and
+**`net:ip` and `net:ethernet`** name one network packet
+([zipline#153](https://github.com/adamkjonsson/zipline/issues/153)); both
+are what a stage reading a `.zpf` of packets needs, and this release is
+the first to have one — see *Added*.  A record's end is now **one past the last sequence number it
+occupies**, so a stored pure ACK draws no edge
+([zipline#160](https://github.com/adamkjonsson/zipline/issues/160)); this
+tree stores no pure ACKs, so nothing it writes is affected.
+
+### Added
+
+- **A `.zpf` of packets converts into sessions**
+  ([#35](https://github.com/adamkjonsson/python-zipline-wire/issues/35)):
+  **`zpfwire.packets_to_zpf(source, sink, …)`**, the
+  `packets.zpf → inner.zpf` hop of the specification's decrypted-tunnel
+  chain.  A stage that decrypts a tunnel leaves its inner traffic as
+  records, one per packet; this runs the same reassembly a capture gets over
+  them and writes a transport-layer file whose every record cites the input
+  packets it was built from.  It is built on python-zipline's
+  `sessionize_stage`, which keeps the coverage guarantee, the `skipped`
+  auto-fill and each Session End's whole-stream `input_extents`.  Its
+  keywords are `capture_to_zpf`'s, less `tick_hz` and `link_type`, which a
+  `.zpf` states itself, plus the selection:
+  - **`content_type=None` selects `net:ip` and `net:ethernet`**, the
+    format's own labels since spec `0.22`, each parsed as the link type it
+    names.  Another label selects records a decoder typed privately, such as
+    zipline-kober's `dec:ip-packet`, parsed as raw IP unless `link_type`
+    says otherwise.
+  - **A packet is cited whole**, headers included, by every record its bytes
+    or flags reached; a packet this tree discarded is marked with the reason
+    it would carry on a capture (`duplicate-discarded`, `late-arrival`,
+    `bad-checksum` …); anything else nothing cited — a pure ACK, a record
+    that is not a packet, a filtered flow — is left to the stage's `skipped`.
+  - **Records coalesce over the input's seams**, as zipline#152 allows a
+    record carrying `seq_start`, so over every fixture the sessions, records,
+    hints, flags and timestamps are those of the capture they came from.
+  - **The input is merged into timestamp order** across its streams, since a
+    decrypting stage stores one tunnel direction before the other.  Two
+    directions' records sharing a timestamp have no order in a `.zpf`, and
+    are taken by input stream.
+  - **A fragmented UDP datagram is not converted**: no record without
+    `seq_start` may cite several input units, so its fragments are marked
+    `undecodable` and counted as `SKIP_FRAGMENTED_UDP`
+    ([zipline#166](https://github.com/adamkjonsson/zipline/issues/166)).
+    Fragmented TCP is one record, as on a capture.
+  - **A flow that resumes gets a second session** on the same key, after its
+    timeout or past a `capture-gap`, as on a capture.  The JSON-Lines face is
+    written as for a capture, and the File Header names `zpfwire` as its
+    `creator`.
+- **`zpfwire convert` takes a `.zpf` of packets** as well as a capture, told
+  apart by its first bytes: `zpfwire convert packets.zpf -o inner.zpf`.
+  **`--content-type LABEL`** selects a label other than `net:`'s, such as
+  `dec:ip-packet`, and `--link-type` then says how to parse it; every filter
+  applies to the inner packets, and `--jsonl` writes the JSON-Lines
+  projection.  `--tick-hz` is refused with a `.zpf`, and `--content-type`
+  with a capture.  The summary
+  opens with an `input` line counting the records read and selected, and
+  when none was selected a note names `--content-type`.  `zpfwire info`
+  refuses a `.zpf`.
+- **The packets of a `.zpf` export to a pcap**, for Wireshark
+  ([#36](https://github.com/adamkjonsson/python-zipline-wire/issues/36)):
+  **`zpfwire pcap packets.zpf -o inner.pcap`**, and
+  **`zpfwire.packets_to_pcap(source, sink, …)`** returning a **`PcapExport`**.
+  The same records `packets_to_zpf` selects, merged into time order, each
+  written exactly as stored — padding kept, fragments as fragments — under
+  the link type its label names; a selection of two link types is refused.
+  An export for analysis: a pcap cites nothing, so `convert` is what keeps
+  the chain.  It streams, since packeteer's writer takes any iterable
+  ([packeteer#204](https://github.com/adamkjonsson/packeteer/issues/204)).
+- **`zpfwire.input_kind(source)`** says whether an input is a `.zpf` or a
+  capture, by the format's own check of its first bytes.
+- **`PacketRecordReader`**, the `.zpf` counterpart of `CaptureReader`;
+  **`RecordSink`**, with **`CaptureSink`** and **`PacketSink`**, where a
+  tracker's session goes; **`REASON_UNDECODABLE`** and
+  **`SKIP_FRAGMENTED_UDP`**; and **`ConversionStats.records_read`** and
+  **`records_selected`**, with an `input` summary line for a `.zpf` input.
+
+### Changed
+
+- **Breaking: `checksum="drop"` (`--checksum drop`) drops a corrupt TCP
+  segment only; a corrupt UDP datagram is kept**, as under `"ignore"`, and
+  still counted under `bad cksum`.  The specification forbids a
+  transport-layer stage to withhold content from a stream whose offsets are
+  not sequence-anchored (§Discontinuity): a TCP segment left out is a
+  sequence hole that its offsets show and its resend fills, but a UDP
+  stream's offsets are the payloads that arrived, so a datagram left out
+  leaves no trace, and the `bad-checksum` region naming it is declarative
+  only.  `0.4.0` dropped both.  Bytes move for a capture with a corrupt UDP
+  datagram converted under `drop`: the datagram is now a record, and no
+  `bad-checksum` region or skip is written for it.  No fixture has one, so
+  no pin moves.  A caller who relied on corrupt datagrams disappearing reads
+  `stats.bad_checksum` instead, and finds them in the input.  zipline-kober's
+  WireGuard example, whose corrupted tunnel datagrams are UDP, sees them
+  decoded as `decrypt-failed` under either policy now.
+- **Breaking: a `FlowTracker` writes through a sink, not a session.**  Its
+  constructor is `FlowTracker(key, sink, *, options, stats, tick_hz)`: the
+  `session`, `decoder`, `writer` and `source` arguments, and the `session`
+  attribute, are gone, and a subclass writes its records through
+  `self.sink.record(…, origins=…)`, naming the `payload_offset` of every
+  packet a record was built from.  That is what lets one tracker convert a
+  capture and a `.zpf` alike.  A subclass that called
+  `self.session.record(…, decoded=…)` calls `self.sink.record(…)` instead,
+  without `decoded`, which the sink supplies.  No capture conversion writes
+  a different byte.
+- **Breaking: a held segment that the fill covers wholly now flags the
+  record covering it `retransmit`**, when the repeat is judged a
+  retransmission ([#31](https://github.com/adamkjonsson/python-zipline-wire/issues/31)).
+  The shape: a segment arrives ahead of a hole and is held, then the hole is
+  filled by a resend that covers the held segment's whole range as well, so
+  the sender sent those bytes twice.  The other four sites where a repeat is
+  judged always set the flag for a retransmission.  This one discarded the
+  bytes, counted and cited them correctly, and set nothing, inherited from
+  `0.2.0` rather than decided.  It now flags like the rest; a capture-point
+  copy (same TSval, nothing from the peer between) is still a duplicate and
+  flags nothing.  Bytes move for a capture with the shape.  None of the 22
+  fixtures has it under either overlap policy, so no pin moves and every
+  fixture converts to the same bytes.
+- **The packeteer floor is `0.16.0`**, up from `0.15.0`, and it now names
+  what the *suite* needs as well as the code: `0.16.0`'s generator no longer
+  acknowledges past a corrupted segment before its resend
+  ([packeteer#163](https://github.com/adamkjonsson/packeteer/issues/163)),
+  which the generated `favor-acked` test depends on
+  ([#30](https://github.com/adamkjonsson/python-zipline-wire/issues/30)).
+- **The python-zipline floor is `0.6.0`**, up from `0.5.0`
+  ([#38](https://github.com/adamkjonsson/python-zipline-wire/issues/38)).
+
+### Fixed
+
+- **A sequenced conversion of a direction longer than 2 GiB whose peer only
+  acknowledges is written again**
+  ([zipline#151](https://github.com/adamkjonsson/zipline/issues/151),
+  [python-zipline#75](https://github.com/adamkjonsson/python-zipline/issues/75)).
+  An ordinary upload: the server records nothing after its SYN-ACK, whose
+  `ack` stays `isn + 1`, and spec `0.21`'s causal check compared it with
+  client record ends by serial arithmetic, so from 2 GiB on every record
+  read as already acknowledged and `0.4.0` raised `zpf.SemanticError` at the
+  writer.  Since `0.22` the comparison is between positions, and the order
+  the shape always had is written and verifies on the read-back.  The strict
+  `xfail` that stood for it is an ordinary test, and the limit it documented
+  is gone from the docs.
+
+### Documentation
+
+- **A guide page, *Converting decoded packets***, on the
+  `packets.zpf → inner.zpf` hop: which records are packets, what the output
+  says about every input byte, why records join across the input's seams,
+  the merge order, and sessions that end and resume.  A new API page for
+  `zpfwire.packets`, the sink on the flow page, the `.zpf` input on the
+  `convert` CLI page, a *From a `.zpf` of packets* section in the
+  specification mapping, and the one limit — a fragmented UDP datagram
+  (zipline#166).  `upstream-first.md`'s ledgers gain the issues this release
+  filed: packeteer#204; python-zipline#76, #86, #88, #89, #90 and #91;
+  zipline#152, #153 and #166.
+- **`CLAUDE.md` said the tree writes spec `0.20`**, two versions stale; it
+  says `0.23`, and that the input may be a `.zpf` of packets.
+- **The release's documentation sweep** found pages still describing a
+  capture as the only input, and fixed them.  The overview said everything
+  zpfwire writes "sits in one cell" of the two axes.  The mapping said a
+  capture-sourced file is "the only kind zpfwire writes", and that nothing
+  here produces JSONL.  `architecture.md`'s packet path had no `.zpf` reader
+  or sink, and its CLI section counted two refusals.  `testing.md` counted
+  460 tests and listed neither new test module, nor the repackaged and
+  vendored inputs.  `upstream-first.md` counted twenty-nine issues with two
+  open.  The internals module map lacked `packets.py`.  `PacketView.payload_offset`
+  and `ConversionStats` described a capture only, and so did the new-transport
+  checklist, which now says to write through `self.sink` and name `origins`.
+  The README, the converting, filtering, surveying, provenance and ordering
+  guides, the CLI index and `limits.md` gained the sentence each lacked
+  about a `.zpf` input.
+
+---
+
 ## [0.4.0] - 2026-09-19
 
 **The spec `0.21` release.**  Writes spec **v0.21**
@@ -695,7 +889,8 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.1.0...v0.2.0

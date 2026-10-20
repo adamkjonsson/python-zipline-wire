@@ -102,15 +102,25 @@ def test_a_corrupt_packet_opens_no_session(tmp_path: pathlib.Path):
     assert out.stats.sessions == 0
 
 
-def test_a_corrupt_datagram_is_dropped_on_udp_too(tmp_path: pathlib.Path):
-    """UDP carries a checksum as well, and a receiver treats it the same way."""
+def test_a_corrupt_datagram_is_kept_on_udp_even_under_drop(tmp_path: pathlib.Path):
+    """A UDP stream cannot show a missing datagram, so none is withheld from it.
+
+    A TCP segment left out is a sequence hole the offsets show.  A UDP
+    stream's offsets are the payloads that arrived, so a datagram left out
+    leaves no trace, and the specification forbids a transport-layer stage
+    to withhold content from such a stream.  The datagram is written, and
+    the summary still says its checksum failed.
+    """
     capture = capture_of([udp_packet(payload=b"junk", checksum=_WRONG)])
 
     out = to_zpf(capture, tmp_path, options=DROP)
 
+    assert out.only.stream(0) == b"junk"
     assert out.stats.bad_checksum == 1
-    assert out.stats.checksum_dropped_bytes == 4
-    assert out.sessions == []
+    assert out.stats.checksum_dropped_bytes == 0
+    assert out.stats.skipped["bad-checksum"] == 0
+    assert out.undecoded == []
+    assert out.diagnostics == [] and out.unplaceable == []
 
 
 # ── what a failure is not ───────────────────────────────────────────────

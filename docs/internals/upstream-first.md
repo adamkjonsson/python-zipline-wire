@@ -21,9 +21,10 @@ every *other* consumer of that library.  Filing it fixes it once.
 
 ## What it produced
 
-Twenty-nine issues so far; two are open, both found by the `0.4.0` release
-deleting a shim, and neither blocks anything — the shape they describe is a
-documented limit of `--sequenced` until the format answers.
+Thirty-nine issues so far, and one is open: zipline#166, a fragmented UDP
+datagram over a unit-sequence input, which this tree marks `undecodable`
+until the format answers.  Every other one has been answered upstream and
+released, most of them within days.
 
 **packeteer**, filed before a line of code was written:
 
@@ -58,6 +59,7 @@ documented limit of `--sequenced` until the format answers.
 | #161 | No real capture of a stream whose sequence numbers pass through 2³² | `tcp_wrap_ts.pcap`, delivered the day it was filed (0.16.0) |
 | #163 | The generated receiver acknowledged past a corrupted segment before its retransmission, so a generated stream could not test a policy that reads acks | Fixed the same day (0.16.0); reviewed here across 20 seeds |
 | #164 | A generated retransmission kept the original's acknowledgement number, so a direction's acks stepped backwards on every resend after peer data | Fixed the same day (0.16.0); reviewed here across 20 seeds × four impairments |
+| #204 | `write_pcap` and `write_pcapng` annotated their records as a `list` though they stream any iterable, so a typed export had to materialise every packet | `Iterable[PacketTuple]`, a consumed-once contract and its tests (0.18.0) |
 
 **python-zipline**:
 
@@ -68,7 +70,13 @@ documented limit of `--sequenced` until the format answers.
 | #49 | No writer-side support for causal output ordering | `begin_session(linearize=True)` and a write-time order guard |
 | #63 | A zero-length SYN record at the `isn` sat one below the stream origin, and `check_coverage` measured the stream as 2³²−1 bytes | The writer refuses a `syn` record whose `seq_start` is not `isn + 1`, and `FileReader.unplaceable` reports what the offset space cannot place (0.3.0) |
 | #70 | On a stream with no `isn`, records past 2 GiB were given zero-width ranges while none was reported unplaceable — the reader's two answers disagreed | `0.4.0` applied the origin floor without an `isn`; `0.5.0`'s unwrapping walk places them (spec `0.21`) |
-| #75 | `verify_sequenced` and the linearize guard refuse a valid linearization past 2 GiB when the peer's last recorded `ack` is stale — a pure-ACK peer's is its SYN-ACK's | **Open** — downstream of zipline#151; the shape is a strict `xfail` here |
+| #75 | `verify_sequenced` and the linearize guard refuse a valid linearization past 2 GiB when the peer's last recorded `ack` is stale — a pure-ACK peer's is its SYN-ACK's | `0.6.0`: an ack is a position, unwrapped along its sender's records into the peer's offset space (spec `0.22`); `verify_sequenced` takes each participant's `isn`.  The strict `xfail` here became an ordinary test (0.5.0) |
+| #76 | No sessionization stage that fans out: `decode_stage` mirrors its input one to one, so the decrypted-tunnel hop had only the primitive writer API | `sessionize_stage` (0.6.0), which this tree's `.zpf` input is built on |
+| #86 | `FlowSession.record` took no `ts_first`, and going around it through `flow.writer` skipped the stage's coverage | `ts_first=` on the stage's record, derived with `ts` when both are omitted (0.6.0) |
+| #88 | `sessionize_stage` returns the *ended* session for a key used before, so a flow that resumes after a timeout or past a `capture-gap` cannot open its second | `session(key)` opens a new session once the key's last one has ended (0.6.0); the two strict `xfail`s here became tests |
+| #89 | `sessionize_stage` and `decode_stage` take no `face` or `creator`, so a stage writes binary only | `face=` and `creator=` on both stages (0.6.0); `--jsonl` works for a `.zpf` input, and its File Header names `zpfwire` |
+| #90 | `check_splice` reports a transport record with `seq_start` crossing an input Discontinuity, which spec `0.22` permits | A transport record carrying `seq_start` is not checked (0.6.0); the strict `xfail` here became a test, and the differential checks both input shapes |
+| #91 | `FlowSession.end` re-reads the whole input to measure `input_extents`, once per output session — quadratic under fan-out | Each input stream's extent and gaps are measured once per stage and kept (0.6.0): `http_stream_1.pcap`'s 20 flows convert in 1.4 s, down from 5.2 s |
 
 **zipline** (the specification):
 
@@ -77,7 +85,10 @@ documented limit of `--sequenced` until the format answers.
 | #142 | The `retransmit` flag's "retransmission/overlap" carries two readings — the sender resent, or the reassembler discarded — and a duplicated capture tells them apart | Spec `0.20`: the flag names the sender's act; a producer that cannot tell a copy from a resend SHOULD treat it as one, which is what this tree did until `0.3.0` read the option (#17) |
 | #146 | A transport record was placed against the origin by serial arithmetic, so a stream stopped at 2 GiB: an ordinary large download could not be represented | Spec `0.21`: offsets unwrap along stored order — each record's is its predecessor's plus the signed serial delta — and a stream is placed at any length.  The shim this tree carried for one release is gone (0.4.0) |
 | #147 | A hole of 2³¹ or more between consecutive records of one participant had no representation and no name — the far side reads as *before* the near side | Spec `0.21`: no representation, by design — the pair is an ordering violation by construction — and the exit this tree already took is now the standard: end the session, open another on the same key with no `isn`, and the producer SHOULD write `capture-gap`.  The `u64 offset` option is held for a `1.x` minor |
-| #151 | The causal edge rule compares a record's end against a peer record's `ack` with serial arithmetic, and the two can be a whole stream apart when the peer only sends pure ACKs; #146's shape on the ack axis | **Open** — found by deleting the #146 shim; a documented limit of `--sequenced` here |
+| #151 | The causal edge rule compares a record's end against a peer record's `ack` with serial arithmetic, and the two can be a whole stream apart when the peer only sends pure ACKs; #146's shape on the ack axis | Spec `0.22`: an ack's position is the previous ack's plus the signed serial delta, the first measured from the peer's origin, and the edge compares plain integers.  Found by deleting the #146 shim; `--sequenced` converts the shape again (0.5.0) |
+| #152 | The no-splice duty offered two recourses, a Discontinuity or a `units` output, and a transport output may use neither — so a reassembler over a unit sequence could never coalesce two packets | Spec `0.22`: a transport output whose records carry `seq_start` meets both duties through its offsets, and MAY cite across input units or an input Discontinuity |
+| #153 | No format-level type for one network packet: a packet-preserving stage had only a decoder-private `dec:` token, which a generic sessionizer could match only by convention | Spec `0.22`: the `net:` scheme, `net:ip` and `net:ethernet`, meaning what `LINKTYPE_RAW` and `LINKTYPE_ETHERNET` mean |
+| #166 | A fragmented UDP datagram over a unit-sequence input has no conformant record: `0.22`'s permission is keyed on `seq_start`, and fragment offsets prove the join as sequence numbers do | **Open** — such a datagram's fragments are marked `undecodable` here |
 
 Two of packeteer's fixes went further than asked — #73 added `iter_packets`
 in response to the composition problem, and #76 put the tick rate on the
@@ -131,9 +142,11 @@ arithmetic and so could not reach past 2³¹ — waited on
 `0.3.0` and was deleted in `0.4.0` when spec `0.21` unwrapped offsets along
 stored order.  Deleting it exposed
 [zipline#151](https://github.com/adamkjonsson/zipline/issues/151), the same
-ambiguity on the ack axis, which the split had been hiding; that one is
-**not** shimmed — it is a documented limit of `--sequenced` and a strict
-`xfail`, because a split that hides a rule's ambiguity is what #146 was about.
+ambiguity on the ack axis, which the split had been hiding.  That one was
+**not** shimmed — for one release it was a documented limit of `--sequenced`
+and a strict `xfail`, because a split that hides a rule's ambiguity is what
+#146 was about — and spec `0.22` answered it, so `0.5.0` turned the `xfail`
+into an ordinary test.
 
 A shim looks like this: a comment naming the issue, and a note in the
 current release plan under `plans/` saying which phase is waiting.  When the
