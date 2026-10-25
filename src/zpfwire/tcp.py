@@ -249,6 +249,21 @@ class _Sent:
     pos: int
 
 
+@dataclass(frozen=True)
+class _PureAck:
+    """A segment that carried only an ``ack``, waiting for its place in the stream.
+
+    Stored as a zero-length record at ``seq``, the sender's sequence number
+    on the wire (#37).  ``origin`` is the packet's ``payload_offset``, so a
+    ``.zpf`` input can cite it.
+    """
+
+    seq: int
+    ts: int
+    ack: int
+    origin: int | None
+
+
 @dataclass
 class _Run:
     """Contiguous bytes accumulating towards one record."""
@@ -269,6 +284,9 @@ class _Run:
     # Packets whose flags, not bytes, reached the run — a FIN or RST with no
     # payload — named so a `.zpf` input can cite them; see RecordSink.record.
     flag_origins: list[int] = field(default_factory=list)
+    # Pure ACKs to store straight after this run's record: their sequence
+    # number lies at or past its start, so they cannot be stored before it.
+    trailing_acks: list[_PureAck] = field(default_factory=list)
 
     @property
     def end(self) -> int:
@@ -325,6 +343,13 @@ class _Stream:
     # them, oldest first — so records still reach the writer in seq order.
     unacked: deque[_Run] = field(default_factory=deque)
     unacked_bytes: int = 0
+    # Where the FIN sits: one past the last byte of the segment carrying it.
+    # The FIN occupies that sequence number, so once every byte before it is
+    # in, the next one the sender can use is one further on.
+    fin_seq: int | None = None
+    # Pure ACKs whose sequence number is ahead of where this direction's
+    # bytes have been placed; see TcpFlow._release_acks.
+    held_acks: list[_PureAck] = field(default_factory=list)
 
 
 class TcpFlow(FlowTracker):
@@ -366,12 +391,22 @@ class TcpFlow(FlowTracker):
 
         if pkt.payload:
             self._accept(stream, pkt.seq, pkt.payload, pkt)
+        elif (
+            self._options.pure_acks
+            and pkt.tcp_flags & TCP_ACK
+            and not pkt.tcp_flags & (TCP_SYN | TCP_FIN | TCP_RST)
+        ):
+            self._pure_ack(stream, pkt)
 
         closing = bool(pkt.tcp_flags & (TCP_FIN | TCP_RST))
         if closing:
             stream.fin = stream.fin or bool(pkt.tcp_flags & TCP_FIN)
             stream.rst = stream.rst or bool(pkt.tcp_flags & TCP_RST)
             self._attach_flags(stream, pkt.tcp_flags, origin=pkt.payload_offset)
+            if pkt.tcp_flags & TCP_FIN and stream.fin_seq is None:
+                stream.fin_seq = _advance(pkt.seq, len(pkt.payload))
+                if stream.held_acks:
+                    self._release_acks(stream)
 
         # A run ends where the sender said it did (PSH), where the connection
         # ends, or at every segment when coalescing is off.
@@ -393,6 +428,14 @@ class TcpFlow(FlowTracker):
             # fallback: the evidence did not arrive, and that is counted.
             while stream.unacked:
                 self._write(stream, self._release_run(stream))
+            # Pure ACKs still ahead of every placed byte: nothing more of
+            # this direction will be stored, so they go last, in order.
+            if stream.held_acks:
+                assert stream.next_seq is not None
+                frontier = self._frontier(stream)
+                for held in sorted(stream.held_acks, key=lambda a: _delta(a.seq, frontier)):
+                    self._write_ack(stream, held)
+                stream.held_acks.clear()
         self._declare_silent_peer()
 
         if any(s.rst for s in self._streams.values()):
@@ -490,6 +533,102 @@ class TcpFlow(FlowTracker):
             if not self.declared(endpoint):
                 self.participant(endpoint)
 
+    # ── pure ACKs ───────────────────────────────────────────────────────
+
+    def _pure_ack(self, stream: _Stream, pkt: PacketView) -> None:
+        """Store a segment that carried only an ``ack`` as a zero-length record (#37).
+
+        Its record sits at its own sequence number, so it has to be stored
+        where that number falls among this direction's records, which are
+        stored in serial order.  That is only certain once nothing of this
+        direction will be stored below it, which is the frontier
+        (:meth:`_frontier`).  At the frontier it is placed now; ahead of it,
+        held until the frontier passes it; behind it, it would have to come
+        before records already placed, so it is not stored and its ``ack``
+        is left to the next data record, as when the option is off.
+
+        A direction that has sent nothing yet begins at the pure ACK, as it
+        would at a first data segment: the ACK says the sender had nothing
+        unsent below it.
+        """
+        if stream.next_seq is None:
+            stream.next_seq = pkt.seq
+        held = _PureAck(seq=pkt.seq, ts=pkt.ts_ticks, ack=pkt.ack, origin=pkt.payload_offset)
+        if _delta(held.seq, self._frontier(stream)) < 0:
+            self._stats.pure_acks_unstored += 1
+            return
+        stream.held_acks.append(held)
+        self._release_acks(stream)
+
+    def _frontier(self, stream: _Stream) -> int:
+        """Return the lowest sequence number this direction may still store a record at.
+
+        Every byte below ``next_seq`` has been placed or given up on, so no
+        record of this direction will start below it again.  A FIN takes one
+        more number, and once everything before it is in, the sender's next
+        segment, and so its next pure ACK, sits one past it.
+        """
+        assert stream.next_seq is not None
+        if stream.fin_seq is not None and stream.next_seq == stream.fin_seq:
+            return _advance(stream.fin_seq, 1)
+        return stream.next_seq
+
+    def _release_acks(self, stream: _Stream) -> None:
+        """Place every held pure ACK the frontier has reached, in serial order.
+
+        Called wherever the frontier moves, and always before a run is
+        opened past it, so an ACK is never placed after a record that starts
+        beyond its sequence number.
+        """
+        frontier = self._frontier(stream)
+        ready = [held for held in stream.held_acks if _delta(held.seq, frontier) <= 0]
+        if not ready:
+            return
+        stream.held_acks = [held for held in stream.held_acks if _delta(held.seq, frontier) > 0]
+        for held in sorted(ready, key=lambda a: _delta(a.seq, frontier)):
+            self._place_ack(stream, held)
+
+    def _place_ack(self, stream: _Stream, held: _PureAck) -> None:
+        """Store *held* now, or straight after the run that must precede it.
+
+        An open run, or one held for the peer's ack, starts at or before
+        the ACK's sequence number and has not been written yet, so the ACK
+        goes after it: a zero-length record covers no byte, so following a
+        run that ends past it overlaps nothing, and the run's boundaries
+        are those it would have had without the ACK.
+        """
+        if stream.run is not None:
+            stream.run.trailing_acks.append(held)
+        elif stream.unacked:
+            stream.unacked[-1].trailing_acks.append(held)
+        else:
+            self._write_ack(stream, held)
+
+    def _write_ack(self, stream: _Stream, held: _PureAck) -> None:
+        """Write a pure ACK as a zero-length record carrying its ``ack``.
+
+        It sits at its sequence number from the wire, including after a FIN,
+        where that number is one past the FIN's: the FIN occupies a sequence
+        number, as the specification's table of record ends says.  The
+        causal merge depends on it.  Two final ACKs each acknowledge the
+        other side's FIN, and the merge judges whether a peer has sent up to
+        an acknowledged position by where its records sit; a final ACK moved
+        back onto its FIN's number reads as not yet past it, and the two wait
+        on each other.  So a stream with a final pure ACK reaches one
+        position past its last byte, the FIN's.  Whether its extent should
+        count that position is a question for the specification
+        (zipline#168).
+        """
+        self.sink.record(
+            self.participant(stream.endpoint),
+            ts=held.ts,
+            payload=b"",
+            origins=(held.origin,),
+            hints=zpf.Hints(seq_start=held.seq, ack=held.ack),
+        )
+        self._stats.records += 1
+        self._stats.pure_acks += 1
+
     # ── reassembly ──────────────────────────────────────────────────────
 
     def _accept(self, stream: _Stream, seq: int, data: bytes, pkt: PacketView) -> None:
@@ -575,6 +714,8 @@ class TcpFlow(FlowTracker):
         self._remember(stream, seq, end, tsval, peer_count)
         self._attach_flags(stream, flags)
         stream.next_seq = end
+        if stream.held_acks:
+            self._release_acks(stream)
 
     def _hold(
         self, stream: _Stream, seq: int, data: bytes, pkt: PacketView, *, tsval: int | None,
@@ -786,6 +927,8 @@ class TcpFlow(FlowTracker):
         stream.next_seq = target
         self._stats.gaps += 1
         stream.oldest_pending_ts = None
+        if stream.held_acks:
+            self._release_acks(stream)
         self._drain(stream, pkt)
 
     def _commit_remaining(self, stream: _Stream) -> None:
@@ -799,6 +942,8 @@ class TcpFlow(FlowTracker):
                 stream.committed_gaps.append(_Gap(stream.next_seq, target, held.tsval))
                 stream.next_seq = target
                 self._stats.gaps += 1
+                if stream.held_acks:
+                    self._release_acks(stream)
             self._release(stream, target)
             trim = max(0, _delta(stream.next_seq, target))
             self._append(
@@ -1235,6 +1380,8 @@ class TcpFlow(FlowTracker):
         )
         self._stats.records += 1
         self._stats.payload_bytes += len(run.data)
+        for held in run.trailing_acks:
+            self._write_ack(stream, held)
 
 
 def _tsecr(pkt: PacketView) -> int | None:

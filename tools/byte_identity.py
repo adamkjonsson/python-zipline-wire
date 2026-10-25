@@ -24,9 +24,16 @@ thing normalised is zpfwire's own version, which every file stamps in
 ``produced_by`` and on its Decoder: both trees have ``tool_version`` patched
 to the same string.  Every binary output must also read back clean.
 
+A change that moves output by default, behind an option that restores the
+old output, is checked with that option: ``--option NAME=VALUE`` sets a
+:class:`~zpfwire.options.ReassemblyOptions` field in every policy, in each
+tree that has the field, and the report names it.  Since ``0.6.0`` stores
+pure ACKs by default, the check against ``v0.5.0`` is run with
+``--option pure_acks=false``.
+
 Usage::
 
-    .venv/bin/python tools/byte_identity.py            # against v0.5.0
+    .venv/bin/python tools/byte_identity.py --option pure_acks=false
     .venv/bin/python tools/byte_identity.py --baseline v0.5.0 --keep
 
 Exits ``0`` when every output matches, ``1`` otherwise.
@@ -65,7 +72,13 @@ def main() -> int:
     parser.add_argument("--baseline", default="v0.5.0", help="git ref to compare against")
     parser.add_argument("--keep", action="store_true",
                         help="keep the work directory and print where it is")
+    parser.add_argument("--option", action="append", default=[], metavar="NAME=VALUE",
+                        help="set a ReassemblyOptions field, as JSON, in every tree that has it")
     args = parser.parse_args()
+    options = {}
+    for setting in args.option:
+        name, _, value = setting.partition("=")
+        options[name] = json.loads(value)
 
     work = pathlib.Path(tempfile.mkdtemp(prefix="zpfwire-identity-"))
     baseline = work / "baseline"
@@ -74,7 +87,7 @@ def main() -> int:
     try:
         inputs = _packet_inputs(work / "inputs")
         results = {
-            name: _collect(src, work / f"{name}.json", inputs)
+            name: _collect(src, work / f"{name}.json", inputs, options)
             for name, src in (("baseline", baseline / "src"), ("current", ROOT / "src"))
         }
     finally:
@@ -99,22 +112,26 @@ def _packet_inputs(where: pathlib.Path) -> dict[str, str]:
     }
 
 
-def _collect(src: pathlib.Path, out: pathlib.Path, inputs: dict[str, str]) -> dict[str, object]:
+def _collect(
+    src: pathlib.Path, out: pathlib.Path, inputs: dict[str, str], options: dict[str, object],
+) -> dict[str, object]:
     """Run :func:`collect` in a subprocess with *src* first on the path."""
     subprocess.run(
-        [sys.executable, "-I", __file__, "--collect", str(src), str(out), json.dumps(inputs)],
+        [sys.executable, "-I", __file__, "--collect", str(src), str(out), json.dumps(inputs),
+         json.dumps(options)],
         check=True,
     )
     return json.loads(out.read_text(encoding="utf-8"))
 
 
-def collect(src: str, out: str, inputs: dict[str, str]) -> None:
+def collect(src: str, out: str, inputs: dict[str, str], options: dict[str, object]) -> None:
     """Convert every fixture with the zpfwire in *src*, and record what was written.
 
     Args:
         src: The ``src`` directory of the tree to run.
         out: Where to write the results, as JSON.
         inputs: Each fixture's ``.zpf``-of-packets repackaging, by fixture name.
+        options: ``ReassemblyOptions`` fields to set, where this tree has them.
 
     """
     sys.path.insert(0, src)
@@ -142,21 +159,23 @@ def collect(src: str, out: str, inputs: dict[str, str]) -> None:
             "stats": {k: repr(v) for k, v in dataclasses.asdict(stats).items()},
         }
 
+    fields = {field.name for field in dataclasses.fields(zpfwire.ReassemblyOptions)}
+    applied = {name: value for name, value in options.items() if name in fields}
     policies = {
-        "favor-old": zpfwire.ReassemblyOptions(),
-        "favor-acked": zpfwire.ReassemblyOptions(overlap="favor-acked"),
-        "tight": zpfwire.ReassemblyOptions(reorder_window=2048, flush_timeout=0.01),
+        "favor-old": zpfwire.ReassemblyOptions(**applied),
+        "favor-acked": zpfwire.ReassemblyOptions(overlap="favor-acked", **applied),
+        "tight": zpfwire.ReassemblyOptions(reorder_window=2048, flush_timeout=0.01, **applied),
     }
     scratch = pathlib.Path(out).with_suffix(".d")
     scratch.mkdir()
     outputs: dict[str, object] = {}
     for capture in sorted(CAPTURES.glob("*.pcap*")):
-        variants = [(name, options, "binary", False) for name, options in policies.items()]
-        variants += [(name, options, "jsonl", False) for name, options in policies.items()]
+        variants = [(name, policy, "binary", False) for name, policy in policies.items()]
+        variants += [(name, policy, "jsonl", False) for name, policy in policies.items()]
         variants.append(("favor-old", policies["favor-old"], "binary", True))
-        for name, options, face, sequenced in variants:
+        for name, policy, face, sequenced in variants:
             path = scratch / f"{capture.name}.{name}.{face}.{sequenced}"
-            stats = zpfwire.capture_to_zpf(capture, path, options=options, face=face,
+            stats = zpfwire.capture_to_zpf(capture, path, options=policy, face=face,
                                            sequenced=sequenced, produced_at=None)
             data = path.read_bytes()
             if face == "binary":
@@ -165,7 +184,8 @@ def collect(src: str, out: str, inputs: dict[str, str]) -> None:
             outputs[label] = entry(data, stats)
 
         sink = io.BytesIO()
-        stats = zpfwire.packets_to_zpf(inputs[capture.name], sink, produced_at=PINNED_AT)
+        stats = zpfwire.packets_to_zpf(inputs[capture.name], sink, produced_at=PINNED_AT,
+                                       options=policies["favor-old"])
         clean(sink.getvalue())
         outputs[f"packets/{capture.name}"] = entry(sink.getvalue(), stats)
 
@@ -178,6 +198,7 @@ def collect(src: str, out: str, inputs: dict[str, str]) -> None:
             "zpfwire": zpfwire.__file__,
             "zpf": f"{zpf.__version__} from {zpf.__file__}",
             "packeteer": f"{importlib.metadata.version('packeteer')} from {packeteer.__file__}",
+            "options": json.dumps(applied, sort_keys=True),
         },
         "outputs": outputs,
     }
@@ -190,6 +211,7 @@ def _report(ref: str, baseline: dict[str, object], current: dict[str, object]) -
         ran = result["ran"]
         print(f"{name:8s} zpfwire {ran['zpfwire']}")
         print(f"{'':8s} zpf {ran['zpf']}\n{'':8s} packeteer {ran['packeteer']}")
+        print(f"{'':8s} options {ran['options']}")
 
     old, new = baseline["outputs"], current["outputs"]
     missing = sorted(set(old) ^ set(new))
@@ -223,6 +245,6 @@ def _stats_differ(old: dict[str, str], new: dict[str, str]) -> bool:
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--collect"]:
-        collect(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]))
+        collect(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]), json.loads(sys.argv[5]))
     else:
         sys.exit(main())

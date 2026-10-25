@@ -62,9 +62,14 @@ deliberately leaves the TCP Timestamps fixtures unpinned. Run the
 byte-identity check against the last release instead:
 
 ```bash
-.venv/bin/python tools/byte_identity.py                    # against v0.5.0
-.venv/bin/python tools/byte_identity.py --baseline v0.4.0
+.venv/bin/python tools/byte_identity.py --option pure_acks=false   # against v0.5.0
+.venv/bin/python tools/byte_identity.py --baseline v0.4.0 --option pure_acks=false
 ```
+
+A change that moves output by default, behind an option that restores what
+came before, is checked with that option set: `--option NAME=VALUE` sets a
+`ReassemblyOptions` field, as JSON, in each tree that has it. Since `0.6.0`
+stores pure ACKs by default, that is `--option pure_acks=false`.
 
 It checks the baseline out into a temporary worktree and runs both trees
 against the same installed siblings. For each fixture it compares whole

@@ -17,6 +17,7 @@ from helpers import (
     Converted,
     Seg,
     capture_of,
+    is_pure_ack,
     tcp_packet,
     tcp_segments,
     to_zpf,
@@ -74,18 +75,22 @@ def test_the_handshake_fixes_isn_and_roles(tmp_path: pathlib.Path):
 def test_seq_start_is_the_absolute_wire_number(tmp_path: pathlib.Path):
     """The first application byte is isn + 1, and seq_start is absolute.
 
-    The handshake writes an empty SYN record at the origin, so the data
-    record is the second one — and both sit at the same seq_start, which is
-    what the origin being isn + 1 means: the SYN consumed the isn without
-    delivering a byte there.
+    The handshake writes an empty SYN record at the origin, then the
+    handshake's own pure ACK, then the data — and all three sit at the same
+    seq_start, which is what the origin being isn + 1 means: the SYN
+    consumed the isn without delivering a byte there, and the ACK carries
+    the next number, the first byte's.
     """
     out = to_zpf(capture_of([*handshake(),
                              tcp_packet(seq=ISN + 1, flags=TCP_PSH, payload=b"abc")]), tmp_path)
 
-    syn, record = out.only.by(0)
+    syn, ack, record = out.only.by(0)
     assert syn.flags & zpf.RecordFlags.SYN
     assert syn.seq_start == ISN + 1
     assert syn.payload == b""
+    assert is_pure_ack(ack)
+    assert ack.seq_start == ISN + 1
+    assert ack.ack == 5001
     assert record.seq_start == ISN + 1
 
 
@@ -343,13 +348,30 @@ def test_a_records_timestamp_is_its_last_contributing_packet(tmp_path: pathlib.P
     assert record.timestamp == 1_001_000
 
 
-def test_pure_acks_produce_no_records(tmp_path: pathlib.Path):
+def test_a_pure_ack_is_a_zero_length_record_carrying_its_ack(tmp_path: pathlib.Path):
+    """Spec 0.23 advises storing them, and since 0.6.0 that is the default (#37)."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"data", flags=TCP_PSH),
+        Seg(700, b"", from_client=False, ack=5),
+    ]), tmp_path)
+
+    (ack,) = out.only.by(1)
+    assert ack.payload == b""
+    assert ack.flags == zpf.RecordFlags(0)
+    assert ack.seq_start == 700
+    assert ack.ack == 5
+    assert out.stats.pure_acks == 1
+
+
+def test_pure_acks_produce_no_records_when_opted_out(tmp_path: pathlib.Path):
+    """Every release before 0.6.0, and ``pure_acks=False`` since."""
     out = to_zpf(tcp_segments([
         Seg(1, b"data", flags=TCP_PSH),
         Seg(5, b"", from_client=False),
-    ]), tmp_path)
+    ]), tmp_path, options=ReassemblyOptions(pure_acks=False))
 
     assert len(out.only.records) == 1
+    assert out.stats.pure_acks == 0
 
 
 def test_the_ack_hint_comes_from_the_wire(tmp_path: pathlib.Path):
@@ -429,8 +451,16 @@ def test_a_fin_carried_with_data_flags_the_record(tmp_path: pathlib.Path):
 
 
 def _flagged(out: object) -> list[bool]:
-    """Whether each record of the only session carries ``retransmit``."""
-    return [bool(r.flags & zpf.RecordFlags.RETRANSMIT) for r in out.only.records]  # type: ignore[attr-defined]
+    """Whether each record of the only session carries ``retransmit``, pure ACKs aside.
+
+    A pure ACK's record carries no bytes, so no resend can flag it; the
+    question these tests ask is about the records that do.
+    """
+    return [
+        bool(r.flags & zpf.RecordFlags.RETRANSMIT)
+        for r in out.only.records  # type: ignore[attr-defined]
+        if not is_pure_ack(r)
+    ]
 
 
 def _reasons(out: object) -> list[str]:

@@ -173,6 +173,30 @@ def test_reassembly_flags_reach_the_reassembler(tmp_path: pathlib.Path,
     assert count(split) > count(default)
 
 
+def test_no_pure_acks_writes_what_the_api_writes_with_the_option_off(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """The flag reaches the policy: the CLI and the API decode the same way (#37).
+
+    Compared as decodes, not bytes: the CLI stamps the build time.
+    """
+    from helpers import decode_digest
+
+    from zpfwire import ReassemblyOptions, capture_to_zpf
+
+    capture = CAPTURES / "no_errors.pcap"
+    cli = tmp_path / "cli.zpf"
+    api = tmp_path / "api.zpf"
+    default = tmp_path / "default.zpf"
+
+    run(monkeypatch, "convert", str(capture), "-o", str(cli), "--no-pure-acks", "-q")
+    run(monkeypatch, "convert", str(capture), "-o", str(default), "-q")
+    capture_to_zpf(capture, api, options=ReassemblyOptions(pure_acks=False))
+
+    assert decode_digest(cli) == decode_digest(api)
+    assert decode_digest(default) != decode_digest(api)
+
+
 def test_the_policy_is_recorded_in_the_file(tmp_path: pathlib.Path,
                                             monkeypatch: pytest.MonkeyPatch):
     out = tmp_path / "out.zpf"

@@ -133,6 +133,7 @@ Note: some bytes never reached the output. Raise --reorder-window or
 | `--overlap {favor-old,favor-acked}` | which copy wins when retransmitted bytes disagree — the first seen, or the one the receiver's acknowledgement echoed |
 | `--session-timeout SECONDS` | silence after which a conversation is closed |
 | `--no-coalesce` | one record per segment instead of per contiguous byte run |
+| `--no-pure-acks` | fold each pure ACK's `ack` into the next data record instead of storing it, as before `0.6.0` |
 | `--checksum {ignore,drop}` | whether to discard a TCP segment whose checksum does not verify; a UDP datagram is always kept |
 
 These are hashed into the file's decoder descriptor, so a `.zpf` records the

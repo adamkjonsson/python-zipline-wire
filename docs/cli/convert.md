@@ -114,11 +114,13 @@ they turn up later.  These settings are what decide when that happens.
 | `--overlap {favor-old,favor-acked}` | `favor-old` | Which copy wins when retransmitted bytes disagree with bytes already accepted: the first seen, or the one the receiver's acknowledgement echoed — see {doc}`../guide/reassembly` |
 | `--session-timeout SECONDS` | `300.0` | Silence after which a conversation is closed and a later packet starts a new session |
 | `--no-coalesce` | off | Emit one record per segment instead of one per contiguous byte run |
+| `--no-pure-acks` | off | Fold each pure ACK's `ack` into the next data record instead of storing it as a zero-length record, as every release before `0.6.0` did. Writes exactly what `0.5.0` wrote |
 | `--checksum {ignore,drop}` | `ignore` | What to do with a TCP segment whose checksum does not verify. `drop` discards it as a receiver would, leaving the retransmission to supply the bytes. A UDP datagram is kept under either, and counted: a UDP stream could not show one missing |
 
-All six are hashed into the file's decoder descriptor as a `params_digest`,
+All seven are hashed into the file's decoder descriptor as a `params_digest`,
 so a `.zpf` records the policy that produced it and a conversion can be
-reproduced.  {doc}`../guide/reassembly` works through what each one costs.
+reproduced.  `--no-pure-acks` is recorded by its absence, so an opted-out
+file declares the digest `0.5.0` declared for the same policy.  {doc}`../guide/reassembly` works through what each one costs.
 
 ## Causal order
 

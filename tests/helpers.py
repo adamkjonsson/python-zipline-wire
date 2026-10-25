@@ -50,6 +50,7 @@ __all__ = [
     "decode_digest",
     "packets_zpf",
     "fragmented_frames",
+    "is_pure_ack",
     "tcp_packet",
     "tcp_segments",
     "to_zpf",
@@ -226,6 +227,15 @@ class Seg:
             seq=self.seq, ack=ack, flags=self.flags, payload=self.data,
             timestamps=self.timestamps,
         )
+
+
+def is_pure_ack(record: zpf.Record) -> bool:
+    """Say whether *record* is a stored pure ACK: no bytes, no flags, an ``ack``.
+
+    The SYN record is zero-length too, but carries ``syn``; a pure ACK
+    carries nothing but its hints (#37).
+    """
+    return record.payload == b"" and not record.flags and record.ack is not None
 
 
 def tcp_segments(segments: Sequence[Seg], **kwargs: int) -> io.BytesIO:

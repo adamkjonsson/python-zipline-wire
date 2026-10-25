@@ -109,6 +109,14 @@ class ConversionStats:
             block because their place in the capture cannot be named — a
             datagram reassembled from several fragments occupies discontiguous
             ranges.  Counted rather than quietly uncited.
+        pure_acks: Records written for pure ACKs, under
+            :attr:`~zpfwire.options.ReassemblyOptions.pure_acks`.  Included
+            in :attr:`records`.
+        pure_acks_unstored: Pure ACKs that could not be stored, because they
+            arrived behind bytes of their sender's that had already been
+            placed, so no stored order puts them where their sequence number
+            says.  Their ``ack`` is folded into the sender's next data record
+            instead, as it is for every pure ACK when the option is off.
         records_read: Records in the input, when it is a ``.zpf`` of packets
             rather than a capture; ``0`` for a capture.
         records_selected: Of those, records whose ``content_type`` selected
@@ -141,6 +149,8 @@ class ConversionStats:
     truncated: int = 0
     undecoded_regions: int = 0
     unlocatable_bytes: int = 0
+    pure_acks: int = 0
+    pure_acks_unstored: int = 0
     records_read: int = 0
     records_selected: int = 0
 
@@ -167,7 +177,8 @@ class ConversionStats:
             f"packets      {self.packets}",
             f"converted    {self.converted}",
             f"sessions     {self.sessions}",
-            f"records      {self.records}",
+            f"records      {self.records}"
+            + (f" ({self.pure_acks} pure ACKs)" if self.pure_acks else ""),
             f"payload      {self.payload_bytes} bytes",
         ]
         if self.filtered:
@@ -223,6 +234,11 @@ class ConversionStats:
             lines.append(f"dropped      {self.checksum_dropped_bytes} bytes (bad checksum)")
         if self.truncated:
             lines.append(f"truncated    {self.truncated} packet(s) (payload cut by snaplen)")
+        if self.pure_acks_unstored:
+            lines.append(
+                f"pure ACKs    {self.pure_acks_unstored} not stored (behind their sender's "
+                "placed bytes; ack folded instead)",
+            )
         if self.undecoded_regions:
             lines.append(f"undecoded    {self.undecoded_regions} region(s) cited")
         if self.unlocatable_bytes:

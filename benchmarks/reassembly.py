@@ -13,7 +13,8 @@ Two kinds of measurement:
   #45, plus an in-order control that none of them should move.
 - **Capture**: ``tests/captures/http_stream_1.pcap`` through packeteer alone,
   through :class:`~zpfwire.capture.CaptureReader`, and through the whole
-  conversion.
+  conversion, with pure ACKs stored (the default since ``0.6.0``) and
+  without, each with the size of what it writes.
 
 Every figure is the median of ``--runs`` runs, after one warm-up.
 
@@ -169,8 +170,11 @@ def _read() -> None:
         pass
 
 
-def _convert() -> None:
-    capture_to_zpf(CAPTURE, io.BytesIO(), produced_at=None)
+def _convert(options: ReassemblyOptions | None = None) -> int:
+    """Convert the capture, and return how many bytes the output takes."""
+    sink = io.BytesIO()
+    capture_to_zpf(CAPTURE, sink, options=options, produced_at=None)
+    return len(sink.getvalue())
 
 
 def main() -> None:
@@ -200,12 +204,18 @@ def main() -> None:
 
     count = sum(1 for _ in CaptureReader(path=CAPTURE))
     print()
+    no_acks = ReassemblyOptions(pure_acks=False)
     for name, work in (("iter_packets", _iterate), ("CaptureReader", _read),
-                       ("capture_to_zpf", _convert)):
+                       ("capture_to_zpf", _convert),
+                       ("  --no-pure-acks", lambda: _convert(no_acks))):
         milliseconds = _median(args.runs, work) * 1e3
-        figures[f"{CAPTURE.name} {name}"] = milliseconds
+        figures[f"{CAPTURE.name} {name.strip()}"] = milliseconds
         print(f"{CAPTURE.name} {name:16s} {milliseconds:8.1f} ms  "
               f"({count / milliseconds * 1e3:,.0f} packets/s)")
+    for name, options in (("output", None), ("  --no-pure-acks", no_acks)):
+        size = _convert(options)
+        figures[f"{CAPTURE.name} {name.strip()} bytes"] = size
+        print(f"{CAPTURE.name} {name:16s} {size:8,d} bytes")
 
     if args.json:
         args.json.write_text(json.dumps({"ran": ran, "runs": args.runs, "figures": figures},

@@ -473,10 +473,17 @@ def test_provenance_does_not_break_the_fixtures(tmp_path: pathlib.Path):
 def test_records_stay_in_ascending_seq_start_per_participant(
     tmp_path: pathlib.Path,
 ):
-    """The MUST that the SYN record is most likely to have broken."""
+    """The MUST that the SYN record is most likely to have broken.
+
+    *Order* is serial-number order, so it is checked pairwise the way the
+    specification states it: each ``seq_start`` no further back than the one
+    before it.  ``tcp_wrap_ts.pcap`` has a participant whose records cross
+    2**32, which plain sorting would call out of order.
+    """
     for name in sorted(p.name for p in CAPTURES.glob("*.pcap*")):
         out = to_zpf(CAPTURES / name, tmp_path)
         for session in out.sessions:
             for pid in {r.sender_pid for r in session.records}:
                 starts = [r.seq_start for r in session.by(pid) if r.seq_start is not None]
-                assert starts == sorted(starts), f"{name} pid {pid}"
+                steps = [(b - a) % 2**32 for a, b in zip(starts, starts[1:], strict=False)]
+                assert all(step < 2**31 for step in steps), f"{name} pid {pid}"

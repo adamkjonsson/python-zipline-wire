@@ -33,7 +33,45 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+### Added
+
+- **`ReassemblyOptions.pure_acks`**, CLI `--no-pure-acks`
+  ([#37](https://github.com/adamkjonsson/python-zipline-wire/issues/37)):
+  whether a TCP segment carrying no bytes and no SYN, FIN or RST is stored
+  as a zero-length record holding its `ack`. On by default; see *Changed*.
+  `ConversionStats` gains `pure_acks`, the records written for them, and
+  `pure_acks_unstored`, those that arrived behind bytes of their sender's
+  already placed, where no stored order fits them. Their `ack` folds into the
+  next record, as with the option off. The summary reports both.
+
 ### Changed
+
+- **Breaking: pure ACKs are stored by default**
+  ([#37](https://github.com/adamkjonsson/python-zipline-wire/issues/37)),
+  as the specification advises since spec `0.23`. Each is a zero-length
+  record at its wire sequence number, carrying its `ack`. It has no end, so
+  no edge runs from it, but its `ack` orders it after the peer bytes it
+  covers. The causal merge gets an edge per pure ACK, the receiver's
+  reaction times are in the file, and over a `.zpf` input the packet is
+  cited instead of left `skipped`.
+  - **The bytes of nearly every TCP conversion move**, and the Decoder's
+    `params_digest` with them. No data record changes: every fixture, under
+    every policy, converts to what the opt-out writes plus one zero-length
+    record per stored pure ACK. A stream with a final pure ACK reaches one
+    position past its last byte, the FIN's, which the ACK's wire number
+    sits beyond; whether an extent should count it is
+    [zipline#168](https://github.com/adamkjonsson/zipline/issues/168).
+  - **To get `0.5.0`'s output**, pass `pure_acks=False` or `--no-pure-acks`.
+    That writes exactly what `0.5.0` wrote, `params_digest` included, so
+    an existing file is reproduced byte for byte.
+  - **It costs records.** On `http_stream_1.pcap`, a 4,140-packet HTTP
+    capture, output grows 23% (543,900 → 667,500 bytes) and conversion
+    takes about 30% longer (119 → 154 ms), almost all of it the `zpf`
+    writer's work per record
+    ([python-zipline#101](https://github.com/adamkjonsson/python-zipline/issues/101)).
+    That is more than the speed-ups below save on clean traffic, so by
+    default this release converts such a capture more slowly than `0.5.0`
+    did.
 
 - **Breaking: a committed gap no longer claims a resend 4 GiB later that
   carries its sequence numbers**
@@ -119,6 +157,10 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 - Installation, contributing and the README describe the two venvs, and
   that a new sibling release moves the tag in `requirements.txt` and the
   range in `pyproject.toml` together.
+- The reassembly guide has a section on `pure_acks`, the internals page on
+  the reassembler explains where a pure ACK's record is placed, and the
+  pages that said a conversation of pure ACKs produces no records say when
+  it does.
 - The contributing guide describes `tools/byte_identity.py`, which checks
   that this tree converts every fixture to the bytes a release wrote, and
   `benchmarks/reassembly.py`, which times the reassembler. Both are linted

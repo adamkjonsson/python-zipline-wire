@@ -251,6 +251,14 @@ once every peer record it acks has been emitted, so an understated ack delays
 a record for a reason that is not in the capture.  Serial, never `max()`: a
 32-bit wrap in the middle of a run is exactly where a naive maximum inverts.
 
+**With pure ACKs stored**, a file holds two kinds of `ack`.  A data record's
+is the rule above: the strongest acknowledgement true when the run
+completed.  A pure ACK's record carries the `ack` of the one segment it is,
+at that segment's time.  Neither replaces the other.  Read as positions,
+they only ever add edges, so a consumer asking what the receiver had
+acknowledged by a given point takes the running maximum over both, in
+causal order, which is how the merge reads them anyway.
+
 ## The held run: `favor-acked`
 
 Under `overlap="favor-acked"` a run is not written when it closes.  `_flush`
@@ -306,13 +314,49 @@ reason both go through `finish()`.  A one-way capture never acks, so every
 run waits out `flush_timeout` (measured by the packets that do arrive, or
 the session's end) and falls back, counted.
 
-## Two things that produce no record
+## Pure acknowledgements
 
-**Pure acknowledgements.**  The specification permits zero-length ack-only
-records, but they would multiply file size for information that only matters
-once sessions are sequenced.  The consequence is real and worth knowing: a
-conversation of nothing but acks produces a session with *no records at all*,
-which makes it hint-less — see {doc}`writer-mapping`.
+A segment carrying neither bytes nor a SYN, FIN or RST is stored as a
+zero-length record holding its `ack`, by default since `0.6.0`
+([#37](https://github.com/adamkjonsson/python-zipline-wire/issues/37)), as
+the specification advises since `0.23`.  A pure ACK has no end, so no edge
+runs from it, but its `ack` places it after the peer bytes it covers.
+`pure_acks=False` (`--no-pure-acks`) folds each `ack` into the next data
+record instead, which is what every earlier release did, and writes exactly
+what `0.5.0` wrote, `params_digest` included.
+
+Where the record goes is the one real question.  It sits at the segment's
+**wire sequence number**, the sender's `snd.nxt`, and records of one
+participant are stored in serial order, so it may only follow every record
+of its sender that starts below that number.  That is certain once the
+**frontier** has reached it: `next_seq`, below which every byte has been
+placed or given up on, or one past the FIN once everything before the FIN
+is in, since the FIN takes a number of its own.
+
+| Where the ACK's number is | What happens | In the fixtures |
+|---|---|---|
+| at the frontier | placed now | 96% |
+| ahead of it | held until the frontier passes it; every place the frontier moves releases what it passed, before a run can open beyond it | 1% (all after a FIN) |
+| sender has sent nothing yet | its stream begins here, as it would at a first data segment | 3% |
+| behind it | not stored, counted as `pure_acks_unstored`; its `ack` folds into the next record, as with the option off | none |
+
+*Placed* means written now, or, if the sender has a run still open or held
+for its peer's ack, written straight after that run.  The run started at or
+before the ACK's number and has not been written yet, so it must come first.
+A zero-length record covers no byte, so following a run that ends beyond it
+overlaps nothing, and the run's boundaries are the ones it would have had
+without the ACK.  Storing pure ACKs changes no data record; the suite checks
+that every fixture converts to what the opt-out writes plus the pure-ACK
+records.
+
+**After a FIN** the ACK still sits at its wire number, one past the FIN's.
+The causal merge needs it there: each side's final ACK acknowledges the
+other's FIN, and the merge judges a peer's progress by where its records
+sit, so moved back onto its FIN the final ACK reads as not past it, and the
+two wait on each other.  The stream then reaches one position past its last
+byte, the FIN's.
+
+## One thing that produces no record
 
 **A FIN on its own segment.**  When a FIN rides along with data the record
 carries the flag; when it arrives alone, the direction's close is carried by

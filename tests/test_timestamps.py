@@ -99,11 +99,14 @@ def test_a_stream_that_wraps_is_placeable(
     # is hole-inclusive, so the bytes no-hold loses are still *in* it — and
     # since spec 0.21 it is computed by unwrapping along stored order rather
     # than against the origin, which is what makes it right past the wrap.
+    # One more than the transfer since 0.6.0: the server's final pure ACK is
+    # stored (#37) at its wire number, one past the FIN, which occupies a
+    # sequence number of its own.
     with zpf.open(out.path) as reader:
         (read_back,) = reader.sessions()
         pid = server.participant_id
         blocks = list(read_back.stream_blocks(pid))
-        assert zpf.stream_extent(read_back.participant(pid), blocks, read_back.layer(pid)) == 65536
+        assert zpf.stream_extent(read_back.participant(pid), blocks, read_back.layer(pid)) == 65537
 
 
 # ── duplicate or retransmission ─────────────────────────────────────────
@@ -279,9 +282,13 @@ def test_neither_wrap_rule_fires_on_real_traffic(
 
 
 def test_the_stream_that_wraps_is_untouched_by_the_wrap_rules(tmp_path: pathlib.Path):
-    """``tcp_wrap_ts`` under defaults decodes exactly as it did before any rule read the option."""
+    """``tcp_wrap_ts`` decodes exactly as it did before any rule read the option.
+
+    Under ``0.5.0``'s defaults: pure ACKs, stored since ``0.6.0``, are not
+    what this pins.
+    """
     out = tmp_path / "wrap.zpf"
-    capture_to_zpf(CAPTURES / "tcp_wrap_ts.pcap", out)
+    capture_to_zpf(CAPTURES / "tcp_wrap_ts.pcap", out, options=ReassemblyOptions(pure_acks=False))
 
     assert decode_digest(out) == (
         "sha256:1b7cb603bfa511d1495a579d38540b9ee319b63f395ed90d3719a5b9a1f7eb1e"

@@ -48,7 +48,8 @@ The `payload` column is the one most likely to mislead.  It is what was on the
 wire, so on a capture with retransmits it is larger than what a conversion
 writes; the difference is the discarded overlap.  Three of the four rows above
 show `0` payload, which is worth knowing before converting: those conversations
-are pure acknowledgements and will produce sessions with no records at all.
+are pure acknowledgements, so their sessions hold only zero-length records,
+one per pure ACK, or none at all under `--no-pure-acks`.
 
 Rows are sorted by payload, largest first, so the conversations worth looking
 at come first in a capture with many flows.
