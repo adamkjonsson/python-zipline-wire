@@ -1,7 +1,8 @@
 # Contributing
 
-Working on zpfwire itself.  All development tasks use a single virtualenv
-built from `requirements.txt`.
+Working on zpfwire itself.  Development uses one virtualenv built from
+`requirements.txt`, and optionally a second for working on the siblings at
+the same time.
 
 ## Setup
 
@@ -10,9 +11,29 @@ python3 -m venv .venv
 .venv/bin/pip install -e . -r requirements.txt
 ```
 
-Python ≥ 3.10 — the floor `zpf` sets.  The two siblings are installed editable
-from `../packeteer` and `../python-zipline`, so a change in either is picked
-up without reinstalling.
+Python ≥ 3.10 — the floor `zpf` sets.  The two siblings are installed from
+the release tags this tree is built against, so `.venv` tests what the wheel
+declares, and `pip list` says what is running.
+
+To change packeteer or python-zipline alongside this tree, add a second venv
+on the checkouts next to this one:
+
+```bash
+python3 -m venv .venv-dev
+.venv-dev/bin/pip install -e . -r requirements.txt
+.venv-dev/bin/pip install -r requirements-dev-siblings.txt
+```
+
+Every test run prints each sibling's version **and** the file it was imported
+from.  In `.venv-dev` the path is a checkout, and the version beside it is
+whatever was recorded when the install was made, which can be stale.  A
+result to be quoted as "against release X" comes from `.venv`.
+
+**Moving to a new sibling release** is two edits that go together: the tag in
+`requirements.txt` and the range in `pyproject.toml`.  `test_package.py`
+fails if the tag falls outside the range.  The range's ceiling is one minor
+above the newest release tested; widen it only once the suite has passed
+against that release.
 
 Note the `-e .` — installing the requirements alone leaves zpfwire itself
 uninstalled, and the tests will still pass because `pyproject.toml` puts `src`

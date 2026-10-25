@@ -24,17 +24,19 @@ This README is the short version.
 
 ## Install
 
-The two dependencies are not on PyPI, so check them out next to this repo:
+The two dependencies are not on PyPI; `requirements.txt` installs them from
+their release tags on GitHub:
 
 ```bash
-git clone https://github.com/adamkjonsson/packeteer.git
-git clone https://github.com/adamkjonsson/python-zipline.git
 git clone https://github.com/adamkjonsson/python-zipline-wire.git
 
 cd python-zipline-wire
 python -m venv .venv
 .venv/bin/pip install -e . -r requirements.txt
 ```
+
+To work on packeteer or python-zipline at the same time, see
+`docs/introduction/installation.md` for the second venv, `.venv-dev`.
 
 ## Use it
 

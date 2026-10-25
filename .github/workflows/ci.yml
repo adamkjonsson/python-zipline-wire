@@ -5,9 +5,9 @@ on:
     branches: ["**"]
   pull_request:
 
-# The two siblings are not published to PyPI, so every job checks them out
-# next to this repo and installs them from source — the same layout as local
-# development (see requirements.txt).
+# The two siblings are not published to PyPI.  requirements.txt installs them
+# from the release tags this tree is built against, so CI tests the releases
+# the wheel declares, not whatever the siblings' default branches hold (#42).
 jobs:
   lint:
     name: ruff
@@ -16,14 +16,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           path: python-zipline-wire
-      - uses: actions/checkout@v6
-        with:
-          repository: adamkjonsson/packeteer
-          path: packeteer
-      - uses: actions/checkout@v6
-        with:
-          repository: adamkjonsson/python-zipline
-          path: python-zipline
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -47,14 +39,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           path: python-zipline-wire
-      - uses: actions/checkout@v6
-        with:
-          repository: adamkjonsson/packeteer
-          path: packeteer
-      - uses: actions/checkout@v6
-        with:
-          repository: adamkjonsson/python-zipline
-          path: python-zipline
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -74,14 +58,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           path: python-zipline-wire
-      - uses: actions/checkout@v6
-        with:
-          repository: adamkjonsson/packeteer
-          path: packeteer
-      - uses: actions/checkout@v6
-        with:
-          repository: adamkjonsson/python-zipline
-          path: python-zipline
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"

@@ -33,6 +33,36 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+### Changed
+
+- **Both siblings are declared as ranges closed above**: `zpf>=0.7.0,<0.8`
+  and `packeteer>=0.16.0,<0.21`
+  ([#41](https://github.com/adamkjonsson/python-zipline-wire/issues/41)).
+  Each sibling is in `0.x` and may break at any minor, so the range stops
+  at the newest minor this tree was tested against, and moves when the
+  suite has passed on the next. The `zpf` floor rises from `0.6.0` to
+  `0.7.0`, which writes the same spec (`0.23`), so no file and no reader is
+  affected. A resolver that held `zpf 0.6.x` now takes `0.7.x`.
+- **The development environment installs the sibling releases, not the
+  checkouts**
+  ([#42](https://github.com/adamkjonsson/python-zipline-wire/issues/42)).
+  `requirements.txt` installs packeteer `0.20.0` and python-zipline `0.7.0`
+  from their tags, so `.venv` tests what the wheel declares and `pip list`
+  says what is running. Before, an editable install of each checkout went
+  on reporting the version it was installed at while running whatever was
+  checked out. CI did the same with the siblings' default branches, and now
+  installs the tags too. Working against the checkouts moves to a second
+  venv, `.venv-dev`, built with `requirements-dev-siblings.txt`. Every test
+  run's header now prints each sibling's version and the file it was
+  imported from, which disagree exactly when an install's metadata is
+  stale.
+
+### Documentation
+
+- Installation, contributing and the README describe the two venvs, and
+  that a new sibling release moves the tag in `requirements.txt` and the
+  range in `pyproject.toml` together.
+
 ---
 
 ## [0.5.0] - 2026-10-20

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zpfwire"
-version = "0.5.0"
+version = "0.6.0.dev0"
 requires-python = ">=3.10"
 description = "Turn network captures into Zipline Payload Format (.zpf) files"
 authors = [ { name = "Adam Jonsson", email = "akj426@gmail.com" } ]
@@ -23,19 +23,29 @@ classifiers = [
     "Topic :: System :: Networking :: Monitoring",
     "Typing :: Typed",
 ]
-# Floors, not ranges: neither sibling is on PyPI, so these document what this
-# release was built against as much as they resolve anything.  Both are
-# required — the tree writes spec 0.23, which python-zipline first implements
-# in 0.6.0, and reads the TCP Timestamps option packeteer parses since 0.14.0.
-# The packeteer floor names what the suite needs, not only the code: 0.16.0's
+# Ranges, each closed above (#41).  Both siblings are in 0.x and say in their
+# own changelogs that a minor may break with no upgrade path promised, so a
+# range spanning a minor this tree was never run against is a promise neither
+# project can keep.  The ceiling moves deliberately, at each sibling release,
+# once the suite has passed against it; it is not to be widened in tidying.
+#
+# zpf is one minor wide.  0.7.0 writes the same spec as 0.6.0 (0.23), so the
+# floor moving to it costs no reader anything; 0.6.0 was the first release
+# implementing 0.23, and refuses a 0.21 file outright, which is what an
+# unbounded pin would have done to this tree's users at the next spec port.
+#
+# packeteer's floor names what the suite needs, not only the code: 0.16.0's
 # generator no longer acknowledges past a corrupted segment before its resend
 # (packeteer#163), which the generated favor-acked test depends on (#30).
-# Built against packeteer 0.18.0, of which this tree needs nothing: its pcap
-# writer streamed an iterable before 0.18.0 documented it (packeteer#204).
-# Built against python-zipline 0.6.0, the first release implementing 0.23.
+# The code itself needs nothing newer.  Its ceiling is the next minor above
+# 0.20.0, the release this tree is built and tested against.
+#
+# Neither sibling is on PyPI: requirements.txt installs the exact releases
+# from their tags, and tests/test_package.py holds those tags inside these
+# ranges.
 dependencies = [
-    "packeteer>=0.16.0",
-    "zpf>=0.6.0",
+    "packeteer>=0.16.0,<0.21",
+    "zpf>=0.7.0,<0.8",
 ]
 
 [tool.setuptools]

@@ -115,8 +115,8 @@ warnings can only be used as a last resort, and **always ask before making such 
 
 ## Virtual environment
 
-All development tasks use a single venv created from `requirements.txt`, which
-installs the two siblings editable from the checkouts next to this one:
+Development uses `.venv`, created from `requirements.txt`, which installs the
+two siblings from the **release tags** this tree is built against:
 
 ```bash
 python -m venv .venv
@@ -125,6 +125,28 @@ python -m venv .venv
 
 - **Run tests:** `.venv/bin/pytest`
 - **Build wheel:** `.venv/bin/python -m build`
+
+Working against the sibling checkouts next to this one is done in a second
+venv, `.venv-dev`, never in `.venv` (#42):
+
+```bash
+python -m venv .venv-dev
+.venv-dev/bin/pip install -e . -r requirements.txt
+.venv-dev/bin/pip install -r requirements-dev-siblings.txt
+```
+
+An editable install keeps reporting the version it was installed at while
+running whatever is checked out. So:
+
+- **Read the pytest header** before trusting a result. It prints each
+  sibling's version *and* the file it was imported from. A path into
+  `../packeteer` or `../python-zipline` means the version beside it may be
+  stale.
+- **Anything claimed "against release X"** (a review, a byte-identity check,
+  a benchmark) runs in `.venv`, or in a throwaway venv on the tag.
+- **A new sibling release** moves the tag in `requirements.txt` and the
+  range in `pyproject.toml` together; `tests/test_package.py` holds the one
+  inside the other.
 
 ## Conventions
 

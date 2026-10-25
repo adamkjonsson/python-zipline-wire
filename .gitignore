@@ -5,6 +5,7 @@ build/
 dist/
 docs/_build/
 .venv/
+.venv-dev/
 .pytest_cache/
 .ruff_cache/
 .coverage
