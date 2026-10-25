@@ -64,15 +64,15 @@ reassembler that obeys them lives on this side of the seam.
 
 ## What a conversion produces
 
-One session per conversation, two participants per session, and a record for
-each run of contiguous bytes:
+One session per conversation, two participants per session, a record for
+each run of contiguous bytes, and a zero-length record for each pure ACK:
 
 ```
 $ zpfwire convert retransmission.pcap -o out.zpf
 packets      219
 converted    219
 sessions     1
-records      32
+records      135 (103 pure ACKs)
 payload      78901 bytes
 overlap      8875 bytes (retransmitted, discarded)
 ts fallback  12 repeat(s) treated as retransmitted without timestamp evidence (absent: 12)

@@ -33,6 +33,54 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+---
+
+## [0.6.0] - 2026-10-25
+
+**The performance release, and the pure-ACK release.**  Writes spec
+**v0.23** (`zpf.SPEC_VERSION == (0, 23)`), unchanged from `0.5.0`, against
+packeteer **0.20.0** and python-zipline **0.7.0**.
+
+**One Breaking change, with a way back.**  Pure ACKs are now stored as
+zero-length records by default
+([#37](https://github.com/adamkjonsson/python-zipline-wire/issues/37)), as
+the specification advises: every pure ACK is an edge for the causal merge,
+the receiver's reaction times are in the file, and a `.zpf` input cites the
+packet instead of leaving it `skipped`.  So the bytes of nearly every TCP
+conversion move.  **`pure_acks=False` / `--no-pure-acks` writes exactly what
+`0.5.0` wrote**, `params_digest` included, checked against the `v0.5.0` tag
+on 198 outputs.  It costs records, about one per data segment:
+`http_stream_1.pcap` converts 29% slower and 23% larger by default.  That is
+paid once at write, for information every reader gets.  A second, narrow
+break is a fix: a committed gap no longer claims a resend 4 GiB later that
+carries its sequence numbers
+([#45](https://github.com/adamkjonsson/python-zipline-wire/issues/45)).
+
+**The reassembler no longer slows with what it holds**
+([#43](https://github.com/adamkjonsson/python-zipline-wire/issues/43),
+[#44](https://github.com/adamkjonsson/python-zipline-wire/issues/44),
+[#45](https://github.com/adamkjonsson/python-zipline-wire/issues/45),
+[#46](https://github.com/adamkjonsson/python-zipline-wire/issues/46)),
+writing the same bytes as before:
+
+| µs per packet | `0.5.0` | `0.6.0` |
+| --- | --- | --- |
+| resends carrying TSvals, 10-byte segments | 212 | 2.7 |
+| holes with 2,000 small segments waiting | 70 | 4.6 |
+| 1 in 50 lost, 80,000 packets | 10.1 | 2.9 |
+| in order | 5.4 | 4.6 |
+
+Parsing is faster too, by packeteer `0.20.0`'s checksum in C
+([packeteer#213](https://github.com/adamkjonsson/packeteer/issues/213), found
+here).  The siblings are now ranges closed above and installed from their
+release tags, locally and in CI
+([#41](https://github.com/adamkjonsson/python-zipline-wire/issues/41),
+[#42](https://github.com/adamkjonsson/python-zipline-wire/issues/42)).
+Open upstream: [zipline#168](https://github.com/adamkjonsson/zipline/issues/168),
+the extent past a FIN, and
+[python-zipline#101](https://github.com/adamkjonsson/python-zipline/issues/101),
+the writer's cost per record, which now matters most here.
+
 ### Added
 
 - **`ReassemblyOptions.pure_acks`**, CLI `--no-pure-acks`
@@ -115,11 +163,11 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   | Traffic | Before | After |
   | --- | --- | --- |
   | resends carrying TSvals, 10-byte segments | 212 | 2.7 |
-  | the same, 100-byte segments | 54 | 2.7 |
-  | holes with 2,000 small segments waiting | 70 | 4.5 |
-  | holes with 170 full-size segments waiting | 12.0 | 4.3 |
-  | 1 in 50 lost, 80,000 packets, late copies | 10.1 | 2.8 |
-  | in order | 5.4 | 4.5 |
+  | the same, 100-byte segments | 54 | 2.8 |
+  | holes with 2,000 small segments waiting | 70 | 4.6 |
+  | holes with 170 full-size segments waiting | 12.0 | 4.4 |
+  | 1 in 50 lost, 80,000 packets, late copies | 10.1 | 2.9 |
+  | in order | 5.4 | 4.6 |
 
   A capture of clean traffic (`http_stream_1.pcap`) converts about 4%
   faster; there, most of the time is in packeteer's parse and the `zpf`
@@ -164,6 +212,14 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   the reassembler explains where a pure ACK's record is placed, and the
   pages that said a conversation of pure ACKs produces no records say when
   it does.
+- The release sweep: the CLI transcripts in the README, the overview and
+  `convert`'s page were rerun, since their record counts now include pure
+  ACKs; `limits.md` describes the dependency ranges and tagged installs
+  instead of floors and editable checkouts, and names the two per-direction
+  lists that grow for a connection's lifetime; `upstream-first.md` counts
+  forty-two issues, three open, with rows for packeteer#213,
+  python-zipline#101 and zipline#168; the test count, the module map and
+  the `packets` and `tcp` module docstrings are current.
 - The contributing guide describes `tools/byte_identity.py`, which checks
   that this tree converts every fixture to the bytes a release wrote, and
   `benchmarks/reassembly.py`, which times the reassembler. Both are linted
@@ -1025,7 +1081,8 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.2.0...v0.3.0

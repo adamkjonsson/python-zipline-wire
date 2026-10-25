@@ -119,7 +119,7 @@ $ zpfwire convert lossy.pcap -o lossy.zpf
 packets      193
 converted    193
 sessions     1
-records      10
+records      105 (95 pure ACKs)
 payload      71617 bytes
 gaps         6
 Note: some bytes never reached the output. Raise --reorder-window or

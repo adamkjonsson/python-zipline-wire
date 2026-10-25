@@ -21,10 +21,12 @@ every *other* consumer of that library.  Filing it fixes it once.
 
 ## What it produced
 
-Thirty-nine issues so far, and one is open: zipline#166, a fragmented UDP
+Forty-two issues so far, and three are open: zipline#166, a fragmented UDP
 datagram over a unit-sequence input, which this tree marks `undecodable`
-until the format answers.  Every other one has been answered upstream and
-released, most of them within days.
+until the format answers; zipline#168, whether a stream's extent counts a
+FIN's sequence number; and python-zipline#101, the writer's cost per record.
+Every other one has been answered upstream and released, most of them
+within days.
 
 **packeteer**, filed before a line of code was written:
 
@@ -60,6 +62,7 @@ released, most of them within days.
 | #163 | The generated receiver acknowledged past a corrupted segment before its retransmission, so a generated stream could not test a policy that reads acks | Fixed the same day (0.16.0); reviewed here across 20 seeds |
 | #164 | A generated retransmission kept the original's acknowledgement number, so a direction's acks stepped backwards on every resend after peer data | Fixed the same day (0.16.0); reviewed here across 20 seeds × four impairments |
 | #204 | `write_pcap` and `write_pcapng` annotated their records as a `list` though they stream any iterable, so a typed export had to materialise every packet | `Iterable[PacketTuple]`, a consumed-once contract and its tests (0.18.0) |
+| #213 | Checksum verification looped in Python once per 16-bit word, the largest single cost of reading a capture, found by profiling this tree | The internet checksum computed in C (0.20.0): `iter_packets` 39% faster on `http_stream_1.pcap`, every output byte-identical, confirmed here on `.dev1` |
 
 **python-zipline**:
 
@@ -77,6 +80,7 @@ released, most of them within days.
 | #89 | `sessionize_stage` and `decode_stage` take no `face` or `creator`, so a stage writes binary only | `face=` and `creator=` on both stages (0.6.0); `--jsonl` works for a `.zpf` input, and its File Header names `zpfwire` |
 | #90 | `check_splice` reports a transport record with `seq_start` crossing an input Discontinuity, which spec `0.22` permits | A transport record carrying `seq_start` is not checked (0.6.0); the strict `xfail` here became a test, and the differential checks both input shapes |
 | #91 | `FlowSession.end` re-reads the whole input to measure `input_extents`, once per output session — quadratic under fan-out | Each input stream's extent and gaps are measured once per stage and kept (0.6.0): `http_stream_1.pcap`'s 20 flows convert in 1.4 s, down from 5.2 s |
+| #101 | Writing a record costs about 10 µs whatever its size — option encoding, block validation, `Flag`-enum arithmetic and the checker — and storing pure ACKs (0.6.0) doubled the records a conversion writes | **Open** |
 
 **zipline** (the specification):
 
@@ -89,6 +93,7 @@ released, most of them within days.
 | #152 | The no-splice duty offered two recourses, a Discontinuity or a `units` output, and a transport output may use neither — so a reassembler over a unit sequence could never coalesce two packets | Spec `0.22`: a transport output whose records carry `seq_start` meets both duties through its offsets, and MAY cite across input units or an input Discontinuity |
 | #153 | No format-level type for one network packet: a packet-preserving stage had only a decoder-private `dec:` token, which a generic sessionizer could match only by convention | Spec `0.22`: the `net:` scheme, `net:ip` and `net:ethernet`, meaning what `LINKTYPE_RAW` and `LINKTYPE_ETHERNET` mean |
 | #166 | A fragmented UDP datagram over a unit-sequence input has no conformant record: `0.22`'s permission is keyed on `seq_start`, and fragment offsets prove the join as sequence numbers do | **Open** — such a datagram's fragments are marked `undecodable` here |
+| #168 | A pure ACK stored after a FIN sits one past the FIN's number, so the stream's extent counts that number, which no record covers; stored on the FIN's own number instead, it stalls the causal merge | **Open** — the ACK sits at its wire number here, and the extent is one past the last byte |
 
 Two of packeteer's fixes went further than asked — #73 added `iter_packets`
 in response to the composition problem, and #76 put the tick rate on the

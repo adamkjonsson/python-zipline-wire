@@ -45,8 +45,9 @@ unwrapped along the acker's records the same way
 ([zipline#151](https://github.com/adamkjonsson/zipline/issues/151),
 [python-zipline#75](https://github.com/adamkjonsson/python-zipline/issues/75),
 both filed from this project).  `0.4.0` refused one whose peer only
-acknowledged — an ordinary upload, whose server records nothing after its
-SYN-ACK.  The one shape one session cannot hold is the hole below.
+acknowledged — an ordinary upload, whose server recorded nothing after its
+SYN-ACK.  Since `0.6.0` that server's pure ACKs are records by default, and
+under `--no-pure-acks` the shape is as it was.  The one shape one session cannot hold is the hole below.
 
 **A hole wider than 2³¹ bytes in one direction splits the session.**  This
 is the specification's stated exit for what it calls *the unmeasurable
@@ -169,6 +170,15 @@ for mitigations.
 holds at most that many out-of-order bytes before committing a gap.  The
 default is 256 KiB per direction.
 
+**Two small lists grow for a connection's lifetime.**  Every committed gap
+is remembered, one small entry each, so a late arrival into it can be told
+from a resend; it is never pruned, because a bound would reclassify a
+segment arriving very late.  And a pure ACK whose sequence number is ahead
+of its sender's placed bytes is held until those bytes are placed, a gap is
+committed past it, or the session ends.  In ordinary traffic that is at
+once, but a direction whose data stops being captured while its ACKs go on
+holds every one of them.  Neither is bounded by `reorder_window` today.
+
 **Reading is streaming.** The capture itself is read one packet at a time, so
 a capture larger than memory is fine as long as the two limits above are.
 
@@ -180,12 +190,12 @@ hard-coded number.  The format guarantees no upgrade path across a minor
 version while it is below 1.0, so a file written against one minor may be
 refused by a library implementing another.
 
-**Neither sibling is on PyPI yet.**  `pyproject.toml` floors both, but with
-nothing to resolve against, a floor is documentation as much as a
-constraint: it names the oldest release the code runs on, which each
-`CHANGELOG.md` entry names beside the release it was actually built
-against, and it makes an older checkout fail at import rather than
-somewhere subtler.  The numbers themselves live in `pyproject.toml` and the
-changelog, not here, because a copy in prose is one no test can see.  Both
-are installed editable from the checkouts beside this one, so what is
-actually in use is whatever those checkouts are at.
+**Neither sibling is on PyPI yet.**  `pyproject.toml` declares each as a
+range closed above, since each is in `0.x` and any minor may break: the
+floor names the oldest release the code runs on, the ceiling the newest
+minor it was tested against.  `requirements.txt` installs the exact release
+tags from GitHub, and a test holds those tags inside the ranges.  The
+numbers live in `pyproject.toml`, `requirements.txt` and the changelog, not
+here, because a copy in prose is one no test can see.  The sibling
+checkouts are for co-development, in a second venv; see
+{doc}`../introduction/installation`.

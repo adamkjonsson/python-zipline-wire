@@ -12,11 +12,11 @@ zpfwire convert capture.pcap -o capture.zpf
 packets      219
 converted    219
 sessions     1
-records      32
+records      135 (103 pure ACKs)
 payload      78901 bytes
 overlap      8875 bytes (retransmitted, discarded)
-undecoded    12 region(s) cited
 ts fallback  12 repeat(s) treated as retransmitted without timestamp evidence (absent: 12)
+undecoded    12 region(s) cited
 ```
 
 The output is one session per conversation, two participants per session, and
@@ -143,7 +143,7 @@ lifetime, which is why it is opt-in.  UDP sessions are never marked; see
 packets      219        every packet the reader saw
 converted    219        packets that reached a conversation
 sessions     1          conversations written
-records      32         records written
+records      135 (103 pure ACKs)  records written, pure ACKs among them
 payload      78901 bytes  bytes that reached the output
 ```
 
@@ -181,7 +181,7 @@ $ zpfwire convert lossy.pcap -o lossy.zpf
 packets      193
 converted    193
 sessions     1
-records      10
+records      105 (95 pure ACKs)
 payload      71617 bytes
 gaps         6
 Note: some bytes never reached the output. Raise --reorder-window or

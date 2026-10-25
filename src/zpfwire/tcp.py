@@ -35,6 +35,11 @@ TSecr on the peer's first acknowledgement covering the range — the TSval of
 the transmission that advanced its window — and it arrives after both
 copies.  So every run is held after it closes until the peer's ack covers
 it, and only then written; see :meth:`TcpFlow._settle`.
+
+A segment carrying only an ``ack`` is written too, by default since
+``0.6.0`` (#37): a zero-length record at its wire sequence number, placed
+once nothing of its sender's will be stored below that number; see
+:meth:`TcpFlow._pure_ack`.
 """
 
 from __future__ import annotations

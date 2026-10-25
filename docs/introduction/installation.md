@@ -29,7 +29,7 @@ Verify the install:
 ```
 
 ```
-zpfwire 0.6.0.dev0 (zipline 0.23)
+zpfwire 0.6.0 (zipline 0.23)
 ```
 
 The test run's header names the build of each sibling it ran against:
