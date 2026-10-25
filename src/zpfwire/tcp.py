@@ -39,6 +39,7 @@ it, and only then written; see :meth:`TcpFlow._settle`.
 
 from __future__ import annotations
 
+import bisect
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -221,12 +222,16 @@ class _Sent:
     triggered by the peer's duplicate ACKs, which sit in the capture between
     the original and the resend, and a mirror copy follows its original with
     nothing between them; ``peer_count`` is what makes that comparable.
+
+    ``pos`` is ``seq`` unwrapped: a count that does not wrap at 2**32, so the
+    span of everything remembered is known exactly — see :meth:`TcpFlow._judge`.
     """
 
     seq: int
     end: int
     tsval: int | None
     peer_count: int
+    pos: int
 
 
 @dataclass
@@ -270,6 +275,12 @@ class _Stream:
     rst: bool = False
     pending: dict[int, _Pending] = field(default_factory=dict)
     pending_bytes: int = 0
+    # The keys of `pending` in serial order, as offsets from `pending_anchor`,
+    # so the next held segment is the first entry rather than a scan (#44).
+    # The anchor sits at or behind every held segment and `next_seq`; see
+    # _rebase_pending for why that keeps the order exact.
+    pending_order: list[int] = field(default_factory=list)
+    pending_anchor: int = 0
     oldest_pending_ts: int | None = None
     run: _Run | None = None
     # (start, end, passer) — the third is the TSval of the first segment past
@@ -280,8 +291,11 @@ class _Stream:
     # The transmissions accepted most recently, oldest first, bounded by
     # `reorder_window` bytes — but never emptied, so the copy that lands a
     # microsecond after its original can always be judged.  A repeat of
-    # something older than the deque cannot be, and is counted as such.
-    recent: deque[_Sent] = field(default_factory=deque)
+    # something older cannot be, and is counted as such.  A list read from
+    # `recent_head`, not a deque, because _judge bisects it and a deque's
+    # middle is a walk (#43); the evicted prefix is dropped in batches.
+    recent: list[_Sent] = field(default_factory=list)
+    recent_head: int = 0
     recent_bytes: int = 0
     # Packets seen from the other direction, whatever they carried.
     peer_count: int = 0
@@ -579,6 +593,14 @@ class TcpFlow(FlowTracker):
                 return
             self._discard(stream, verdict, pkt.payload_offset, 0, len(data))
             return
+        assert stream.next_seq is not None
+        if not stream.pending:
+            stream.pending_anchor = stream.next_seq
+        else:
+            self._rebase_pending(stream)
+        # A segment is only held ahead of `next_seq`, so its offset from an
+        # anchor at or behind `next_seq` is its distance in serial order.
+        bisect.insort(stream.pending_order, (seq - stream.pending_anchor) % _SEQ_MOD)
         stream.pending[seq] = _Pending(data=data, flags=pkt.tcp_flags, ack=pkt.ack,
                                        ts=pkt.ts_ticks, payload_offset=pkt.payload_offset,
                                        tsval=tsval, peer_count=stream.peer_count)
@@ -634,10 +656,39 @@ class TcpFlow(FlowTracker):
     def _release(self, stream: _Stream, seq: int) -> None:
         held = stream.pending.pop(seq)
         stream.pending_bytes -= len(held.data)
+        order = stream.pending_order
+        del order[bisect.bisect_left(order, (seq - stream.pending_anchor) % _SEQ_MOD)]
 
     def _next_pending(self, stream: _Stream) -> int:
+        """Return the held segment that comes first in serial order."""
+        self._rebase_pending(stream)
+        return (stream.pending_anchor + stream.pending_order[0]) % _SEQ_MOD
+
+    def _rebase_pending(self, stream: _Stream) -> None:
+        """Move the anchor up when `next_seq` has left it far behind.
+
+        Ordering by offset from the anchor is ordering by ``_delta`` from
+        ``next_seq``, which is what serial order means here, for as long as
+        the anchor sits at or behind every held segment and less than 2**31
+        behind ``next_seq``.  The first holds by construction: the anchor is
+        set at ``next_seq`` when the buffer fills from empty, and a segment
+        is held only ahead of ``next_seq``.  The second needs this: a stream
+        that moves on while one segment stays held drags the distance out,
+        so once it passes ``_MAX_WINDOW`` the anchor moves up to whichever is
+        earlier, ``next_seq`` or the first held segment.  Every offset
+        shrinks by the same amount and the order is unchanged.  It is O(held)
+        and happens about once per gigabyte a held segment survives.
+        """
         assert stream.next_seq is not None
-        return min(stream.pending, key=lambda s: _delta(s, stream.next_seq))  # type: ignore[arg-type]
+        if not stream.pending_order or (
+            _delta(stream.next_seq, stream.pending_anchor) <= _MAX_WINDOW
+        ):
+            return
+        first = (stream.pending_anchor + stream.pending_order[0]) % _SEQ_MOD
+        anchor = first if _delta(first, stream.next_seq) < 0 else stream.next_seq
+        shift = (anchor - stream.pending_anchor) % _SEQ_MOD
+        stream.pending_order[:] = [offset - shift for offset in stream.pending_order]
+        stream.pending_anchor = anchor
 
     # ── gaps ────────────────────────────────────────────────────────────
 
@@ -833,11 +884,29 @@ class TcpFlow(FlowTracker):
         self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
     ) -> None:
         """Record an accepted transmission so a later repeat of it can be judged."""
-        stream.recent.append(_Sent(seq=seq, end=end, tsval=tsval, peer_count=peer_count))
-        stream.recent_bytes += _delta(end, seq)
-        while len(stream.recent) > 1 and stream.recent_bytes > self._options.reorder_window:
-            oldest = stream.recent.popleft()
-            stream.recent_bytes -= _delta(oldest.end, oldest.seq)
+        # Every distance here runs forward — accepted transmissions only move
+        # on, and a length is never negative — so the plain modular distance
+        # is exact, and this path runs for every byte accepted.
+        recent = stream.recent
+        if recent:
+            last = recent[-1]
+            pos = last.pos + (seq - last.seq) % _SEQ_MOD
+        else:
+            pos = 0
+        recent.append(_Sent(seq, end, tsval, peer_count, pos))
+        stream.recent_bytes += (end - seq) % _SEQ_MOD
+        window = self._options.reorder_window
+        if stream.recent_bytes <= window:
+            return
+        head = stream.recent_head
+        while stream.recent_bytes > window and len(recent) - head > 1:
+            oldest = recent[head]
+            head += 1
+            stream.recent_bytes -= (oldest.end - oldest.seq) % _SEQ_MOD
+        if head >= 64 and head * 2 >= len(recent):
+            del recent[:head]
+            head = 0
+        stream.recent_head = head
 
     def _judge(
         self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
@@ -865,15 +934,39 @@ class TcpFlow(FlowTracker):
         resend inside its original's tick, a fast retransmit looks exactly like
         a copy.  The rule then calls it a duplicate, which is the wrong way
         round for the specification's SHOULD, and is recorded as a limit.
+
+        ``recent`` is ascending, so the transmissions overlapping the range
+        are a contiguous run of it, found by bisection rather than a scan
+        (#43).  That needs ``_delta`` from *seq* to be monotone along it,
+        which it is while the whole of ``recent`` spans no more than
+        ``_MAX_WINDOW``: the usual case, since it holds ``reorder_window``
+        bytes.  Committed gaps between its entries can stretch it further,
+        and then every entry is scanned, as before.  Either way the same
+        transmissions are visited in the same order, so the verdict cannot
+        differ between the two.
         """
         if tsval is None:
             return TS_ABSENT
         covered = 0
         length = _delta(end, seq)
-        for sent in stream.recent:
+        recent, head = stream.recent, stream.recent_head
+        if head == len(recent):
+            # Nothing accepted yet: a segment wholly behind the handshake.
+            return TS_STALE
+        first, last = recent[head], recent[-1]
+        if last.pos + _delta(last.end, last.seq) - first.pos <= _MAX_WINDOW:
+            start = bisect.bisect_right(recent, 0, head, len(recent),
+                                        key=lambda sent: _delta(sent.end, seq))
+            contiguous = True
+        else:
+            start, contiguous = head, False
+        for index in range(start, len(recent)):
+            sent = recent[index]
             lo = max(_delta(sent.seq, seq), 0)
             hi = min(_delta(sent.end, seq), length)
             if hi <= lo:
+                if contiguous:
+                    break
                 continue
             if sent.tsval is None:
                 return TS_ABSENT

@@ -35,6 +35,27 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 
 ### Changed
 
+- **TCP reassembly no longer slows with the depth of the reorder buffer or
+  the length of the repeat history**
+  ([#43](https://github.com/adamkjonsson/python-zipline-wire/issues/43),
+  [#44](https://github.com/adamkjonsson/python-zipline-wire/issues/44)).
+  - **The next held segment is found in constant time.** It took a scan of
+    every held segment, so filling a hole with *P* segments waiting behind
+    it cost O(*P*²).
+  - **A repeated range is found in `recent` by bisection.** Every repeat
+    carrying a TSval scanned all of `recent`, which with small segments
+    holds tens of thousands of entries.
+
+  Every conversion writes the same bytes as `0.5.0`. Median µs per packet,
+  CPython 3.14 on arm64:
+
+  | Traffic | Before | After |
+  | --- | --- | --- |
+  | resends carrying TSvals, 10-byte segments | 212 | 2.7 |
+  | the same, 100-byte segments | 54 | 2.8 |
+  | holes with 2,000 small segments waiting | 70 | 6.0 |
+  | holes with 170 full-size segments waiting | 12.0 | 6.0 |
+  | in order (unchanged) | 5.4 | 5.4 |
 - **Both siblings are declared as ranges closed above**: `zpf>=0.7.0,<0.8`
   and `packeteer>=0.16.0,<0.21`
   ([#41](https://github.com/adamkjonsson/python-zipline-wire/issues/41)).

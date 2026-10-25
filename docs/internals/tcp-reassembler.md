@@ -36,10 +36,11 @@ One `_Stream` per direction, keyed by the sender's endpoint:
 | `isn`, `role` | From the handshake, if seen |
 | `next_seq` | The next byte we expect; everything before it is committed |
 | `pending` | Segments held because earlier bytes have not arrived, keyed by sequence |
+| `pending_order`, `pending_anchor` | The keys of `pending` in serial order, as offsets from an anchor at or behind all of them, so the next held segment is the first entry |
 | `pending_bytes`, `oldest_pending_ts` | What the flush policy measures |
 | `run` | The record currently being accumulated |
 | `committed_gaps` | Ranges we gave up on, each with the TSval of the first segment that overtook it, so late arrivals can be told from retransmits — and, by that clock, delayed originals from resends |
-| `recent`, `recent_bytes` | The transmissions accepted most recently, as `(seq, end, TSval, peer_count)`, bounded by `reorder_window` bytes but never emptied |
+| `recent`, `recent_head`, `recent_bytes` | The transmissions accepted most recently, as `(seq, end, TSval, peer_count, pos)`, bounded by `reorder_window` bytes but never emptied; a list read from `recent_head` |
 | `peer_count` | Packets seen from the other direction, whatever they carried |
 | `ts_recent` | RFC 7323's `TS.Recent`: the TSval of the last segment accepted *in order at arrival* |
 
@@ -55,6 +56,27 @@ same number the hold is, and it never drops its newest entry, so the copy
 that lands a microsecond after its original — the mirror-port shape — can
 always be judged whatever the window.  A repeat of something older is
 `stale`.
+
+Neither structure is scanned on the paths that run per packet
+([#43](https://github.com/adamkjonsson/python-zipline-wire/issues/43),
+[#44](https://github.com/adamkjonsson/python-zipline-wire/issues/44)).
+Both are kept in serial order, and both are searched by `bisect`. Serial
+order is only an order within half the sequence space, so each keeps a way
+to know it is still inside it:
+
+- **`pending_order`** holds offsets from `pending_anchor`, which is set at
+  `next_seq` when the buffer fills from empty, so it is at or behind every
+  held segment. When `next_seq` runs more than `_MAX_WINDOW` past it, which
+  takes a segment held across a gigabyte of progress, `_rebase_pending`
+  moves it up.
+- **`recent`** gives every entry an unwrapped position, `pos`, so its exact
+  span is known. `_judge` bisects when that span is at most `_MAX_WINDOW`,
+  which is the usual case, since `recent` holds `reorder_window` bytes. When
+  committed gaps between entries stretch it further, `_judge` scans every
+  entry, as it always did.
+
+`tests/test_tcp_order.py` checks both against the implementations they
+replaced, call for call.
 
 ## Accepting a segment
 
