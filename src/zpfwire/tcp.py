@@ -122,6 +122,21 @@ _FLAG_MAP = (
 )
 
 
+def _record_flags(tcp_flags: int) -> RecordFlags:
+    """Return the record flags that the TCP flags in *tcp_flags* carry over."""
+    flags = RecordFlags(0)
+    for tcp_bit, record_bit in _FLAG_MAP:
+        if tcp_flags & tcp_bit:
+            flags |= record_bit
+    return flags
+
+
+# Every 8-bit combination, worked out once: `RecordFlags` is a `Flag` enum,
+# whose `|` runs in Python, and doing it per record was about a seventh of
+# the in-order path (#46).
+_RECORD_FLAGS = tuple(_record_flags(bits) for bits in range(256))
+
+
 def _advance(seq: int, count: int) -> int:
     """Return *seq* plus *count*, wrapping in the 32-bit sequence space."""
     return (seq + count) % _SEQ_MOD
@@ -356,7 +371,7 @@ class TcpFlow(FlowTracker):
         if closing:
             stream.fin = stream.fin or bool(pkt.tcp_flags & TCP_FIN)
             stream.rst = stream.rst or bool(pkt.tcp_flags & TCP_RST)
-            self._attach_flags(stream, pkt, origin=pkt.payload_offset)
+            self._attach_flags(stream, pkt.tcp_flags, origin=pkt.payload_offset)
 
         # A run ends where the sender said it did (PSH), where the connection
         # ends, or at every segment when coalescing is off.
@@ -524,7 +539,8 @@ class TcpFlow(FlowTracker):
                 stream.ts_recent is None or _delta(tsval, stream.ts_recent) >= 0
             ):
                 stream.ts_recent = tsval
-            self._append(stream, seq, data, pkt, tsval=tsval, peer_count=stream.peer_count,
+            self._append(stream, seq, data, ts=pkt.ts_ticks, ack=pkt.ack, flags=pkt.tcp_flags,
+                         tsval=tsval, peer_count=stream.peer_count,
                          payload_offset=payload_offset)
             self._drain(stream, pkt)
         else:
@@ -536,8 +552,10 @@ class TcpFlow(FlowTracker):
         stream: _Stream,
         seq: int,
         data: bytes,
-        pkt: PacketView,
         *,
+        ts: int,
+        ack: int,
+        flags: int,
         tsval: int | None,
         peer_count: int,
         payload_offset: int | None,
@@ -548,14 +566,14 @@ class TcpFlow(FlowTracker):
         end = _advance(seq, len(data))
         stream.run.data.extend(data)
         stream.run.contributors.append(_Contribution(
-            seq=seq, end=end, tsval=tsval, ts=pkt.ts_ticks, ack=pkt.ack,
+            seq=seq, end=end, tsval=tsval, ts=ts, ack=ack,
             payload_offset=payload_offset,
         ))
         if alternates:
             stream.run.alternates.extend(alternates)
             stream.run.retransmit = True
         self._remember(stream, seq, end, tsval, peer_count)
-        self._attach_flags(stream, pkt)
+        self._attach_flags(stream, flags)
         stream.next_seq = end
 
     def _hold(
@@ -645,7 +663,9 @@ class TcpFlow(FlowTracker):
                 stream,
                 stream.next_seq,
                 held.data[trim:],
-                _stamp(pkt, held),
+                ts=held.ts,
+                ack=held.ack,
+                flags=held.flags,
                 tsval=held.tsval,
                 peer_count=held.peer_count,
                 payload_offset=None if held.payload_offset is None else held.payload_offset + trim,
@@ -785,11 +805,9 @@ class TcpFlow(FlowTracker):
                 stream,
                 stream.next_seq,
                 held.data[trim:],
-                PacketView(
-                    packet_num=0, ts_ticks=held.ts, protocol="tcp",
-                    src="", dst="", src_port=0, dst_port=0,
-                    payload=b"", seq=target, ack=held.ack, tcp_flags=held.flags,
-                ),
+                ts=held.ts,
+                ack=held.ack,
+                flags=held.flags,
                 tsval=held.tsval,
                 peer_count=held.peer_count,
                 payload_offset=None if held.payload_offset is None else held.payload_offset + trim,
@@ -1088,11 +1106,11 @@ class TcpFlow(FlowTracker):
     # ── emission ────────────────────────────────────────────────────────
 
     def _attach_flags(
-        self, stream: _Stream, pkt: PacketView, *, origin: int | None = None,
+        self, stream: _Stream, flags: int, *, origin: int | None = None,
     ) -> None:
-        """OR *pkt*'s flags into the open run, naming *origin* when its flags alone reach it."""
+        """OR TCP *flags* into the open run, naming *origin* when the flags alone reach it."""
         if stream.run is not None:
-            stream.run.flags |= pkt.tcp_flags
+            stream.run.flags |= flags
             if origin is not None:
                 stream.run.flag_origins.append(origin)
 
@@ -1199,10 +1217,7 @@ class TcpFlow(FlowTracker):
                 self._stats.overlap_bytes += len(alt.data)
                 self._cite(alt.payload_offset, 0, len(alt.data), REASON_OVERLAP)
 
-        flags = RecordFlags(0)
-        for tcp_bit, record_bit in _FLAG_MAP:
-            if run.flags & tcp_bit:
-                flags |= record_bit
+        flags = _RECORD_FLAGS[run.flags & 0xFF]
         if run.retransmit:
             flags |= RecordFlags.RETRANSMIT
 
@@ -1331,20 +1346,3 @@ def _late_reason(tsval: int | None, passer_tsval: int | None) -> str:
     # which only an original can be — but a fast retransmit on a path with no
     # delay can share the tick too, so the option cannot say, and neither do we.
     return REASON_LATE
-
-
-def _stamp(pkt: PacketView, held: _Pending) -> PacketView:
-    """Re-key a held segment's metadata onto a packet view for appending."""
-    return PacketView(
-        packet_num=pkt.packet_num,
-        ts_ticks=held.ts,
-        protocol="tcp",
-        src=pkt.src,
-        dst=pkt.dst,
-        src_port=pkt.src_port,
-        dst_port=pkt.dst_port,
-        payload=b"",
-        seq=pkt.seq,
-        ack=held.ack,
-        tcp_flags=held.flags,
-    )

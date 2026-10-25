@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import pathlib
 import time
 
@@ -22,6 +23,7 @@ from zpfwire import (
     ReassemblyOptions,
     SkipReason,
     capture_to_zpf,
+    describe_source,
 )
 
 ALL_CAPTURES = sorted(p.name for p in CAPTURES.glob("*.pcap*"))
@@ -106,6 +108,29 @@ def test_the_capture_is_declared_as_the_source_with_its_digest(tmp_path: pathlib
     assert source.digest == expected
     assert source.uri == str(path)
     assert source.link_type == 1
+
+
+class _NoWholeReads(io.BytesIO):
+    """A stream that fails any read without a size: the whole file at once."""
+
+    def read(self, size: int | None = -1) -> bytes:
+        if size is None or size < 0:
+            raise AssertionError("the whole capture was read into memory")
+        return super().read(size)
+
+
+def test_a_stream_is_hashed_in_chunks_and_left_where_it_was():
+    """A stream-given capture used to be read whole to hash it (#47)."""
+    path = CAPTURES / "http_stream_1.pcap"
+    stream = _NoWholeReads(path.read_bytes())
+    stream.seek(123)
+
+    digest, uri = describe_source(stream)
+
+    assert digest == "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    assert uri is None
+    assert stream.tell() == 123
+    assert digest == describe_source(path)[0]
 
 
 def test_the_reassembler_declares_itself_and_its_policy(tmp_path: pathlib.Path):

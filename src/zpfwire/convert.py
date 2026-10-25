@@ -418,8 +418,13 @@ def describe_source(
     The digest is the dependency edge a consumer uses to confirm a `.zpf`
     still matches the capture it came from.
 
+    A path and a stream are both read a megabyte at a time, so hashing a
+    capture never holds the whole of it in memory, which the conversion
+    itself does not either (#47).  A stream is hashed from its start, and
+    left where it was found.
+
     Args:
-        source: Path to a capture, or an open binary stream.
+        source: Path to a capture, or an open, seekable binary stream.
 
     Returns:
         The ``sha256:`` digest and the URI to record, either of which is
@@ -427,14 +432,20 @@ def describe_source(
 
     """
     if isinstance(source, (str, os.PathLike)):
-        digest = hashlib.sha256()
         with open(source, "rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b""):
-                digest.update(chunk)
-        return "sha256:" + digest.hexdigest(), os.fspath(source)
+            return _sha256(handle), os.fspath(source)
 
     position = source.tell()
     source.seek(0)
-    data = source.read()
-    source.seek(position)
-    return "sha256:" + hashlib.sha256(data).hexdigest(), None
+    try:
+        return _sha256(source), None
+    finally:
+        source.seek(position)
+
+
+def _sha256(handle: IO[bytes]) -> str:
+    """Hash *handle* from where it stands to its end, a megabyte at a time."""
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(1 << 20), b""):
+        digest.update(chunk)
+    return "sha256:" + digest.hexdigest()

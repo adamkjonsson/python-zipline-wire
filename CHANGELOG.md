@@ -61,6 +61,12 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   - **A repeat is checked only against the gaps it can reach.** Every
     repeat scanned, and sorted, every gap the connection had ever
     committed, so a long lossy connection slowed down the longer it ran.
+  - **A record's flags come from a table.** `RecordFlags` is a `Flag` enum
+    whose `|` runs in Python, and building each record's flags bit by bit
+    was about a seventh of the in-order path
+    ([#46](https://github.com/adamkjonsson/python-zipline-wire/issues/46)).
+  - **A segment drained from the reorder buffer is appended from its own
+    fields**, not from a packet view built to carry three of them (#46).
 
   Every conversion writes the same bytes as `0.5.0`, except in the 4 GiB
   case above. Median µs per packet, CPython 3.14 on arm64:
@@ -68,11 +74,15 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   | Traffic | Before | After |
   | --- | --- | --- |
   | resends carrying TSvals, 10-byte segments | 212 | 2.7 |
-  | the same, 100-byte segments | 54 | 2.8 |
-  | holes with 2,000 small segments waiting | 70 | 6.0 |
-  | holes with 170 full-size segments waiting | 12.0 | 6.0 |
-  | 1 in 50 lost, 80,000 packets, late copies | 10.1 | 3.0 |
-  | in order (unchanged) | 5.4 | 5.3 |
+  | the same, 100-byte segments | 54 | 2.7 |
+  | holes with 2,000 small segments waiting | 70 | 4.5 |
+  | holes with 170 full-size segments waiting | 12.0 | 4.3 |
+  | 1 in 50 lost, 80,000 packets, late copies | 10.1 | 2.8 |
+  | in order | 5.4 | 4.5 |
+
+  A capture of clean traffic (`http_stream_1.pcap`) converts about 4%
+  faster; there, most of the time is in packeteer's parse and the `zpf`
+  writer.
 - **Both siblings are declared as ranges closed above**: `zpf>=0.7.0,<0.8`
   and `packeteer>=0.16.0,<0.21`
   ([#41](https://github.com/adamkjonsson/python-zipline-wire/issues/41)).
@@ -94,6 +104,15 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   run's header now prints each sibling's version and the file it was
   imported from, which disagree exactly when an install's metadata is
   stale.
+
+### Fixed
+
+- **`describe_source` hashes a capture given as a stream a megabyte at a
+  time**, as it already did one given as a path
+  ([#47](https://github.com/adamkjonsson/python-zipline-wire/issues/47)).
+  It read the whole stream into memory, so `capture_to_zpf(stream, …)` held
+  the entire capture just to compute its digest. The digest is unchanged,
+  and the stream is still left where it was found.
 
 ### Documentation
 
