@@ -1,9 +1,11 @@
-"""The reorder buffer and the repeat history decide exactly what they did before (#43, #44).
+"""Reassembly's bookkeeping decides exactly what it did before (#43, #44, #45).
 
-Both were rewritten for speed in ``0.6.0``: the next held segment is the
-first entry of a sorted list instead of a ``min`` over the buffer, and
-``_judge`` bisects ``recent`` instead of scanning it.  Neither may change a
-decision, and the fixtures barely reach either path, so this file checks
+Three structures were rewritten for speed in ``0.6.0``: the next held
+segment is the first entry of a sorted list instead of a ``min`` over the
+buffer, ``_judge`` bisects ``recent`` instead of scanning it, and a repeat
+is checked against the committed gaps at the tail instead of every gap the
+connection committed.  None may change a decision, and the fixtures barely
+reach any of them, so this file checks
 the new code against the old, **call for call**, on randomized streams that
 do: deep reordering, small segments, copies and resends with and without
 the Timestamps option, losses committed as gaps, and sequence wrap.
@@ -26,7 +28,7 @@ from zpfwire import TS_ABSENT, TS_STALE, ReassemblyOptions
 from zpfwire.capture import PacketView
 from zpfwire.flow import FlowKey, RecordSink
 from zpfwire.stats import ConversionStats
-from zpfwire.tcp import _MAX_WINDOW, _SEQ_MOD, TcpFlow, _delta, _Sent, _Stream
+from zpfwire.tcp import _MAX_WINDOW, _SEQ_MOD, TcpFlow, _delta, _Gap, _Sent, _Stream
 
 A, B = ("10.0.0.1", 40000), ("10.0.0.2", 80)
 
@@ -58,6 +60,38 @@ def reference_judge(
             return "retransmit"
         covered += hi - lo
     return "duplicate" if covered >= length else TS_STALE
+
+
+def reference_late(gaps: Iterable[_Gap], seq: int, end: int) -> list[tuple[_Gap, int, int]]:
+    """Return what ``_count_repeat`` as of ``0.5.0`` counted late: ``(gap, skip, bytes)``."""
+    late = []
+    for gap in gaps:
+        overlap_start = max(_delta(seq, gap.start), 0)
+        overlap_end = min(_delta(end, gap.start), _delta(gap.end, gap.start))
+        if overlap_end > overlap_start:
+            late.append((gap, _delta(gap.start, seq) + overlap_start,
+                         overlap_end - overlap_start))
+    return late
+
+
+def reference_unclaimed(gaps: Iterable[_Gap], seq: int, end: int) -> list[tuple[int, int]]:
+    """``TcpFlow._unclaimed`` as of ``0.5.0``, over every committed gap."""
+    length = _delta(end, seq)
+    claimed = sorted(
+        (max(_delta(gap.start, seq), 0), min(_delta(gap.end, seq), length))
+        for gap in gaps
+    )
+    parts: list[tuple[int, int]] = []
+    cursor = 0
+    for start, stop in claimed:
+        if stop <= cursor or start >= length:
+            continue
+        if start > cursor:
+            parts.append((cursor, start))
+        cursor = max(cursor, stop)
+    if cursor < length:
+        parts.append((cursor, length))
+    return parts
 
 
 # ── a tracker that checks itself ────────────────────────────────────────
@@ -105,6 +139,21 @@ class CheckedFlow(TcpFlow):
         assert got == reference_judge(live, seq, end, tsval, peer_count)
         self.calls[f"judge:{got}"] += 1
         return got
+
+    def _count_repeat(self, stream: _Stream, seq: int, end: int, *args: object,
+                      **kwargs: object) -> None:
+        every = list(stream.committed_gaps)
+        tail = self._gaps_from(stream, seq)
+        late = reference_late(every, seq, end)
+        assert reference_late(tail, seq, end) == late
+        if _delta(end, seq) > 0:
+            assert self._unclaimed(tail, seq, end) == reference_unclaimed(every, seq, end)
+        if every:
+            self.calls["repeat with gaps"] += 1
+            self.calls["gaps skipped"] += len(every) - len(tail)
+        if late:
+            self.calls["late"] += 1
+        super()._count_repeat(stream, seq, end, *args, **kwargs)  # type: ignore[arg-type]
 
     def packet(self, pkt: PacketView) -> None:
         super().packet(pkt)
@@ -232,6 +281,8 @@ def test_every_decision_matches_the_reference_on_random_streams(policy: str):
     assert calls["next_pending"] > 1_000
     for verdict in ("duplicate", "retransmit", TS_ABSENT, TS_STALE):
         assert calls[f"judge:{verdict}"] > 0, f"no {verdict} verdict in {dict(calls)}"
+    for reached in ("repeat with gaps", "gaps skipped", "late"):
+        assert calls[reached] > 0, f"never reached {reached!r}: {dict(calls)}"
 
 
 # ── the two paths random streams cannot reach ───────────────────────────

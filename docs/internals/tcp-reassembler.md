@@ -49,6 +49,15 @@ after their gap closed would be counted as ordinary duplicates — and a loss
 caused by our own timeout would be indistinguishable from a harmless
 retransmit.
 
+It is never pruned, but it is never scanned whole either
+([#45](https://github.com/adamkjonsson/python-zipline-wire/issues/45)).
+Gaps are committed at `next_seq`, which only moves forward, so the list is
+ascending and its gaps do not overlap. A repeat starting at `seq` is
+checked against the gaps from the newest back to the first that ends at or
+before `seq` (`_gaps_from`), since every older gap lies wholly behind it.
+Stopping there is also what keeps a gap from claiming bytes 4 GiB later
+that carry its sequence numbers again, which a full scan did.
+
 `recent` is what lets a repeat be judged: the entry covering its range says
 what TSval the bytes were first sent with and how many peer packets had been
 seen by then.  It is bounded by `reorder_window` so memory is bounded by the

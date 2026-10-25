@@ -35,19 +35,35 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 
 ### Changed
 
-- **TCP reassembly no longer slows with the depth of the reorder buffer or
-  the length of the repeat history**
+- **Breaking: a committed gap no longer claims a resend 4 GiB later that
+  carries its sequence numbers**
+  ([#45](https://github.com/adamkjonsson/python-zipline-wire/issues/45)).
+  A gap is kept as wire sequence numbers, which come round again every
+  2**32 bytes. Once a direction had moved 4 GiB past a loss, it was carrying
+  the lost range's numbers again. A resend there was then counted as
+  `late_bytes` and cited `late-arrival` against the old gap, when it was a
+  resend of bytes the direction had accepted: `overlap_bytes`, cited
+  `overlap-discarded`, with the record flagged `retransmit`. The output
+  moves only for a direction longer than 4 GiB that committed a gap and
+  later repeats bytes whose numbers fall inside it. Nothing a caller passes
+  changes; to reproduce such a file exactly, convert with `0.5.0`.
+- **TCP reassembly no longer slows with the depth of the reorder buffer,
+  the length of the repeat history, or the number of gaps committed**
   ([#43](https://github.com/adamkjonsson/python-zipline-wire/issues/43),
-  [#44](https://github.com/adamkjonsson/python-zipline-wire/issues/44)).
+  [#44](https://github.com/adamkjonsson/python-zipline-wire/issues/44),
+  [#45](https://github.com/adamkjonsson/python-zipline-wire/issues/45)).
   - **The next held segment is found in constant time.** It took a scan of
     every held segment, so filling a hole with *P* segments waiting behind
     it cost O(*P*²).
   - **A repeated range is found in `recent` by bisection.** Every repeat
     carrying a TSval scanned all of `recent`, which with small segments
     holds tens of thousands of entries.
+  - **A repeat is checked only against the gaps it can reach.** Every
+    repeat scanned, and sorted, every gap the connection had ever
+    committed, so a long lossy connection slowed down the longer it ran.
 
-  Every conversion writes the same bytes as `0.5.0`. Median µs per packet,
-  CPython 3.14 on arm64:
+  Every conversion writes the same bytes as `0.5.0`, except in the 4 GiB
+  case above. Median µs per packet, CPython 3.14 on arm64:
 
   | Traffic | Before | After |
   | --- | --- | --- |
@@ -55,7 +71,8 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   | the same, 100-byte segments | 54 | 2.8 |
   | holes with 2,000 small segments waiting | 70 | 6.0 |
   | holes with 170 full-size segments waiting | 12.0 | 6.0 |
-  | in order (unchanged) | 5.4 | 5.4 |
+  | 1 in 50 lost, 80,000 packets, late copies | 10.1 | 3.0 |
+  | in order (unchanged) | 5.4 | 5.3 |
 - **Both siblings are declared as ranges closed above**: `zpf>=0.7.0,<0.8`
   and `packeteer>=0.16.0,<0.21`
   ([#41](https://github.com/adamkjonsson/python-zipline-wire/issues/41)).

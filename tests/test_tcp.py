@@ -233,6 +233,30 @@ def test_bytes_arriving_after_their_gap_was_committed_are_dropped(tmp_path: path
     assert b"MISSING" not in out.only.stream(0)
 
 
+def test_a_gap_a_full_wrap_back_does_not_claim_a_resend_with_its_numbers(
+    tmp_path: pathlib.Path,
+):
+    """A committed gap is behind for good, even once its sequence numbers come round again (#45).
+
+    A gap is kept as wire sequence numbers, and those repeat every 2**32
+    bytes.  A direction that moves 4 GiB on from a loss is carrying the
+    gap's own numbers again, so a resend there must not be read as a late
+    arrival into the old gap: it is a resend of bytes this direction
+    accepted.  The 4 GiB are crossed by committing a gap at each jump, so
+    the capture holds a few kilobytes.
+    """
+    chunk = b"R" * 1_000
+    segments = [Seg(0, chunk), Seg(2_000, chunk)]  # [1000, 2000) is lost and committed
+    segments += [Seg(gigabytes * 10**9, chunk) for gigabytes in (1, 2, 3, 4)]
+    segments.append(Seg(1_000, chunk))  # 2**32 + 1000: the lost range's numbers, accepted
+    segments.append(Seg(1_000, chunk, flags=TCP_PSH))  # and its resend
+    out = to_zpf(tcp_segments(segments), tmp_path, options=ReassemblyOptions(reorder_window=500))
+
+    assert out.stats.gaps == 6
+    assert out.stats.late_bytes == 0
+    assert out.stats.overlap_bytes == 1_000
+
+
 def test_a_stale_gap_is_committed_on_the_flush_timeout(tmp_path: pathlib.Path):
     out = to_zpf(
         capture_of(

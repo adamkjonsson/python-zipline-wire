@@ -832,7 +832,8 @@ class TcpFlow(FlowTracker):
         length = _delta(end, seq)
         if length <= 0:
             return
-        for gap in stream.committed_gaps:
+        gaps = self._gaps_from(stream, seq)
+        for gap in gaps:
             gap_start, gap_end = gap.start, gap.end
             overlap_start = max(_delta(seq, gap_start), 0)
             overlap_end = min(_delta(end, gap_start), _delta(gap_end, gap_start))
@@ -846,7 +847,7 @@ class TcpFlow(FlowTracker):
                     self._stats.late_retransmitted_bytes += late
                 self._cite(payload_offset, _delta(gap_start, seq) + overlap_start,
                            late, late_reason)
-        for start, stop in self._unclaimed(stream, seq, end):
+        for start, stop in self._unclaimed(gaps, seq, end):
             lo, hi = _advance(seq, start), _advance(seq, stop)
             verdict = self._judge(stream, lo, hi, tsval, peer_count)
             if self._contested(stream, verdict, lo, hi, data[start:stop], pkt,
@@ -859,12 +860,39 @@ class TcpFlow(FlowTracker):
         start = None if payload_offset is None else payload_offset + skip
         self.undecoded(start, length, reason=reason)
 
-    def _unclaimed(self, stream: _Stream, seq: int, end: int) -> list[tuple[int, int]]:
-        """Return the parts of ``[seq, end)`` no committed gap claimed, relative to *seq*."""
+    def _gaps_from(self, stream: _Stream, seq: int) -> list[_Gap]:
+        """Return the committed gaps that end past *seq*, oldest first.
+
+        Gaps are committed at ``next_seq``, which only moves forward, so the
+        list is ascending and its gaps do not overlap: once one ends at or
+        before *seq*, every older one does too, and none of them can hold a
+        byte of a repeat starting there.  So the walk is from the newest,
+        and costs the gaps a repeat can reach rather than every gap the
+        connection ever committed (#45).
+
+        Stopping there is also what keeps an old gap from claiming bytes it
+        has nothing to do with.  A gap is kept as wire sequence numbers,
+        which come round again every 2**32 bytes; a direction 4 GiB past a
+        loss is carrying the lost range's own numbers again, and a scan of
+        every gap would read a resend there as a late arrival into the old
+        hole.  The walk stops at the newest gap behind *seq*, long before it.
+        """
+        gaps = stream.committed_gaps
+        first = len(gaps)
+        while first and _delta(gaps[first - 1].end, seq) > 0:
+            first -= 1
+        return gaps[first:]
+
+    def _unclaimed(self, gaps: list[_Gap], seq: int, end: int) -> list[tuple[int, int]]:
+        """Return the parts of ``[seq, end)`` none of *gaps* claimed, relative to *seq*.
+
+        *gaps* is ascending and non-overlapping, as :meth:`_gaps_from` returns
+        them, so what they claim is already in order.
+        """
         length = _delta(end, seq)
-        claimed = sorted(
+        claimed = (
             (max(_delta(gap.start, seq), 0), min(_delta(gap.end, seq), length))
-            for gap in stream.committed_gaps
+            for gap in gaps
         )
         parts: list[tuple[int, int]] = []
         cursor = 0
