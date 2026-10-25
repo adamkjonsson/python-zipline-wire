@@ -71,7 +71,10 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
     ([python-zipline#101](https://github.com/adamkjonsson/python-zipline/issues/101)).
     That is more than the speed-ups below save on clean traffic, so by
     default this release converts such a capture more slowly than `0.5.0`
-    did.
+    did. The trade is deliberate: the specification's premise is that a
+    file is read far more often than written, and the cost is paid once,
+    for information every reader gets. That capture carries 2,060 pure
+    ACKs beside 2,000 data segments, so its records double.
 
 - **Breaking: a committed gap no longer claims a resend 4 GiB later that
   carries its sequence numbers**

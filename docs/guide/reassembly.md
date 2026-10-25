@@ -188,11 +188,21 @@ is what it is stored for:
 - **Provenance.**  Over a `.zpf` input, a pure ACK's packet is cited by its
   record instead of being marked `skipped`; it did feed the reassembler.
 
-It costs a record per pure ACK, about one per two data segments on a bulk
-transfer.  On `http_stream_1.pcap`, a 4,140-packet HTTP capture, that is 23%
-more output and about 30% more conversion time, almost all of it in the
-`zpf` writer's per-record work.  Storing them changes no data record: every
-fixture converts to what `pure_acks=False` writes, plus the pure-ACK records.
+It costs a record per pure ACK, and there are many.  `http_stream_1.pcap`,
+a 4,140-packet HTTP capture, carries 2,060 pure ACKs beside 2,000 data
+segments, so storing them doubles its records: 23% more output (543,900 →
+667,500 bytes) and about 30% more conversion time (119 → 154 ms), almost all
+of it in the `zpf` writer's per-record work.  Storing them changes no data
+record: every fixture converts to what `pure_acks=False` writes, plus the
+pure-ACK records.
+
+That trade is deliberate.  The specification's own premise is that "a file
+is read far more often than written" (*Sequenced files*), so a cost paid
+once, when the file is written, buys information every reader gets: the
+order and timing above, which a reader could not recover from a file
+without them.  Opt out when a conversion's output is only an intermediate
+step, or when size or throughput matters more than ordering detail; it
+writes `0.5.0`'s bytes exactly.
 
 `pure_acks=False` folds each `ack` into the sender's next data record
 instead, which is what every release before `0.6.0` did, and writes exactly
