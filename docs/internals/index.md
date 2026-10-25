@@ -20,7 +20,7 @@ contributing
 
 ## Module map
 
-Roughly 4,500 lines of source, and the ordering below is the order data moves
+Roughly 4,850 lines of source, and the ordering below is the order data moves
 through them.
 
 | Module | Purpose |
@@ -28,7 +28,7 @@ through them.
 | `zpfwire/capture.py` | The packeteer seam — capture file to `PacketView` stream, and the skip tally |
 | `zpfwire/packets.py` | A `.zpf` of packets as input: the reader, the sink that cites input packets, `packets_to_zpf` and `packets_to_pcap` |
 | `zpfwire/flow.py` | `FlowKey` (direction-free conversation identity), `FlowTracker` (what every transport shares), and `RecordSink` (where a session is written) |
-| `zpfwire/tcp.py` | `TcpFlow` — the reassembler: reorder buffer, gap policy, run coalescing |
+| `zpfwire/tcp.py` | `TcpFlow` — the reassembler: reorder buffer, gap policy, run coalescing, pure ACKs |
 | `zpfwire/udp.py` | `UdpFlow` — one datagram, one record |
 | `zpfwire/convert.py` | Orchestration: open, hash, declare, drive the flows, close — the loop shared by both inputs |
 | `zpfwire/options.py` | `ReassemblyOptions` and the `params_digest` that makes a conversion reproducible |

@@ -1,7 +1,8 @@
 # Contributing
 
-Working on zpfwire itself.  All development tasks use a single virtualenv
-built from `requirements.txt`.
+Working on zpfwire itself.  Development uses one virtualenv built from
+`requirements.txt`, and optionally a second for working on the siblings at
+the same time.
 
 ## Setup
 
@@ -10,9 +11,29 @@ python3 -m venv .venv
 .venv/bin/pip install -e . -r requirements.txt
 ```
 
-Python ≥ 3.10 — the floor `zpf` sets.  The two siblings are installed editable
-from `../packeteer` and `../python-zipline`, so a change in either is picked
-up without reinstalling.
+Python ≥ 3.10 — the floor `zpf` sets.  The two siblings are installed from
+the release tags this tree is built against, so `.venv` tests what the wheel
+declares, and `pip list` says what is running.
+
+To change packeteer or python-zipline alongside this tree, add a second venv
+on the checkouts next to this one:
+
+```bash
+python3 -m venv .venv-dev
+.venv-dev/bin/pip install -e . -r requirements.txt
+.venv-dev/bin/pip install -r requirements-dev-siblings.txt
+```
+
+Every test run prints each sibling's version **and** the file it was imported
+from.  In `.venv-dev` the path is a checkout, and the version beside it is
+whatever was recorded when the install was made, which can be stale.  A
+result to be quoted as "against release X" comes from `.venv`.
+
+**Moving to a new sibling release** is two edits that go together: the tag in
+`requirements.txt` and the range in `pyproject.toml`.  `test_package.py`
+fails if the tag falls outside the range.  The range's ceiling is one minor
+above the newest release tested; widen it only once the suite has passed
+against that release.
 
 Note the `-e .` — installing the requirements alone leaves zpfwire itself
 uninstalled, and the tests will still pass because `pyproject.toml` puts `src`
@@ -25,13 +46,42 @@ Run all three before pushing.
 
 ```bash
 .venv/bin/pytest                                    # tests — must be green
-ruff check src/ tests/ docs/                        # lint — zero warnings
+ruff check src/ tests/ docs/ tools/ benchmarks/     # lint — zero warnings
 .venv/bin/sphinx-build -W docs docs/_build/html     # docs — warnings are errors
 ```
 
 These are the same checks CI runs.  The docs build is not a formality: `-W`
 turns a broken cross-reference or a stale autodoc target into a failure, so
 renaming a public name without updating its API page fails here.
+
+## A change that must not move output
+
+A refactor or a speed fix claims that every conversion still writes the same
+bytes. The suite alone cannot back that claim, because `tests/test_pins.py`
+deliberately leaves the TCP Timestamps fixtures unpinned. Run the
+byte-identity check against the last release instead:
+
+```bash
+.venv/bin/python tools/byte_identity.py --option pure_acks=false   # against v0.5.0
+.venv/bin/python tools/byte_identity.py --baseline v0.4.0 --option pure_acks=false
+```
+
+A change that moves output by default, behind an option that restores what
+came before, is checked with that option set: `--option NAME=VALUE` sets a
+`ReassemblyOptions` field, as JSON, in each tree that has it. Since `0.6.0`
+stores pure ACKs by default, that is `--option pure_acks=false`.
+
+It checks the baseline out into a temporary worktree and runs both trees
+against the same installed siblings. For each fixture it compares whole
+output files and conversion stats across every overlap policy, binary and
+JSONL, `--sequenced`, a `.zpf`-of-packets input, and the pcap export. The
+only thing normalised is zpfwire's own version stamp. It exits non-zero on
+any difference and names each one.
+
+For the speed half of the claim, `benchmarks/reassembly.py` times the
+reassembler on the synthetic shapes the performance issues were found on,
+and a real capture end to end. It is not a test; record its figures where
+the change is argued, before and after, from `.venv` (see *Setup*).
 
 ## Code style
 

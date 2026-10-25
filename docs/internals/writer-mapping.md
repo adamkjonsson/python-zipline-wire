@@ -100,9 +100,10 @@ segment it would repeat `timestamp`.
 
 A session is **hint-ful** when its records carry `seq`/`ack`, and a hint-ful
 session's causal order follows from the records themselves.  A TCP session is
-hint-ful — except when it has no records at all.  A conversation of pure
-acknowledgements produces none, and three of the four sessions in
-`http_example.pcapng` are exactly that.
+hint-ful — except when it has no records at all.  Under `--no-pure-acks`, as
+in every release before `0.6.0`, a conversation of pure acknowledgements
+produces none, and three of the four sessions in `http_example.pcapng` are
+exactly that; by default each pure ACK is a record carrying its `ack`.
 
 Under spec `0.16` this was the subtlest thing in the writer.  A hint-less
 session had to record what its order rested on, in `sequenced_basis`; the flag

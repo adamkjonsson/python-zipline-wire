@@ -94,6 +94,21 @@ class ReassemblyOptions:
             sequence-anchored, so a datagram left out would leave no trace in
             it, and the specification forbids a transport-layer stage to
             withhold content from such a stream.
+        pure_acks: Store each TCP segment that carries neither bytes nor a
+            SYN, FIN or RST as a zero-length record holding its ``ack``, as
+            the specification advises since ``0.23``. A pure ACK has no end,
+            so no edge runs from it, but its ``ack`` places it after the peer
+            bytes it covers: the causal merge gets an edge for every one, the
+            receiver's reaction times are in the file, and a ``.zpf`` input
+            cites the packet instead of leaving it ``skipped``. It costs a
+            record per pure ACK, and there are about as many pure ACKs as
+            data segments: on a 4,140-packet HTTP capture, 23% more output
+            and about 30% more conversion time, mostly the ``zpf`` writer's
+            per-record work. A cost paid once when writing, for information
+            every reader gets, since a file is read far more often than
+            written. ``False`` folds each ``ack`` into the next data record
+            instead, which is what every release before ``0.6.0`` did, and
+            writes exactly what ``0.5.0`` wrote; see :meth:`params_digest`.
 
     """
 
@@ -103,6 +118,7 @@ class ReassemblyOptions:
     session_timeout: float = 300.0
     coalesce: bool = True
     checksum: str = "ignore"
+    pure_acks: bool = True
 
     def __post_init__(self) -> None:
         """Validate the policy.
@@ -134,9 +150,18 @@ class ReassemblyOptions:
         same decoder version and params digest ⇒ identical output*, so this
         must depend on every field that can change the bytes written.
 
+        :attr:`pure_acks` is left out when it is ``False``, which is the
+        behaviour of every release before it existed.  So a conversion that
+        opts out declares the digest ``0.5.0`` declared for the same policy,
+        as well as writing the same bytes, and one that does not is told
+        apart by its digest.
+
         Returns:
             A digest string such as ``"sha256:1f3a…"``.
 
         """
-        canonical = json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        policy = asdict(self)
+        if not self.pure_acks:
+            del policy["pure_acks"]
+        canonical = json.dumps(policy, sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()

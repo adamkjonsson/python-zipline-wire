@@ -17,6 +17,7 @@ from helpers import (
     Converted,
     Seg,
     capture_of,
+    is_pure_ack,
     tcp_packet,
     tcp_segments,
     to_zpf,
@@ -74,18 +75,22 @@ def test_the_handshake_fixes_isn_and_roles(tmp_path: pathlib.Path):
 def test_seq_start_is_the_absolute_wire_number(tmp_path: pathlib.Path):
     """The first application byte is isn + 1, and seq_start is absolute.
 
-    The handshake writes an empty SYN record at the origin, so the data
-    record is the second one — and both sit at the same seq_start, which is
-    what the origin being isn + 1 means: the SYN consumed the isn without
-    delivering a byte there.
+    The handshake writes an empty SYN record at the origin, then the
+    handshake's own pure ACK, then the data — and all three sit at the same
+    seq_start, which is what the origin being isn + 1 means: the SYN
+    consumed the isn without delivering a byte there, and the ACK carries
+    the next number, the first byte's.
     """
     out = to_zpf(capture_of([*handshake(),
                              tcp_packet(seq=ISN + 1, flags=TCP_PSH, payload=b"abc")]), tmp_path)
 
-    syn, record = out.only.by(0)
+    syn, ack, record = out.only.by(0)
     assert syn.flags & zpf.RecordFlags.SYN
     assert syn.seq_start == ISN + 1
     assert syn.payload == b""
+    assert is_pure_ack(ack)
+    assert ack.seq_start == ISN + 1
+    assert ack.ack == 5001
     assert record.seq_start == ISN + 1
 
 
@@ -233,6 +238,30 @@ def test_bytes_arriving_after_their_gap_was_committed_are_dropped(tmp_path: path
     assert b"MISSING" not in out.only.stream(0)
 
 
+def test_a_gap_a_full_wrap_back_does_not_claim_a_resend_with_its_numbers(
+    tmp_path: pathlib.Path,
+):
+    """A committed gap is behind for good, even once its sequence numbers come round again (#45).
+
+    A gap is kept as wire sequence numbers, and those repeat every 2**32
+    bytes.  A direction that moves 4 GiB on from a loss is carrying the
+    gap's own numbers again, so a resend there must not be read as a late
+    arrival into the old gap: it is a resend of bytes this direction
+    accepted.  The 4 GiB are crossed by committing a gap at each jump, so
+    the capture holds a few kilobytes.
+    """
+    chunk = b"R" * 1_000
+    segments = [Seg(0, chunk), Seg(2_000, chunk)]  # [1000, 2000) is lost and committed
+    segments += [Seg(gigabytes * 10**9, chunk) for gigabytes in (1, 2, 3, 4)]
+    segments.append(Seg(1_000, chunk))  # 2**32 + 1000: the lost range's numbers, accepted
+    segments.append(Seg(1_000, chunk, flags=TCP_PSH))  # and its resend
+    out = to_zpf(tcp_segments(segments), tmp_path, options=ReassemblyOptions(reorder_window=500))
+
+    assert out.stats.gaps == 6
+    assert out.stats.late_bytes == 0
+    assert out.stats.overlap_bytes == 1_000
+
+
 def test_a_stale_gap_is_committed_on_the_flush_timeout(tmp_path: pathlib.Path):
     out = to_zpf(
         capture_of(
@@ -319,13 +348,30 @@ def test_a_records_timestamp_is_its_last_contributing_packet(tmp_path: pathlib.P
     assert record.timestamp == 1_001_000
 
 
-def test_pure_acks_produce_no_records(tmp_path: pathlib.Path):
+def test_a_pure_ack_is_a_zero_length_record_carrying_its_ack(tmp_path: pathlib.Path):
+    """Spec 0.23 advises storing them, and since 0.6.0 that is the default (#37)."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"data", flags=TCP_PSH),
+        Seg(700, b"", from_client=False, ack=5),
+    ]), tmp_path)
+
+    (ack,) = out.only.by(1)
+    assert ack.payload == b""
+    assert ack.flags == zpf.RecordFlags(0)
+    assert ack.seq_start == 700
+    assert ack.ack == 5
+    assert out.stats.pure_acks == 1
+
+
+def test_pure_acks_produce_no_records_when_opted_out(tmp_path: pathlib.Path):
+    """Every release before 0.6.0, and ``pure_acks=False`` since."""
     out = to_zpf(tcp_segments([
         Seg(1, b"data", flags=TCP_PSH),
         Seg(5, b"", from_client=False),
-    ]), tmp_path)
+    ]), tmp_path, options=ReassemblyOptions(pure_acks=False))
 
     assert len(out.only.records) == 1
+    assert out.stats.pure_acks == 0
 
 
 def test_the_ack_hint_comes_from_the_wire(tmp_path: pathlib.Path):
@@ -405,8 +451,16 @@ def test_a_fin_carried_with_data_flags_the_record(tmp_path: pathlib.Path):
 
 
 def _flagged(out: object) -> list[bool]:
-    """Whether each record of the only session carries ``retransmit``."""
-    return [bool(r.flags & zpf.RecordFlags.RETRANSMIT) for r in out.only.records]  # type: ignore[attr-defined]
+    """Whether each record of the only session carries ``retransmit``, pure ACKs aside.
+
+    A pure ACK's record carries no bytes, so no resend can flag it; the
+    question these tests ask is about the records that do.
+    """
+    return [
+        bool(r.flags & zpf.RecordFlags.RETRANSMIT)
+        for r in out.only.records  # type: ignore[attr-defined]
+        if not is_pure_ack(r)
+    ]
 
 
 def _reasons(out: object) -> list[str]:

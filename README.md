@@ -24,17 +24,19 @@ This README is the short version.
 
 ## Install
 
-The two dependencies are not on PyPI, so check them out next to this repo:
+The two dependencies are not on PyPI; `requirements.txt` installs them from
+their release tags on GitHub:
 
 ```bash
-git clone https://github.com/adamkjonsson/packeteer.git
-git clone https://github.com/adamkjonsson/python-zipline.git
 git clone https://github.com/adamkjonsson/python-zipline-wire.git
 
 cd python-zipline-wire
 python -m venv .venv
 .venv/bin/pip install -e . -r requirements.txt
 ```
+
+To work on packeteer or python-zipline at the same time, see
+`docs/introduction/installation.md` for the second venv, `.venv-dev`.
 
 ## Use it
 
@@ -117,7 +119,7 @@ $ zpfwire convert lossy.pcap -o lossy.zpf
 packets      193
 converted    193
 sessions     1
-records      10
+records      105 (95 pure ACKs)
 payload      71617 bytes
 gaps         6
 Note: some bytes never reached the output. Raise --reorder-window or
@@ -131,6 +133,7 @@ Note: some bytes never reached the output. Raise --reorder-window or
 | `--overlap {favor-old,favor-acked}` | which copy wins when retransmitted bytes disagree — the first seen, or the one the receiver's acknowledgement echoed |
 | `--session-timeout SECONDS` | silence after which a conversation is closed |
 | `--no-coalesce` | one record per segment instead of per contiguous byte run |
+| `--no-pure-acks` | fold each pure ACK's `ack` into the next data record instead of storing it, as before `0.6.0`: about a fifth smaller and faster to write, but readers lose the ordering and timing the pure ACKs carry |
 | `--checksum {ignore,drop}` | whether to discard a TCP segment whose checksum does not verify; a UDP datagram is always kept |
 
 These are hashed into the file's decoder descriptor, so a `.zpf` records the
@@ -192,7 +195,7 @@ is why it is opt-in in a format whose point is streaming.
 
 ```bash
 .venv/bin/pytest                                    # tests
-ruff check src/ tests/ docs/                        # lint, must be silent
+ruff check src/ tests/ docs/ tools/ benchmarks/     # lint, must be silent
 .venv/bin/sphinx-build -W docs docs/_build/html     # docs, warnings are errors
 ```
 

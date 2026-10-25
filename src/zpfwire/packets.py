@@ -22,8 +22,9 @@ they fed the record, which is the specification's test (*correspondence,
 not proximity*).  A packet that reached no record is either marked with the
 reason this tree discarded it — ``duplicate-discarded``, ``late-arrival``,
 ``bad-checksum`` and the rest, as on a capture — or, if nothing discarded
-it (a pure ACK, a filtered flow, a record that is not a packet), left to
-the stage's ``skipped`` auto-fill.
+it (a filtered flow, a record that is not a packet, a pure ACK when
+``pure_acks`` is off), left to the stage's ``skipped`` auto-fill.  By default
+a pure ACK is a record of its own, and cites its packet like any other.
 """
 
 from __future__ import annotations

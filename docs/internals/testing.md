@@ -1,6 +1,6 @@
 # Testing
 
-Some 590 tests, native pytest style, in a top-level `tests/`.  Run them with:
+Some 810 tests, native pytest style, in a top-level `tests/`.  Run them with:
 
 ```bash
 .venv/bin/pytest
@@ -185,7 +185,7 @@ internal consistency checking would.
 ## The other two checks
 
 ```bash
-ruff check src/ tests/ docs/                        # must be silent
+ruff check src/ tests/ docs/ tools/ benchmarks/     # must be silent
 .venv/bin/sphinx-build -W docs docs/_build/html     # warnings are errors
 ```
 

@@ -133,8 +133,10 @@ def test_a_udp_session_is_not_marked(tmp_path: pathlib.Path):
 def test_a_session_with_no_records_still_validates(tmp_path: pathlib.Path):
     """The case that used to need an answer at write time.
 
-    A TCP conversation of pure acks produces no records, and a session with
-    no records carries no seq or ack — so it is hint-less however TCP it is.
+    A TCP conversation of pure acks produces no records when they are not
+    stored (``pure_acks=False``; the default before ``0.6.0``), and a session
+    with no records carries no seq or ack — so it is hint-less however TCP it
+    is.
     Under spec ``0.16`` that meant it had to say what its order rested on,
     and the flag is written on the Session Descriptor before any record
     exists, so a producer could not know which kind of session it had.  Since
@@ -147,10 +149,31 @@ def test_a_session_with_no_records_still_validates(tmp_path: pathlib.Path):
         capture_of([tcp_packet(seq=ISN + 1, ack=SERVER_ISN + 1, flags=TCP_ACK)]),
         tmp_path,
         sequenced=True,
+        options=ReassemblyOptions(pure_acks=False),
     )
 
     assert out.diagnostics == []
     assert out.only.records == []
+    assert out.only.sequenced is True
+
+
+def test_a_session_of_one_pure_ack_validates_sequenced(tmp_path: pathlib.Path):
+    """The same capture under the default: one zero-length record with no end (#37).
+
+    A record with no end is the source of no edge, so a session holding only
+    one is trivially in causal order.  What this checks is that the
+    linearizing writer and the reader both accept the shape.
+    """
+    out = to_zpf(
+        capture_of([tcp_packet(seq=ISN + 1, ack=SERVER_ISN + 1, flags=TCP_ACK)]),
+        tmp_path,
+        sequenced=True,
+    )
+
+    assert out.diagnostics == []
+    (ack,) = out.only.records
+    assert ack.payload == b""
+    assert (ack.seq_start, ack.ack) == (ISN + 1, SERVER_ISN + 1)
     assert out.only.sequenced is True
 
 

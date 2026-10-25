@@ -35,10 +35,16 @@ TSecr on the peer's first acknowledgement covering the range — the TSval of
 the transmission that advanced its window — and it arrives after both
 copies.  So every run is held after it closes until the peer's ack covers
 it, and only then written; see :meth:`TcpFlow._settle`.
+
+A segment carrying only an ``ack`` is written too, by default since
+``0.6.0`` (#37): a zero-length record at its wire sequence number, placed
+once nothing of its sender's will be stored below that number; see
+:meth:`TcpFlow._pure_ack`.
 """
 
 from __future__ import annotations
 
+import bisect
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -119,6 +125,21 @@ _FLAG_MAP = (
     (TCP_RST, RecordFlags.RST),
     (TCP_URG, RecordFlags.URG),
 )
+
+
+def _record_flags(tcp_flags: int) -> RecordFlags:
+    """Return the record flags that the TCP flags in *tcp_flags* carry over."""
+    flags = RecordFlags(0)
+    for tcp_bit, record_bit in _FLAG_MAP:
+        if tcp_flags & tcp_bit:
+            flags |= record_bit
+    return flags
+
+
+# Every 8-bit combination, worked out once: `RecordFlags` is a `Flag` enum,
+# whose `|` runs in Python, and doing it per record was about a seventh of
+# the in-order path (#46).
+_RECORD_FLAGS = tuple(_record_flags(bits) for bits in range(256))
 
 
 def _advance(seq: int, count: int) -> int:
@@ -221,12 +242,31 @@ class _Sent:
     triggered by the peer's duplicate ACKs, which sit in the capture between
     the original and the resend, and a mirror copy follows its original with
     nothing between them; ``peer_count`` is what makes that comparable.
+
+    ``pos`` is ``seq`` unwrapped: a count that does not wrap at 2**32, so the
+    span of everything remembered is known exactly — see :meth:`TcpFlow._judge`.
     """
 
     seq: int
     end: int
     tsval: int | None
     peer_count: int
+    pos: int
+
+
+@dataclass(frozen=True)
+class _PureAck:
+    """A segment that carried only an ``ack``, waiting for its place in the stream.
+
+    Stored as a zero-length record at ``seq``, the sender's sequence number
+    on the wire (#37).  ``origin`` is the packet's ``payload_offset``, so a
+    ``.zpf`` input can cite it.
+    """
+
+    seq: int
+    ts: int
+    ack: int
+    origin: int | None
 
 
 @dataclass
@@ -249,6 +289,9 @@ class _Run:
     # Packets whose flags, not bytes, reached the run — a FIN or RST with no
     # payload — named so a `.zpf` input can cite them; see RecordSink.record.
     flag_origins: list[int] = field(default_factory=list)
+    # Pure ACKs to store straight after this run's record: their sequence
+    # number lies at or past its start, so they cannot be stored before it.
+    trailing_acks: list[_PureAck] = field(default_factory=list)
 
     @property
     def end(self) -> int:
@@ -270,6 +313,12 @@ class _Stream:
     rst: bool = False
     pending: dict[int, _Pending] = field(default_factory=dict)
     pending_bytes: int = 0
+    # The keys of `pending` in serial order, as offsets from `pending_anchor`,
+    # so the next held segment is the first entry rather than a scan (#44).
+    # The anchor sits at or behind every held segment and `next_seq`; see
+    # _rebase_pending for why that keeps the order exact.
+    pending_order: list[int] = field(default_factory=list)
+    pending_anchor: int = 0
     oldest_pending_ts: int | None = None
     run: _Run | None = None
     # (start, end, passer) — the third is the TSval of the first segment past
@@ -280,8 +329,11 @@ class _Stream:
     # The transmissions accepted most recently, oldest first, bounded by
     # `reorder_window` bytes — but never emptied, so the copy that lands a
     # microsecond after its original can always be judged.  A repeat of
-    # something older than the deque cannot be, and is counted as such.
-    recent: deque[_Sent] = field(default_factory=deque)
+    # something older cannot be, and is counted as such.  A list read from
+    # `recent_head`, not a deque, because _judge bisects it and a deque's
+    # middle is a walk (#43); the evicted prefix is dropped in batches.
+    recent: list[_Sent] = field(default_factory=list)
+    recent_head: int = 0
     recent_bytes: int = 0
     # Packets seen from the other direction, whatever they carried.
     peer_count: int = 0
@@ -296,6 +348,13 @@ class _Stream:
     # them, oldest first — so records still reach the writer in seq order.
     unacked: deque[_Run] = field(default_factory=deque)
     unacked_bytes: int = 0
+    # Where the FIN sits: one past the last byte of the segment carrying it.
+    # The FIN occupies that sequence number, so once every byte before it is
+    # in, the next one the sender can use is one further on.
+    fin_seq: int | None = None
+    # Pure ACKs whose sequence number is ahead of where this direction's
+    # bytes have been placed; see TcpFlow._release_acks.
+    held_acks: list[_PureAck] = field(default_factory=list)
 
 
 class TcpFlow(FlowTracker):
@@ -337,12 +396,22 @@ class TcpFlow(FlowTracker):
 
         if pkt.payload:
             self._accept(stream, pkt.seq, pkt.payload, pkt)
+        elif (
+            self._options.pure_acks
+            and pkt.tcp_flags & TCP_ACK
+            and not pkt.tcp_flags & (TCP_SYN | TCP_FIN | TCP_RST)
+        ):
+            self._pure_ack(stream, pkt)
 
         closing = bool(pkt.tcp_flags & (TCP_FIN | TCP_RST))
         if closing:
             stream.fin = stream.fin or bool(pkt.tcp_flags & TCP_FIN)
             stream.rst = stream.rst or bool(pkt.tcp_flags & TCP_RST)
-            self._attach_flags(stream, pkt, origin=pkt.payload_offset)
+            self._attach_flags(stream, pkt.tcp_flags, origin=pkt.payload_offset)
+            if pkt.tcp_flags & TCP_FIN and stream.fin_seq is None:
+                stream.fin_seq = _advance(pkt.seq, len(pkt.payload))
+                if stream.held_acks:
+                    self._release_acks(stream)
 
         # A run ends where the sender said it did (PSH), where the connection
         # ends, or at every segment when coalescing is off.
@@ -364,6 +433,14 @@ class TcpFlow(FlowTracker):
             # fallback: the evidence did not arrive, and that is counted.
             while stream.unacked:
                 self._write(stream, self._release_run(stream))
+            # Pure ACKs still ahead of every placed byte: nothing more of
+            # this direction will be stored, so they go last, in order.
+            if stream.held_acks:
+                assert stream.next_seq is not None
+                frontier = self._frontier(stream)
+                for held in sorted(stream.held_acks, key=lambda a: _delta(a.seq, frontier)):
+                    self._write_ack(stream, held)
+                stream.held_acks.clear()
         self._declare_silent_peer()
 
         if any(s.rst for s in self._streams.values()):
@@ -461,6 +538,102 @@ class TcpFlow(FlowTracker):
             if not self.declared(endpoint):
                 self.participant(endpoint)
 
+    # ── pure ACKs ───────────────────────────────────────────────────────
+
+    def _pure_ack(self, stream: _Stream, pkt: PacketView) -> None:
+        """Store a segment that carried only an ``ack`` as a zero-length record (#37).
+
+        Its record sits at its own sequence number, so it has to be stored
+        where that number falls among this direction's records, which are
+        stored in serial order.  That is only certain once nothing of this
+        direction will be stored below it, which is the frontier
+        (:meth:`_frontier`).  At the frontier it is placed now; ahead of it,
+        held until the frontier passes it; behind it, it would have to come
+        before records already placed, so it is not stored and its ``ack``
+        is left to the next data record, as when the option is off.
+
+        A direction that has sent nothing yet begins at the pure ACK, as it
+        would at a first data segment: the ACK says the sender had nothing
+        unsent below it.
+        """
+        if stream.next_seq is None:
+            stream.next_seq = pkt.seq
+        held = _PureAck(seq=pkt.seq, ts=pkt.ts_ticks, ack=pkt.ack, origin=pkt.payload_offset)
+        if _delta(held.seq, self._frontier(stream)) < 0:
+            self._stats.pure_acks_unstored += 1
+            return
+        stream.held_acks.append(held)
+        self._release_acks(stream)
+
+    def _frontier(self, stream: _Stream) -> int:
+        """Return the lowest sequence number this direction may still store a record at.
+
+        Every byte below ``next_seq`` has been placed or given up on, so no
+        record of this direction will start below it again.  A FIN takes one
+        more number, and once everything before it is in, the sender's next
+        segment, and so its next pure ACK, sits one past it.
+        """
+        assert stream.next_seq is not None
+        if stream.fin_seq is not None and stream.next_seq == stream.fin_seq:
+            return _advance(stream.fin_seq, 1)
+        return stream.next_seq
+
+    def _release_acks(self, stream: _Stream) -> None:
+        """Place every held pure ACK the frontier has reached, in serial order.
+
+        Called wherever the frontier moves, and always before a run is
+        opened past it, so an ACK is never placed after a record that starts
+        beyond its sequence number.
+        """
+        frontier = self._frontier(stream)
+        ready = [held for held in stream.held_acks if _delta(held.seq, frontier) <= 0]
+        if not ready:
+            return
+        stream.held_acks = [held for held in stream.held_acks if _delta(held.seq, frontier) > 0]
+        for held in sorted(ready, key=lambda a: _delta(a.seq, frontier)):
+            self._place_ack(stream, held)
+
+    def _place_ack(self, stream: _Stream, held: _PureAck) -> None:
+        """Store *held* now, or straight after the run that must precede it.
+
+        An open run, or one held for the peer's ack, starts at or before
+        the ACK's sequence number and has not been written yet, so the ACK
+        goes after it: a zero-length record covers no byte, so following a
+        run that ends past it overlaps nothing, and the run's boundaries
+        are those it would have had without the ACK.
+        """
+        if stream.run is not None:
+            stream.run.trailing_acks.append(held)
+        elif stream.unacked:
+            stream.unacked[-1].trailing_acks.append(held)
+        else:
+            self._write_ack(stream, held)
+
+    def _write_ack(self, stream: _Stream, held: _PureAck) -> None:
+        """Write a pure ACK as a zero-length record carrying its ``ack``.
+
+        It sits at its sequence number from the wire, including after a FIN,
+        where that number is one past the FIN's: the FIN occupies a sequence
+        number, as the specification's table of record ends says.  The
+        causal merge depends on it.  Two final ACKs each acknowledge the
+        other side's FIN, and the merge judges whether a peer has sent up to
+        an acknowledged position by where its records sit; a final ACK moved
+        back onto its FIN's number reads as not yet past it, and the two wait
+        on each other.  So a stream with a final pure ACK reaches one
+        position past its last byte, the FIN's.  Whether its extent should
+        count that position is a question for the specification
+        (zipline#168).
+        """
+        self.sink.record(
+            self.participant(stream.endpoint),
+            ts=held.ts,
+            payload=b"",
+            origins=(held.origin,),
+            hints=zpf.Hints(seq_start=held.seq, ack=held.ack),
+        )
+        self._stats.records += 1
+        self._stats.pure_acks += 1
+
     # ── reassembly ──────────────────────────────────────────────────────
 
     def _accept(self, stream: _Stream, seq: int, data: bytes, pkt: PacketView) -> None:
@@ -510,7 +683,8 @@ class TcpFlow(FlowTracker):
                 stream.ts_recent is None or _delta(tsval, stream.ts_recent) >= 0
             ):
                 stream.ts_recent = tsval
-            self._append(stream, seq, data, pkt, tsval=tsval, peer_count=stream.peer_count,
+            self._append(stream, seq, data, ts=pkt.ts_ticks, ack=pkt.ack, flags=pkt.tcp_flags,
+                         tsval=tsval, peer_count=stream.peer_count,
                          payload_offset=payload_offset)
             self._drain(stream, pkt)
         else:
@@ -522,8 +696,10 @@ class TcpFlow(FlowTracker):
         stream: _Stream,
         seq: int,
         data: bytes,
-        pkt: PacketView,
         *,
+        ts: int,
+        ack: int,
+        flags: int,
         tsval: int | None,
         peer_count: int,
         payload_offset: int | None,
@@ -534,15 +710,17 @@ class TcpFlow(FlowTracker):
         end = _advance(seq, len(data))
         stream.run.data.extend(data)
         stream.run.contributors.append(_Contribution(
-            seq=seq, end=end, tsval=tsval, ts=pkt.ts_ticks, ack=pkt.ack,
+            seq=seq, end=end, tsval=tsval, ts=ts, ack=ack,
             payload_offset=payload_offset,
         ))
         if alternates:
             stream.run.alternates.extend(alternates)
             stream.run.retransmit = True
         self._remember(stream, seq, end, tsval, peer_count)
-        self._attach_flags(stream, pkt)
+        self._attach_flags(stream, flags)
         stream.next_seq = end
+        if stream.held_acks:
+            self._release_acks(stream)
 
     def _hold(
         self, stream: _Stream, seq: int, data: bytes, pkt: PacketView, *, tsval: int | None,
@@ -579,6 +757,14 @@ class TcpFlow(FlowTracker):
                 return
             self._discard(stream, verdict, pkt.payload_offset, 0, len(data))
             return
+        assert stream.next_seq is not None
+        if not stream.pending:
+            stream.pending_anchor = stream.next_seq
+        else:
+            self._rebase_pending(stream)
+        # A segment is only held ahead of `next_seq`, so its offset from an
+        # anchor at or behind `next_seq` is its distance in serial order.
+        bisect.insort(stream.pending_order, (seq - stream.pending_anchor) % _SEQ_MOD)
         stream.pending[seq] = _Pending(data=data, flags=pkt.tcp_flags, ack=pkt.ack,
                                        ts=pkt.ts_ticks, payload_offset=pkt.payload_offset,
                                        tsval=tsval, peer_count=stream.peer_count)
@@ -623,7 +809,9 @@ class TcpFlow(FlowTracker):
                 stream,
                 stream.next_seq,
                 held.data[trim:],
-                _stamp(pkt, held),
+                ts=held.ts,
+                ack=held.ack,
+                flags=held.flags,
                 tsval=held.tsval,
                 peer_count=held.peer_count,
                 payload_offset=None if held.payload_offset is None else held.payload_offset + trim,
@@ -634,10 +822,39 @@ class TcpFlow(FlowTracker):
     def _release(self, stream: _Stream, seq: int) -> None:
         held = stream.pending.pop(seq)
         stream.pending_bytes -= len(held.data)
+        order = stream.pending_order
+        del order[bisect.bisect_left(order, (seq - stream.pending_anchor) % _SEQ_MOD)]
 
     def _next_pending(self, stream: _Stream) -> int:
+        """Return the held segment that comes first in serial order."""
+        self._rebase_pending(stream)
+        return (stream.pending_anchor + stream.pending_order[0]) % _SEQ_MOD
+
+    def _rebase_pending(self, stream: _Stream) -> None:
+        """Move the anchor up when `next_seq` has left it far behind.
+
+        Ordering by offset from the anchor is ordering by ``_delta`` from
+        ``next_seq``, which is what serial order means here, for as long as
+        the anchor sits at or behind every held segment and less than 2**31
+        behind ``next_seq``.  The first holds by construction: the anchor is
+        set at ``next_seq`` when the buffer fills from empty, and a segment
+        is held only ahead of ``next_seq``.  The second needs this: a stream
+        that moves on while one segment stays held drags the distance out,
+        so once it passes ``_MAX_WINDOW`` the anchor moves up to whichever is
+        earlier, ``next_seq`` or the first held segment.  Every offset
+        shrinks by the same amount and the order is unchanged.  It is O(held)
+        and happens about once per gigabyte a held segment survives.
+        """
         assert stream.next_seq is not None
-        return min(stream.pending, key=lambda s: _delta(s, stream.next_seq))  # type: ignore[arg-type]
+        if not stream.pending_order or (
+            _delta(stream.next_seq, stream.pending_anchor) <= _MAX_WINDOW
+        ):
+            return
+        first = (stream.pending_anchor + stream.pending_order[0]) % _SEQ_MOD
+        anchor = first if _delta(first, stream.next_seq) < 0 else stream.next_seq
+        shift = (anchor - stream.pending_anchor) % _SEQ_MOD
+        stream.pending_order[:] = [offset - shift for offset in stream.pending_order]
+        stream.pending_anchor = anchor
 
     # ── gaps ────────────────────────────────────────────────────────────
 
@@ -715,6 +932,8 @@ class TcpFlow(FlowTracker):
         stream.next_seq = target
         self._stats.gaps += 1
         stream.oldest_pending_ts = None
+        if stream.held_acks:
+            self._release_acks(stream)
         self._drain(stream, pkt)
 
     def _commit_remaining(self, stream: _Stream) -> None:
@@ -728,17 +947,17 @@ class TcpFlow(FlowTracker):
                 stream.committed_gaps.append(_Gap(stream.next_seq, target, held.tsval))
                 stream.next_seq = target
                 self._stats.gaps += 1
+                if stream.held_acks:
+                    self._release_acks(stream)
             self._release(stream, target)
             trim = max(0, _delta(stream.next_seq, target))
             self._append(
                 stream,
                 stream.next_seq,
                 held.data[trim:],
-                PacketView(
-                    packet_num=0, ts_ticks=held.ts, protocol="tcp",
-                    src="", dst="", src_port=0, dst_port=0,
-                    payload=b"", seq=target, ack=held.ack, tcp_flags=held.flags,
-                ),
+                ts=held.ts,
+                ack=held.ack,
+                flags=held.flags,
                 tsval=held.tsval,
                 peer_count=held.peer_count,
                 payload_offset=None if held.payload_offset is None else held.payload_offset + trim,
@@ -781,7 +1000,8 @@ class TcpFlow(FlowTracker):
         length = _delta(end, seq)
         if length <= 0:
             return
-        for gap in stream.committed_gaps:
+        gaps = self._gaps_from(stream, seq)
+        for gap in gaps:
             gap_start, gap_end = gap.start, gap.end
             overlap_start = max(_delta(seq, gap_start), 0)
             overlap_end = min(_delta(end, gap_start), _delta(gap_end, gap_start))
@@ -795,7 +1015,7 @@ class TcpFlow(FlowTracker):
                     self._stats.late_retransmitted_bytes += late
                 self._cite(payload_offset, _delta(gap_start, seq) + overlap_start,
                            late, late_reason)
-        for start, stop in self._unclaimed(stream, seq, end):
+        for start, stop in self._unclaimed(gaps, seq, end):
             lo, hi = _advance(seq, start), _advance(seq, stop)
             verdict = self._judge(stream, lo, hi, tsval, peer_count)
             if self._contested(stream, verdict, lo, hi, data[start:stop], pkt,
@@ -808,12 +1028,39 @@ class TcpFlow(FlowTracker):
         start = None if payload_offset is None else payload_offset + skip
         self.undecoded(start, length, reason=reason)
 
-    def _unclaimed(self, stream: _Stream, seq: int, end: int) -> list[tuple[int, int]]:
-        """Return the parts of ``[seq, end)`` no committed gap claimed, relative to *seq*."""
+    def _gaps_from(self, stream: _Stream, seq: int) -> list[_Gap]:
+        """Return the committed gaps that end past *seq*, oldest first.
+
+        Gaps are committed at ``next_seq``, which only moves forward, so the
+        list is ascending and its gaps do not overlap: once one ends at or
+        before *seq*, every older one does too, and none of them can hold a
+        byte of a repeat starting there.  So the walk is from the newest,
+        and costs the gaps a repeat can reach rather than every gap the
+        connection ever committed (#45).
+
+        Stopping there is also what keeps an old gap from claiming bytes it
+        has nothing to do with.  A gap is kept as wire sequence numbers,
+        which come round again every 2**32 bytes; a direction 4 GiB past a
+        loss is carrying the lost range's own numbers again, and a scan of
+        every gap would read a resend there as a late arrival into the old
+        hole.  The walk stops at the newest gap behind *seq*, long before it.
+        """
+        gaps = stream.committed_gaps
+        first = len(gaps)
+        while first and _delta(gaps[first - 1].end, seq) > 0:
+            first -= 1
+        return gaps[first:]
+
+    def _unclaimed(self, gaps: list[_Gap], seq: int, end: int) -> list[tuple[int, int]]:
+        """Return the parts of ``[seq, end)`` none of *gaps* claimed, relative to *seq*.
+
+        *gaps* is ascending and non-overlapping, as :meth:`_gaps_from` returns
+        them, so what they claim is already in order.
+        """
         length = _delta(end, seq)
-        claimed = sorted(
+        claimed = (
             (max(_delta(gap.start, seq), 0), min(_delta(gap.end, seq), length))
-            for gap in stream.committed_gaps
+            for gap in gaps
         )
         parts: list[tuple[int, int]] = []
         cursor = 0
@@ -833,11 +1080,29 @@ class TcpFlow(FlowTracker):
         self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
     ) -> None:
         """Record an accepted transmission so a later repeat of it can be judged."""
-        stream.recent.append(_Sent(seq=seq, end=end, tsval=tsval, peer_count=peer_count))
-        stream.recent_bytes += _delta(end, seq)
-        while len(stream.recent) > 1 and stream.recent_bytes > self._options.reorder_window:
-            oldest = stream.recent.popleft()
-            stream.recent_bytes -= _delta(oldest.end, oldest.seq)
+        # Every distance here runs forward — accepted transmissions only move
+        # on, and a length is never negative — so the plain modular distance
+        # is exact, and this path runs for every byte accepted.
+        recent = stream.recent
+        if recent:
+            last = recent[-1]
+            pos = last.pos + (seq - last.seq) % _SEQ_MOD
+        else:
+            pos = 0
+        recent.append(_Sent(seq, end, tsval, peer_count, pos))
+        stream.recent_bytes += (end - seq) % _SEQ_MOD
+        window = self._options.reorder_window
+        if stream.recent_bytes <= window:
+            return
+        head = stream.recent_head
+        while stream.recent_bytes > window and len(recent) - head > 1:
+            oldest = recent[head]
+            head += 1
+            stream.recent_bytes -= (oldest.end - oldest.seq) % _SEQ_MOD
+        if head >= 64 and head * 2 >= len(recent):
+            del recent[:head]
+            head = 0
+        stream.recent_head = head
 
     def _judge(
         self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
@@ -865,15 +1130,39 @@ class TcpFlow(FlowTracker):
         resend inside its original's tick, a fast retransmit looks exactly like
         a copy.  The rule then calls it a duplicate, which is the wrong way
         round for the specification's SHOULD, and is recorded as a limit.
+
+        ``recent`` is ascending, so the transmissions overlapping the range
+        are a contiguous run of it, found by bisection rather than a scan
+        (#43).  That needs ``_delta`` from *seq* to be monotone along it,
+        which it is while the whole of ``recent`` spans no more than
+        ``_MAX_WINDOW``: the usual case, since it holds ``reorder_window``
+        bytes.  Committed gaps between its entries can stretch it further,
+        and then every entry is scanned, as before.  Either way the same
+        transmissions are visited in the same order, so the verdict cannot
+        differ between the two.
         """
         if tsval is None:
             return TS_ABSENT
         covered = 0
         length = _delta(end, seq)
-        for sent in stream.recent:
+        recent, head = stream.recent, stream.recent_head
+        if head == len(recent):
+            # Nothing accepted yet: a segment wholly behind the handshake.
+            return TS_STALE
+        first, last = recent[head], recent[-1]
+        if last.pos + _delta(last.end, last.seq) - first.pos <= _MAX_WINDOW:
+            start = bisect.bisect_right(recent, 0, head, len(recent),
+                                        key=lambda sent: _delta(sent.end, seq))
+            contiguous = True
+        else:
+            start, contiguous = head, False
+        for index in range(start, len(recent)):
+            sent = recent[index]
             lo = max(_delta(sent.seq, seq), 0)
             hi = min(_delta(sent.end, seq), length)
             if hi <= lo:
+                if contiguous:
+                    break
                 continue
             if sent.tsval is None:
                 return TS_ABSENT
@@ -967,11 +1256,11 @@ class TcpFlow(FlowTracker):
     # ── emission ────────────────────────────────────────────────────────
 
     def _attach_flags(
-        self, stream: _Stream, pkt: PacketView, *, origin: int | None = None,
+        self, stream: _Stream, flags: int, *, origin: int | None = None,
     ) -> None:
-        """OR *pkt*'s flags into the open run, naming *origin* when its flags alone reach it."""
+        """OR TCP *flags* into the open run, naming *origin* when the flags alone reach it."""
         if stream.run is not None:
-            stream.run.flags |= pkt.tcp_flags
+            stream.run.flags |= flags
             if origin is not None:
                 stream.run.flag_origins.append(origin)
 
@@ -1078,10 +1367,7 @@ class TcpFlow(FlowTracker):
                 self._stats.overlap_bytes += len(alt.data)
                 self._cite(alt.payload_offset, 0, len(alt.data), REASON_OVERLAP)
 
-        flags = RecordFlags(0)
-        for tcp_bit, record_bit in _FLAG_MAP:
-            if run.flags & tcp_bit:
-                flags |= record_bit
+        flags = _RECORD_FLAGS[run.flags & 0xFF]
         if run.retransmit:
             flags |= RecordFlags.RETRANSMIT
 
@@ -1099,6 +1385,8 @@ class TcpFlow(FlowTracker):
         )
         self._stats.records += 1
         self._stats.payload_bytes += len(run.data)
+        for held in run.trailing_acks:
+            self._write_ack(stream, held)
 
 
 def _tsecr(pkt: PacketView) -> int | None:
@@ -1210,20 +1498,3 @@ def _late_reason(tsval: int | None, passer_tsval: int | None) -> str:
     # which only an original can be — but a fast retransmit on a path with no
     # delay can share the tick too, so the option cannot say, and neither do we.
     return REASON_LATE
-
-
-def _stamp(pkt: PacketView, held: _Pending) -> PacketView:
-    """Re-key a held segment's metadata onto a packet view for appending."""
-    return PacketView(
-        packet_num=pkt.packet_num,
-        ts_ticks=held.ts,
-        protocol="tcp",
-        src=pkt.src,
-        dst=pkt.dst,
-        src_port=pkt.src_port,
-        dst_port=pkt.dst_port,
-        payload=b"",
-        seq=pkt.seq,
-        ack=held.ack,
-        tcp_flags=held.flags,
-    )

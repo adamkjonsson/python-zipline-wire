@@ -1,0 +1,17 @@
+# Co-development against the sibling checkouts, in a venv of its own (#42):
+#   python -m venv .venv-dev
+#   .venv-dev/bin/pip install -e . -r requirements.txt
+#   .venv-dev/bin/pip install -r requirements-dev-siblings.txt
+#
+# The second command replaces the pinned releases with editable installs of
+# ../packeteer and ../python-zipline, so a change in either is picked up
+# without reinstalling.
+#
+# What this bypasses: the pins.  An editable install records its version
+# once, when it is made, so `pip list` and `zpf.__version__` go on naming
+# that version while the code that runs is whatever is checked out now.  The
+# pytest header prints each sibling's version *and* the file it was imported
+# from; in this venv the path is the checkout, and the version may be stale.
+# A result that is to be quoted as "against release X" comes from .venv.
+-e ../packeteer
+-e ../python-zipline

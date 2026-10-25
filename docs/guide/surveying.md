@@ -99,10 +99,11 @@ for reason, count in sorted(reader.skipped.items()):
     print(f"skipped {count} ({reason})")
 ```
 
-A conversation with zero `payload_bytes` will produce a session with no
-records — a pure-acknowledgement exchange, or a connection whose data was
-never captured.  Those sessions are still written, because the conversation
-existed, but they are worth knowing about in advance: they are also the case
+A conversation with zero `payload_bytes` carries no data — a
+pure-acknowledgement exchange, or a connection whose data was never
+captured.  Its session holds one zero-length record per pure ACK, or, under
+`--no-pure-acks`, no records at all.  Those sessions are still written,
+because the conversation existed; with no records they are also the case
 that makes a TCP session hint-less, which matters for {doc}`ordering`.
 
 ## Iterating packets directly

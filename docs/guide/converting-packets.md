@@ -95,9 +95,10 @@ claimed; zpfwire supplies the parts only it knows.
   transport header did not parse, or the fragments of a datagram that never
   completed, with a `comment` saying which.
 - **Left as `skipped`**: everything else nobody claimed — records that are not
-  packets (a field-granular decode's header fields), pure ACKs, packets of a
-  transport not asked for or of a filtered flow.  None of them carries content
-  of a stream this file produces.
+  packets (a field-granular decode's header fields), packets of a transport
+  not asked for or of a filtered flow, and pure ACKs under `--no-pure-acks`.
+  None of them carries content of a stream this file produces.  By default a
+  pure ACK is cited by its own zero-length record, since its `ack` fed one.
 
 The input's own Undecoded blocks are not copied: they name a file further up
 the chain, and following them is a consumer's walk, not this stage's.

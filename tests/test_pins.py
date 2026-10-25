@@ -10,6 +10,10 @@ to name by fixture.
 The six Timestamps fixtures added for ``0.3.0`` are *not* pinned: they are
 where the bytes are allowed to move, and each phase asserts what moved.
 
+Since ``0.6.0`` stores pure ACKs by default (#37), the ``0.2.0`` decode is
+what ``pure_acks=False`` writes, and is pinned that way; the default's own
+decode of the same sixteen is pinned beside it.
+
 The digest is of the decode, not the file — see
 :func:`helpers.decode_digest` for what that leaves out and why.
 """
@@ -21,7 +25,7 @@ import pathlib
 import pytest
 from helpers import CAPTURES, decode_digest
 
-from zpfwire import capture_to_zpf
+from zpfwire import ReassemblyOptions, capture_to_zpf
 
 PINNED: dict[str, str] = {
     "delay.pcap":
@@ -69,15 +73,65 @@ TIMESTAMPS_FIXTURES = frozenset({
 })
 """The fixtures ``0.3.0`` is allowed to change, and so does not pin."""
 
+PINNED_PURE_ACKS: dict[str, str] = {
+    "delay.pcap":
+        "sha256:67ceafe6746681d8f504e6b2d036d1e1a67830d34834f3be92e8031a884b4f4b",
+    "dns_example.pcapng":
+        "sha256:976cd6695a8df7c9763f120bf4f71250d43cd1ce4b31365193b722fafef8858d",
+    "fragmentation.pcap":
+        "sha256:2dd7247811a63f194e1fe3359112e4fb607b15af52b164ea15fc602219fe2697",
+    "http.pcap":
+        "sha256:eed2ee1f4b34feddcdb57c731def20363df94c8fae3bc65ae45c2665a8434511",
+    "http_example.pcapng":
+        "sha256:a1275155ef34966a37fc593f941ff4f21938c0e3fe0c09ca68c2edc7d7d4b17b",
+    "http_gzip.pcap":
+        "sha256:8772e5e0d5e7773e019e1c2f05507005fef486a425acfa70686dc21b1c31c75a",
+    "http_stream_1.pcap":
+        "sha256:d70ff30af9585105e7038f057194c908b0a87c4dcaa57879747860895b7a1aa0",
+    "no_errors.pcap":
+        "sha256:737518a72852e79850ea0be2613db0db77877d504a41915e5bd3cfe0e6a061f4",
+    "packet_loss.pcap":
+        "sha256:4e880517d2a19633f158ad40a0b87a8ba4fff9108479848197ccdbd467a6a54d",
+    "payload_corruption.pcap":
+        "sha256:b9a649482b13ecbb7ca8303bf35b7240c76f6c40c069310bb30cc5310f101557",
+    "retransmission.pcap":
+        "sha256:67660a8c7c16494e4899006b9a035ac4fab8639ef7f4d6dc0e27dc1d516a1b13",
+    "sctp.pcap":
+        "sha256:ce24ef9a7a157526737840cf379e312a31871e3a8b946f8619c6c48a981f3d09",
+    "stray_1.pcap":
+        "sha256:45fc7049746c4cb08ff7cd52c9c7985324f9dc27c3e140dab993cd11335c4661",
+    "sudden_termination_1.pcap":
+        "sha256:6c52a8a42d61e7bf31a132200867f0307ebde69b8f8ddd270a040ec7c3de2fe8",
+    "sudden_termination_2.pcap":
+        "sha256:a8a6d83c11a2da553002425a64b3a78105c657777d4ab1088efc37335dd69696",
+    "udp.pcap":
+        "sha256:f34393f69e11bf5ca29d0cee992ae3dfd8ebbc4ff721466114ddff431938e391",
+}
+"""The same fixtures under the ``0.6.0`` default, which stores pure ACKs (#37).
+
+Recorded once ``test_pure_acks.py`` had shown that each is the opt-out
+decode above plus one zero-length record per stored pure ACK, and nothing
+else.  ``udp.pcap`` and ``sctp.pcap`` hold no TCP and still moved: the
+Decoder's ``params_digest`` names the policy, and the policy changed.
+"""
+
 
 @pytest.mark.parametrize("name", sorted(PINNED))
 def test_the_decode_of_a_pre_timestamps_fixture_has_not_moved(
     tmp_path: pathlib.Path, name: str,
 ):
     out = tmp_path / "out.zpf"
-    capture_to_zpf(CAPTURES / name, out)
+    capture_to_zpf(CAPTURES / name, out, options=ReassemblyOptions(pure_acks=False))
 
     assert decode_digest(out) == PINNED[name]
+
+
+@pytest.mark.parametrize("name", sorted(PINNED_PURE_ACKS))
+def test_the_default_decode_with_pure_acks_has_not_moved(tmp_path: pathlib.Path, name: str):
+    out = tmp_path / "out.zpf"
+    capture_to_zpf(CAPTURES / name, out)
+
+    assert decode_digest(out) == PINNED_PURE_ACKS[name]
 
 
 def test_every_fixture_is_either_pinned_or_a_timestamps_fixture():

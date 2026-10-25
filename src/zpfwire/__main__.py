@@ -102,6 +102,7 @@ def _options(args: argparse.Namespace) -> ReassemblyOptions:
         session_timeout=args.session_timeout,
         coalesce=not args.no_coalesce,
         checksum=args.checksum,
+        pure_acks=not args.no_pure_acks,
     )
 
 
@@ -325,6 +326,11 @@ def main() -> None:
                             help="silence after which a conversation is closed")
     reassembly.add_argument("--no-coalesce", action="store_true",
                             help="emit one record per segment instead of per byte run")
+    reassembly.add_argument("--no-pure-acks", action="store_true",
+                            help="fold each pure ACK's ack into the next data record instead "
+                                 "of storing it as a zero-length record, as before 0.6.0: "
+                                 "smaller and faster to write, but readers lose the order "
+                                 "and timing pure ACKs carry")
     reassembly.add_argument("--checksum", choices=CHECKSUM_POLICIES, default="ignore",
                             help="what to do with a TCP segment whose checksum does "
                                  "not verify (default: ignore); a UDP datagram is "

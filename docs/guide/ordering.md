@@ -63,11 +63,13 @@ File Header, both of which zpfwire writes.
 
 ### The case that made this real
 
-A TCP session is hint-ful only if it *has* records.  A conversation of pure
-acknowledgements produces none — and a session with no records carries no
-`seq`/`ack`, so it is hint-less however TCP it is.  This is not a corner case:
-three of the four sessions in the project's `http_example.pcapng` fixture are
-exactly that.
+A TCP session is hint-ful only if it *has* records.  Before `0.6.0` a
+conversation of pure acknowledgements produced none, and a session with no
+records carries no `seq`/`ack`, so it was hint-less however TCP it was.  This
+was not a corner case: three of the four sessions in the project's
+`http_example.pcapng` fixture were exactly that.  Since `0.6.0` pure ACKs are
+stored by default, each as a zero-length record carrying its `ack`, so those
+sessions are hint-ful; `--no-pure-acks` brings the case back.
 
 The flag is written on the Session Descriptor, *before* any record exists, so
 a producer cannot know which kind of session it has when it has to decide.

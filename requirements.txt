@@ -1,13 +1,21 @@
 # Development environment; install with:
+#   python -m venv .venv
 #   .venv/bin/pip install -e . -r requirements.txt
 #
-# The two siblings are not on PyPI, so they are installed from the local
-# checkouts next to this one.
--e ../packeteer
--e ../python-zipline
+# The two siblings are not on PyPI, so they are installed from the release
+# tags this tree is built against.  `pip list` and `zpf.__version__` then say
+# what is actually running, which an editable install of a checkout does not
+# (#42).  tests/test_package.py holds these tags inside pyproject.toml's
+# ranges; move both together.
+#
+# To work against the sibling checkouts instead, use a second venv; see
+# requirements-dev-siblings.txt.
+packeteer @ git+https://github.com/adamkjonsson/packeteer.git@v0.20.0
+zpf @ git+https://github.com/adamkjonsson/python-zipline.git@v0.7.0
 
 # Testing
 pytest
+packaging
 tomli; python_version < "3.11"
 
 # Code standard

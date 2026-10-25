@@ -36,10 +36,11 @@ One `_Stream` per direction, keyed by the sender's endpoint:
 | `isn`, `role` | From the handshake, if seen |
 | `next_seq` | The next byte we expect; everything before it is committed |
 | `pending` | Segments held because earlier bytes have not arrived, keyed by sequence |
+| `pending_order`, `pending_anchor` | The keys of `pending` in serial order, as offsets from an anchor at or behind all of them, so the next held segment is the first entry |
 | `pending_bytes`, `oldest_pending_ts` | What the flush policy measures |
 | `run` | The record currently being accumulated |
 | `committed_gaps` | Ranges we gave up on, each with the TSval of the first segment that overtook it, so late arrivals can be told from retransmits — and, by that clock, delayed originals from resends |
-| `recent`, `recent_bytes` | The transmissions accepted most recently, as `(seq, end, TSval, peer_count)`, bounded by `reorder_window` bytes but never emptied |
+| `recent`, `recent_head`, `recent_bytes` | The transmissions accepted most recently, as `(seq, end, TSval, peer_count, pos)`, bounded by `reorder_window` bytes but never emptied; a list read from `recent_head` |
 | `peer_count` | Packets seen from the other direction, whatever they carried |
 | `ts_recent` | RFC 7323's `TS.Recent`: the TSval of the last segment accepted *in order at arrival* |
 
@@ -48,6 +49,15 @@ after their gap closed would be counted as ordinary duplicates — and a loss
 caused by our own timeout would be indistinguishable from a harmless
 retransmit.
 
+It is never pruned, but it is never scanned whole either
+([#45](https://github.com/adamkjonsson/python-zipline-wire/issues/45)).
+Gaps are committed at `next_seq`, which only moves forward, so the list is
+ascending and its gaps do not overlap. A repeat starting at `seq` is
+checked against the gaps from the newest back to the first that ends at or
+before `seq` (`_gaps_from`), since every older gap lies wholly behind it.
+Stopping there is also what keeps a gap from claiming bytes 4 GiB later
+that carry its sequence numbers again, which a full scan did.
+
 `recent` is what lets a repeat be judged: the entry covering its range says
 what TSval the bytes were first sent with and how many peer packets had been
 seen by then.  It is bounded by `reorder_window` so memory is bounded by the
@@ -55,6 +65,27 @@ same number the hold is, and it never drops its newest entry, so the copy
 that lands a microsecond after its original — the mirror-port shape — can
 always be judged whatever the window.  A repeat of something older is
 `stale`.
+
+Neither structure is scanned on the paths that run per packet
+([#43](https://github.com/adamkjonsson/python-zipline-wire/issues/43),
+[#44](https://github.com/adamkjonsson/python-zipline-wire/issues/44)).
+Both are kept in serial order, and both are searched by `bisect`. Serial
+order is only an order within half the sequence space, so each keeps a way
+to know it is still inside it:
+
+- **`pending_order`** holds offsets from `pending_anchor`, which is set at
+  `next_seq` when the buffer fills from empty, so it is at or behind every
+  held segment. When `next_seq` runs more than `_MAX_WINDOW` past it, which
+  takes a segment held across a gigabyte of progress, `_rebase_pending`
+  moves it up.
+- **`recent`** gives every entry an unwrapped position, `pos`, so its exact
+  span is known. `_judge` bisects when that span is at most `_MAX_WINDOW`,
+  which is the usual case, since `recent` holds `reorder_window` bytes. When
+  committed gaps between entries stretch it further, `_judge` scans every
+  entry, as it always did.
+
+`tests/test_tcp_order.py` checks both against the implementations they
+replaced, call for call.
 
 ## Accepting a segment
 
@@ -220,6 +251,14 @@ once every peer record it acks has been emitted, so an understated ack delays
 a record for a reason that is not in the capture.  Serial, never `max()`: a
 32-bit wrap in the middle of a run is exactly where a naive maximum inverts.
 
+**With pure ACKs stored**, a file holds two kinds of `ack`.  A data record's
+is the rule above: the strongest acknowledgement true when the run
+completed.  A pure ACK's record carries the `ack` of the one segment it is,
+at that segment's time.  Neither replaces the other.  Read as positions,
+they only ever add edges, so a consumer asking what the receiver had
+acknowledged by a given point takes the running maximum over both, in
+causal order, which is how the merge reads them anyway.
+
 ## The held run: `favor-acked`
 
 Under `overlap="favor-acked"` a run is not written when it closes.  `_flush`
@@ -275,13 +314,49 @@ reason both go through `finish()`.  A one-way capture never acks, so every
 run waits out `flush_timeout` (measured by the packets that do arrive, or
 the session's end) and falls back, counted.
 
-## Two things that produce no record
+## Pure acknowledgements
 
-**Pure acknowledgements.**  The specification permits zero-length ack-only
-records, but they would multiply file size for information that only matters
-once sessions are sequenced.  The consequence is real and worth knowing: a
-conversation of nothing but acks produces a session with *no records at all*,
-which makes it hint-less — see {doc}`writer-mapping`.
+A segment carrying neither bytes nor a SYN, FIN or RST is stored as a
+zero-length record holding its `ack`, by default since `0.6.0`
+([#37](https://github.com/adamkjonsson/python-zipline-wire/issues/37)), as
+the specification advises since `0.23`.  A pure ACK has no end, so no edge
+runs from it, but its `ack` places it after the peer bytes it covers.
+`pure_acks=False` (`--no-pure-acks`) folds each `ack` into the next data
+record instead, which is what every earlier release did, and writes exactly
+what `0.5.0` wrote, `params_digest` included.
+
+Where the record goes is the one real question.  It sits at the segment's
+**wire sequence number**, the sender's `snd.nxt`, and records of one
+participant are stored in serial order, so it may only follow every record
+of its sender that starts below that number.  That is certain once the
+**frontier** has reached it: `next_seq`, below which every byte has been
+placed or given up on, or one past the FIN once everything before the FIN
+is in, since the FIN takes a number of its own.
+
+| Where the ACK's number is | What happens | In the fixtures |
+|---|---|---|
+| at the frontier | placed now | 96% |
+| ahead of it | held until the frontier passes it; every place the frontier moves releases what it passed, before a run can open beyond it | 1% (all after a FIN) |
+| sender has sent nothing yet | its stream begins here, as it would at a first data segment | 3% |
+| behind it | not stored, counted as `pure_acks_unstored`; its `ack` folds into the next record, as with the option off | none |
+
+*Placed* means written now, or, if the sender has a run still open or held
+for its peer's ack, written straight after that run.  The run started at or
+before the ACK's number and has not been written yet, so it must come first.
+A zero-length record covers no byte, so following a run that ends beyond it
+overlaps nothing, and the run's boundaries are the ones it would have had
+without the ACK.  Storing pure ACKs changes no data record; the suite checks
+that every fixture converts to what the opt-out writes plus the pure-ACK
+records.
+
+**After a FIN** the ACK still sits at its wire number, one past the FIN's.
+The causal merge needs it there: each side's final ACK acknowledges the
+other's FIN, and the merge judges a peer's progress by where its records
+sit, so moved back onto its FIN the final ACK reads as not past it, and the
+two wait on each other.  The stream then reaches one position past its last
+byte, the FIN's.
+
+## One thing that produces no record
 
 **A FIN on its own segment.**  When a FIN rides along with data the record
 carries the flag; when it arrives alone, the direction's close is carried by
