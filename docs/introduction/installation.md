@@ -87,7 +87,7 @@ combination nobody ran.
 
 ```bash
 .venv/bin/pytest                                    # tests
-ruff check src/ tests/ docs/                        # lint, must be silent
+ruff check src/ tests/ docs/ tools/ benchmarks/     # lint, must be silent
 .venv/bin/sphinx-build -W docs docs/_build/html     # docs, warnings are errors
 ```
 

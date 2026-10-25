@@ -62,6 +62,10 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 - Installation, contributing and the README describe the two venvs, and
   that a new sibling release moves the tag in `requirements.txt` and the
   range in `pyproject.toml` together.
+- The contributing guide describes `tools/byte_identity.py`, which checks
+  that this tree converts every fixture to the bytes a release wrote, and
+  `benchmarks/reassembly.py`, which times the reassembler. Both are linted
+  with the rest of the tree.
 
 ---
 

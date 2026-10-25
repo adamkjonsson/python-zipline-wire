@@ -26,7 +26,7 @@ jobs:
           pip install -e . -r requirements.txt
       - name: Lint with ruff
         working-directory: python-zipline-wire
-        run: ruff check src/ tests/ docs/
+        run: ruff check src/ tests/ docs/ tools/ benchmarks/
 
   test:
     name: pytest (py${{ matrix.python-version }})

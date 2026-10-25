@@ -46,13 +46,37 @@ Run all three before pushing.
 
 ```bash
 .venv/bin/pytest                                    # tests — must be green
-ruff check src/ tests/ docs/                        # lint — zero warnings
+ruff check src/ tests/ docs/ tools/ benchmarks/     # lint — zero warnings
 .venv/bin/sphinx-build -W docs docs/_build/html     # docs — warnings are errors
 ```
 
 These are the same checks CI runs.  The docs build is not a formality: `-W`
 turns a broken cross-reference or a stale autodoc target into a failure, so
 renaming a public name without updating its API page fails here.
+
+## A change that must not move output
+
+A refactor or a speed fix claims that every conversion still writes the same
+bytes. The suite alone cannot back that claim, because `tests/test_pins.py`
+deliberately leaves the TCP Timestamps fixtures unpinned. Run the
+byte-identity check against the last release instead:
+
+```bash
+.venv/bin/python tools/byte_identity.py                    # against v0.5.0
+.venv/bin/python tools/byte_identity.py --baseline v0.4.0
+```
+
+It checks the baseline out into a temporary worktree and runs both trees
+against the same installed siblings. For each fixture it compares whole
+output files and conversion stats across every overlap policy, binary and
+JSONL, `--sequenced`, a `.zpf`-of-packets input, and the pcap export. The
+only thing normalised is zpfwire's own version stamp. It exits non-zero on
+any difference and names each one.
+
+For the speed half of the claim, `benchmarks/reassembly.py` times the
+reassembler on the synthetic shapes the performance issues were found on,
+and a real capture end to end. It is not a test; record its figures where
+the change is argued, before and after, from `.venv` (see *Setup*).
 
 ## Code style
 
