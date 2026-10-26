@@ -28,13 +28,18 @@ A change that moves output by default, behind an option that restores the
 old output, is checked with that option: ``--option NAME=VALUE`` sets a
 :class:`~zpfwire.options.ReassemblyOptions` field in every policy, in each
 tree that has the field, and the report names it.  Since ``0.6.0`` stores
-pure ACKs by default, the check against ``v0.5.0`` is run with
+pure ACKs by default, a check against ``v0.5.0`` or older is run with
 ``--option pure_acks=false``.
+
+The baseline is the most recent release tag reachable from ``HEAD`` unless
+``--baseline`` names another ref, so the default does not go stale at each
+release.
 
 Usage::
 
-    .venv/bin/python tools/byte_identity.py --option pure_acks=false
-    .venv/bin/python tools/byte_identity.py --baseline v0.5.0 --keep
+    .venv/bin/python tools/byte_identity.py                  # against the last release
+    .venv/bin/python tools/byte_identity.py --baseline v0.5.0 --option pure_acks=false
+    .venv/bin/python tools/byte_identity.py --baseline 1b9f091 --keep
 
 Exits ``0`` when every output matches, ``1`` otherwise.
 """
@@ -69,12 +74,18 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--baseline", default="v0.5.0", help="git ref to compare against")
+    parser.add_argument("--baseline",
+                        help="git ref to compare against (default: the last release tag)")
     parser.add_argument("--keep", action="store_true",
                         help="keep the work directory and print where it is")
     parser.add_argument("--option", action="append", default=[], metavar="NAME=VALUE",
                         help="set a ReassemblyOptions field, as JSON, in every tree that has it")
     args = parser.parse_args()
+    if args.baseline is None:
+        args.baseline = subprocess.run(
+            ["git", "-C", str(ROOT), "describe", "--tags", "--abbrev=0", "--match", "v*"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
     options = {}
     for setting in args.option:
         name, _, value = setting.partition("=")

@@ -161,7 +161,8 @@ ReassemblyOptions(overlap="favor-acked", acked_hold=10.0)
 ```
 
 Set, it is the hold's only bound, so the memory it takes is the traffic it
-spans.  Measured by the fidelity tool on a 1 MiB transfer at a 1 s RTO with a
+spans.  Measured by the fidelity tool (`tools/fidelity.py`; see
+{doc}`../internals/contributing`) on a 1 MiB transfer at a 1 s RTO with a
 fifth of its segments corrupted, the default hold keeps about 90 corrupted
 copies a run, every byte of them in `acked_fallback_bytes`; a 10 s hold keeps
 none.  Left out of `params_digest` while `None`, so a policy that does not

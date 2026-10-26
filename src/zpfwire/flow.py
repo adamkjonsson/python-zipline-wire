@@ -46,7 +46,9 @@ __all__ = [
 REASON_OVERLAP = "overlap-discarded"
 """Undecoded reason for retransmitted bytes dropped because the range was already accepted.
 
-The sender resent; the record covering the range carries ``retransmit``.
+The sender resent.  The record holding the range carries ``retransmit`` if it
+was not yet written when the resend came; a written record cannot change, and
+then this citation is what says so (#59).
 """
 
 REASON_DUPLICATE = "duplicate-discarded"

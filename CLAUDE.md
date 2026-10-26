@@ -109,6 +109,11 @@ warnings can only be used as a last resort, and **always ask before making such 
 - `src/zpfwire/` — the code
 - `tests/` — test suite, native pytest style; run with `.venv/bin/pytest`
 - `tests/captures/` — capture fixtures, copied from `../packeteer/testcases/`
+- `tools/` — development scripts, not in the wheel: `byte_identity.py` checks
+  that a change leaves output unchanged against the last release, and
+  `fidelity.py` scores conversions against the traffic packeteer generated
+  them from
+- `benchmarks/` — `reassembly.py`, which times the reassembler
 - `plans/` — release plans and the design record, historical rather than
   normative; `plans/PLAN.md` is the design and phasing this project was built to
 - `CHANGELOG.md` — the release history, kept current as work lands

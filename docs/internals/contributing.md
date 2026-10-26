@@ -62,14 +62,16 @@ deliberately leaves the TCP Timestamps fixtures unpinned. Run the
 byte-identity check against the last release instead:
 
 ```bash
-.venv/bin/python tools/byte_identity.py --option pure_acks=false   # against v0.5.0
-.venv/bin/python tools/byte_identity.py --baseline v0.4.0 --option pure_acks=false
+.venv/bin/python tools/byte_identity.py                    # against the last release tag
+.venv/bin/python tools/byte_identity.py --baseline 1b9f091  # against any ref
 ```
 
-A change that moves output by default, behind an option that restores what
-came before, is checked with that option set: `--option NAME=VALUE` sets a
-`ReassemblyOptions` field, as JSON, in each tree that has it. Since `0.6.0`
-stores pure ACKs by default, that is `--option pure_acks=false`.
+With no `--baseline` it compares against the most recent release tag
+reachable from `HEAD`. A change that moves output by default, behind an
+option that restores what came before, is checked with that option set:
+`--option NAME=VALUE` sets a `ReassemblyOptions` field, as JSON, in each
+tree that has it. Since `0.6.0` stores pure ACKs by default, a check
+against `v0.5.0` or older takes `--option pure_acks=false`.
 
 It checks the baseline out into a temporary worktree and runs both trees
 against the same installed siblings. For each fixture it compares whole
@@ -93,7 +95,7 @@ packet. zpfwire converts the impaired capture, and the tool scores the
 `.zpf` against what was sent:
 
 ```bash
-.venv/bin/python tools/fidelity.py --out fidelity/          # the full matrix, ~2.5 min
+.venv/bin/python tools/fidelity.py --out fidelity/          # the full matrix, ~3.5 min
 .venv/bin/python tools/fidelity.py --shape prototype --seeds 10
 ```
 

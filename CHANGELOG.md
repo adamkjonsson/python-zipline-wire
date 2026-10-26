@@ -193,6 +193,18 @@ which change moves which.
   ([packeteer#228](https://github.com/adamkjonsson/packeteer/issues/228)), so
   `require_timestamps` is measured against a forger who knows the clock as
   well as one who does not.
+- The testing page lists `test_fidelity.py`, `test_pure_acks.py` and
+  `test_tcp_order.py`. The contributing guide's byte-identity commands no
+  longer assume `0.5.0`: `tools/byte_identity.py` now compares against the
+  last release tag by default. Pages that quote the fidelity tool say where
+  it is.
+- The reassembler's internals page describes this release's run
+  boundaries, flags, FIN records, judgement and `favor-acked` hold. It no
+  longer describes two helpers removed in `0.3.0` and `0.6.0`, nor says a
+  bare FIN gets no record. The zpf mapping documents the zero-length pure-ACK
+  and FIN records, the first missing since `0.6.0`, and where `retransmit`
+  now goes. `ReassemblyOptions.overlap` no longer calls `favor-old` the only
+  policy, which it has not been since `0.3.0`.
 
 ---
 

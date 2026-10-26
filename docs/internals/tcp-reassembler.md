@@ -40,9 +40,14 @@ One `_Stream` per direction, keyed by the sender's endpoint:
 | `pending_bytes`, `oldest_pending_ts` | What the flush policy measures |
 | `run` | The record currently being accumulated |
 | `committed_gaps` | Ranges we gave up on, each with the TSval of the first segment that overtook it, so late arrivals can be told from retransmits — and, by that clock, delayed originals from resends |
-| `recent`, `recent_head`, `recent_bytes` | The transmissions accepted most recently, as `(seq, end, TSval, peer_count, pos)`, bounded by `reorder_window` bytes but never emptied; a list read from `recent_head` |
+| `recent`, `recent_head`, `recent_bytes` | The transmissions accepted most recently, as `(seq, end, TSval, peer_count, pos, crc)`, bounded by `reorder_window` bytes but never emptied; a list read from `recent_head` |
+| `resends` | The last 64 repeats judged resends and discarded, with their bytes, so that a copy of one is judged a copy (#56) |
 | `peer_count` | Packets seen from the other direction, whatever they carried |
 | `ts_recent` | RFC 7323's `TS.Recent`: the TSval of the last segment accepted *in order at arrival* |
+| `syn_timestamps` | Whether this direction's SYN carried the option; with the peer's, the option is negotiated (`require_timestamps`, #57) |
+| `sent_end`, `peer_acked` | One past the furthest number seen from this direction, and the furthest ack its peer sent that does not exceed it (#62) |
+| `fin_seq`, `fin_placed`, `fin_deferred` | Where the FIN sits, whether a record carries it yet, and a bare FIN waiting for the bytes before it (#60) |
+| `unacked`, `released` | Under `favor-acked`: runs held for the peer's ack, and a CRC per segment of runs a bound released, to judge a late resend (#54) |
 
 `committed_gaps` is the one that earns its keep.  Without it, bytes arriving
 after their gap closed would be counted as ordinary duplicates — and a loss
@@ -100,7 +105,6 @@ if _delta(seq, stream.next_seq) < 0:         # 2. partially already seen
     overlap = _delta(stream.next_seq, seq)
     self._count_repeat(...)                  #    cite the leading trim
     data = data[overlap:]; seq = stream.next_seq
-    self._mark_retransmit(stream)
 
 if seq == stream.next_seq:                   # 3. contiguous
     self._append(...); self._drain(...)
@@ -120,31 +124,43 @@ is where reordering is actually undone.
 Every discard of already-seen bytes — cases 1 and 2 above, a repeat of a
 held segment in `_hold`, and in `_drain` both the trim of a held segment and
 a held segment the fill covered wholly — goes through `_judge`, which
-returns one of four verdicts.  All five sites flag alike: until `0.5.0` the
-last one discarded without flagging, by inheritance rather than decision
-([#31](https://github.com/adamkjonsson/python-zipline-wire/issues/31)), and
-the record covering its range is always the open run, since the fill was
-appended in the same call.
+returns one of four verdicts.  A resend flags **the record holding its
+range**, if that record is still open or held: a record cannot change once
+written, and a resend usually comes an RTO after its record was, so most
+resends flag nothing and their citation records them (#59).  A repeat of a
+held segment marks the `_Pending`, which carries the flag into its run.
+Before `0.7.0` the flag went on whichever run was open.
 
-| Verdict | When | Counted as | Cited as | Flags the run |
-|---------|------|------------|----------|---------------|
-| duplicate | both carried the option, same TSval, `peer_count` unchanged, range fully covered by `recent` | `duplicate_bytes` | `duplicate-discarded` | no |
-| retransmit | option on both, and either a different TSval or a peer packet between | `overlap_bytes` | `overlap-discarded` | yes |
+| Verdict | When | Counted as | Cited as | Flags its record |
+|---------|------|------------|----------|------------------|
+| duplicate | both carried the option, same TSval, `peer_count` unchanged, the same bytes, range fully covered by `recent` | `duplicate_bytes` | `duplicate-discarded` | no |
+| retransmit | option on both, and a different TSval, a peer packet between, or other bytes | `overlap_bytes` | `overlap-discarded` | yes |
 | `absent` | either side without the option | `overlap_bytes`, `ts_fallback["absent"]` | `overlap-discarded` | yes |
 | `stale` | option on both, but the range is not covered by `recent` | `overlap_bytes`, `ts_fallback["stale"]` | `overlap-discarded` | yes |
 
 The third clause of *duplicate* is the one that answers the coarse-tick
 objection: a fast retransmit is triggered by the peer's duplicate ACKs, which
 sit in the capture between the original and the resend, so `peer_count`
-differs; a mirror copy follows its original with nothing between.  Content
-is not compared — a resend carries the same bytes as its original unless one
-was corrupted in flight, and corruption is the checksum policy's business.
+differs; a mirror copy follows its original with nothing between.  The
+fourth answers a forger who stamps the right clock: a copy is byte-identical
+by definition (#61).  `_same_bytes` compares the bytes while a run still
+holds them, and once they are written requires the same packet — the range
+of one `recent` entry and its CRC32.  `_judge` wraps `_judge_clock`, the
+`recent` scan #43 made a bisection and `tests/test_tcp_order.py` checks
+against its `0.5.0` reference; around it sit the byte clause and `resends`,
+since a copy of a resend that was itself discarded is a copy of *that*,
+not of the original (#56).
 
-`_judge` and `_late_reason` are the only places the Timestamps option is
-*consulted*; `_tsval` is the only place it is *read*.  A repeat of a held
-segment is judged against the `_Pending` directly rather than through
-`recent`, since the held segment is the transmission the repeat may be a
-copy of.
+`_judge`, `_late_reason` and `_unstamped` (below) are the places the
+Timestamps option is *consulted*; `_tsval` and `_tsecr` are where it is
+*read*.  A repeat of a held segment is judged against the `_Pending`
+directly rather than through `recent`, since the held segment is the
+transmission the repeat may be a copy of.
+
+**RFC 7323 §3.2**, under `require_timestamps` (#57): `_unstamped` drops a
+non-SYN, non-RST segment without the option once both SYNs carried it —
+first thing in `packet()`, so its bytes, ack and flags never happen — and
+cites its payload `timestamp-missing`.
 
 ### PAWS, and the far side of a hole
 
@@ -206,7 +222,7 @@ self._flush(stream)                                    # close the current run
 stream.committed_gaps.append((stream.next_seq, target))
 stream.next_seq = target                               # jump the hole
 self._stats.gaps += 1
-self._drain(stream, pkt)
+self._drain(stream, ends_previous=False)
 ```
 
 The flush before the jump matters: the record that has been accumulating ends
@@ -223,8 +239,20 @@ than dropping it, committing gaps as it goes.
 ## Record granularity
 
 Both "one record per segment" and "coalesce contiguous bytes" are conformant
-byte runs.  The default coalesces, flushing on PSH, on a gap, on FIN or RST,
-at a timeout, and at end of capture.  `--no-coalesce` flushes every segment.
+byte runs.  The default coalesces.  A run ends:
+
+- **where a segment's bytes join it and the segment says so** — at its PSH,
+  or at once under `--no-coalesce` — in sequence order, not arrival order
+  (#53).  `_ends_run` decides; `_drain` applies it to each drained segment,
+  lazily, just before the next is appended, since a superseded held segment
+  belongs to the open run and must still find it open.  A held, pushed
+  segment ends nothing until it is placed;
+- **when the peer answers it** (`_answered`, #55): a peer segment carrying
+  data or a FIN that acknowledges any of its bytes.  What the sender writes
+  next was written after that answer, and in one record with the bytes
+  before it would straddle the peer's message, which no causal order can
+  place.  A pure ACK closes nothing, so one-way transfers still coalesce;
+- on a gap, on FIN or RST, at a timeout, and at end of capture.
 
 A run carries three hints, and all three are extremes over its contributing
 packets rather than values from whichever packet happened to be appended last:
@@ -268,17 +296,21 @@ ascending `seq_start` — and it is written by one of three things:
 | Trigger | Where | Verdict for a contested range |
 |---------|-------|-------------------------------|
 | The peer's ack covers the run's end | `_settle`, from `packet()` on every peer packet carrying `ACK`, *before* that packet's own bytes are taken | the alternate's own evidence, below |
-| `flush_timeout` since the run closed, or `unacked_bytes > reorder_window` | `_settle_stale`, on every packet and at `_flush` | fallback: `favor-old`, counted |
+| `flush_timeout` since the run closed, or `unacked_bytes > reorder_window` — or, with `acked_hold` set, `acked_hold` alone (#32) | `_settle_stale`, on every packet and at `_flush` | fallback: `favor-old`, counted; the run's segments are remembered by CRC in `released`, so a resend arriving later that disagrees is counted too (#54) |
 | Session end | `finish()`, after `_commit_remaining` and `_flush` | fallback: `favor-old`, counted |
 
-**What is held against a run.**  A repeat judged a *retransmission* whose
-bytes **differ** from what the run holds becomes an `_Alternate` on that run
-— `(seq, end, tsval, data, ts, ack, payload_offset)` — via `_contested`,
-which is consulted at every site `_discard` is, and answers *taken* (do not
-count or cite yet: which copy loses is not known) or *not taken* (discard as
-usual: the policy is `favor-old`, the verdict is a duplicate or a fallback —
-no second clock to match an echo against — or the copies agree, where the
-choice is moot).  A repeat of a *held* segment goes onto the `_Pending`'s
+**What is held against a run.**  A repeat judged a *retransmission*, or
+`stale` (it carries its own clock too), whose bytes **differ** from what the
+run holds becomes an `_Alternate` on that run — `(seq, end, tsval, data, ts,
+ack, payload_offset)` — via `_contested`, which is consulted at every site
+`_discard` is, and answers *taken* (do not count or cite yet: which copy
+loses is not known) or *not taken* (discard as usual: the policy is
+`favor-old`; the repeat is a duplicate or carries no option, so there is no
+second clock to match an echo against; the copies agree, where the choice is
+moot; or the peer had **already acknowledged** the range, so the receiver
+chose with only the first copy to hand and drops this one as old data, #62).
+That last test reads `peer_acked`, which only takes an ack that does not
+exceed `sent_end`: a forged segment copies a later segment's ack.  A repeat of a *held* segment goes onto the `_Pending`'s
 own alternates and is carried into the run with it, clipped by any trim.
 Only disagreeing copies are kept, so memory is bounded by genuine
 disagreements rather than by repeats.
@@ -298,12 +330,14 @@ echo equals the alternate's TSval and no kept contributor's — then the bytes
 are spliced in, the displaced contributor(s) are cited as the losers and cut
 out of `contributors` (`_without`), and the alternate joins them; otherwise
 the alternate is the loser, cited, and counted as a fallback if it was
-undecided or its ack carried no option.  The hints are then computed from
-the contributors as finally chosen (`_hints`), which is why they moved from
-incremental fields on `_Run` to a function: a swapped-in resend is the last
-contributor and takes `ts` with it, and the copy it displaced stops counting
-towards `ts_first`.  For `favor-old` the function returns exactly what the
-incremental fields did — the sixteen pins are the proof.
+undecided, its ack carried no option, or its echo named neither copy or both
+(#54, #61).  **A swapped-in copy is a record of its own** (`_pieces`, #55):
+it is a resend sent after the peer answered the bytes around it, so in one
+record with them its time and ack would date the whole run after that
+answer.  Each piece's hints are computed from the contributors inside it
+(`_inside`, `_hints`); the run's PSH or FIN goes on the last piece, and what
+trails the run — pure ACKs, a FIN record — follows the piece it falls in,
+since records are stored in serial order.
 
 **Interactions.**  `coalesce=False` closes a run per segment; each is held
 and settled by the same rule, just more of them.  `--sequenced` is
@@ -356,13 +390,23 @@ sit, so moved back onto its FIN the final ACK reads as not past it, and the
 two wait on each other.  The stream then reaches one position past its last
 byte, the FIN's.
 
-## One thing that produces no record
+## The SYN and the FIN
 
-**A FIN on its own segment.**  When a FIN rides along with data the record
-carries the flag; when it arrives alone, the direction's close is carried by
-the Session End reason instead of an empty record.
+**A FIN ends the record that ends where it sits** (`_close`, `_place_fin`,
+#60).  Carried with data, it is on that record.  Arriving alone, it goes on
+the open run if one ends there; under `favor-acked` it trails the held last
+run; and when the last run is already written — a pushed last segment, then
+a bare FIN, the usual close — it is a zero-length record at its sequence
+number, as a pure ACK is.  A bare FIN beyond a hole waits in `fin_deferred`
+for the record that will end there, and if the bytes before it never come it
+is written at the session's end.  A FIN the stream has already run past —
+a forged segment carried it beyond — marks the open run instead, since no
+record may be written below one already out.  Each direction's FIN is placed
+once.  A direction first seen at its FIN, in a capture of only the teardown,
+begins there.  Before `0.7.0` a bare FIN after a pushed segment reached no
+record at all.
 
-A SYN *does* get a record, because it is the one event whose time would
+A SYN gets a record too, because it is the one event whose time would
 otherwise be nowhere in the file.  It sits at `isn + 1` — the stream origin —
 and **not** at the `isn`: the SYN consumes a sequence number but delivers no
 byte, so a record at the `isn` is one below the origin, where the offset
@@ -395,13 +439,12 @@ disagree with the stack it emulates.  PAWS and the far-side rule both read
 it, and this is the invariant they rest on; the test that catches an
 over-eager update is the delayed original behind a hole.
 
-**The `_stamp` helper.**  Draining a held segment appends it with the *held*
-packet's timestamp, flags and ack, not the arriving packet's, so a run's
-hints reflect the packets that actually carried its bytes.  A synthetic
-`PacketView` carries that metadata; it has `payload=b""` because the payload
-travels separately.  `_commit_remaining` builds the same kind of view at end
-of capture.  Both fold through `_append`, which is why the three-hint rule
-above lives there and nowhere else.
+**Draining appends the held packet's metadata.**  A held segment is
+appended with the *held* packet's timestamp, flags and ack, from its
+`_Pending`, not the arriving packet's, so a run's hints reflect the packets
+that actually carried its bytes.  `_drain` and `_commit_remaining` both fold
+through `_append`, which records each `_Contribution` the hints are computed
+from.
 
 **Citing discards.**  Every discard site must both count and cite.  Counting
 without citing loses the byte range; citing without counting breaks the

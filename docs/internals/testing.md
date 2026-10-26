@@ -1,6 +1,6 @@
 # Testing
 
-Some 810 tests, native pytest style, in a top-level `tests/`.  Run them with:
+Some 930 tests, native pytest style, in a top-level `tests/`.  Run them with:
 
 ```bash
 .venv/bin/pytest
@@ -125,6 +125,9 @@ be added to one list or the other, and a test says so.
 | `test_checksum.py` | The `checksum` policy: what is dropped, cited and counted, and what is deliberately not read as a failure |
 | `test_truncation.py` | Snaplen-cut captures: the count, the Source comment, and corruption staying unreportable |
 | `test_pins.py` | The sixteen pre-Timestamps fixtures' decodes, pinned |
+| `test_pure_acks.py` | Pure ACKs stored as zero-length records: where each sits, and what the opt-out writes |
+| `test_tcp_order.py` | The reassembler's bookkeeping decides exactly what the `0.5.0` reference did, call for call, on randomised streams |
+| `test_fidelity.py` | `tools/fidelity.py`: the truth and ledger, the scorer, order and timing, and the cases that must convert exactly |
 | `test_timestamps.py` | What the six real Timestamps captures say, rule by rule |
 | `test_packets.py` | A `.zpf` of packets as input: the differential against each fixture's capture conversion, the tunnel vector, selection, coverage |
 | `test_pcap_export.py` | The packets of a `.zpf` exported to a pcap |

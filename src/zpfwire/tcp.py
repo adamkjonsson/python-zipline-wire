@@ -22,8 +22,9 @@ quietly.
 
 The TCP Timestamps option (RFC 7323) is read where it can settle something
 the reassembler would otherwise have to assume.  Every transmission of a byte
-range carries its own TSval; a copy of one transmission does not.  That is
-what separates a mirror port's duplicate from a retransmission, and the
+range carries its own TSval; a copy of one transmission does not, and
+carries the same bytes.  That is what separates a mirror port's duplicate
+from a retransmission, or from a segment forged with the right clock, and the
 specification's ``retransmit`` flag names the sender's act, so the
 distinction reaches the file.  Where the option is absent the rule degrades
 to the conservative reading the specification asks for — every repeat is a
@@ -36,10 +37,15 @@ the transmission that advanced its window — and it arrives after both
 copies.  So every run is held after it closes until the peer's ack covers
 it, and only then written; see :meth:`TcpFlow._settle`.
 
+A run ends where a segment's PSH says, in sequence order, and where the
+peer's data answers it, so that no record straddles a peer message (#53,
+#55); see :meth:`TcpFlow._drain` and :meth:`TcpFlow._answered`.
+
 A segment carrying only an ``ack`` is written too, by default since
 ``0.6.0`` (#37): a zero-length record at its wire sequence number, placed
 once nothing of its sender's will be stored below that number; see
-:meth:`TcpFlow._pure_ack`.
+:meth:`TcpFlow._pure_ack`.  So is a bare FIN that no record ends at, since
+``0.7.0`` (#60); see :meth:`TcpFlow._place_fin`.
 """
 
 from __future__ import annotations

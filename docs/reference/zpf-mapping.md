@@ -125,6 +125,16 @@ direction when its SYN was captured.
 | `flags` | `SYN` |
 | `timestamp` | When the connection opened — the one time nothing else in the file records |
 
+Two more records carry no bytes, each at its segment's wire sequence
+number:
+
+- **a pure ACK's**, a segment with neither bytes nor SYN, FIN or RST, holding
+  its `ack` — by default since `0.6.0`, `--no-pure-acks` to fold the `ack`
+  into the next data record instead;
+- **a bare FIN's**, flagged `FIN`, when no record ends where the FIN sits —
+  the usual close, a pushed last segment and then a FIN alone — since
+  `0.7.0`.  A FIN that a record does end at is on that record.
+
 The timestamp rule is the specification's, not a choice: a retransmit
 contributing no accepted bytes does not move it, because an acknowledgement
 can never precede arrival of what it acknowledges.
@@ -134,10 +144,14 @@ sender resent bytes of the record's range.  A copy of one transmission — a
 mirror port, a two-interface capture — is not a retransmission and does not
 set it.  The reassembler tells the two apart by the TCP Timestamps option
 (since `0.3.0`, [#17](https://github.com/adamkjonsson/python-zipline-wire/issues/17)):
-a repeat with the same TSval as the transmission it repeats and nothing from
-the peer between the two is a duplicate, cited `duplicate-discarded` and
-setting no flag; any other repeat is a retransmission, and sets the flag on
-whichever record was accumulating when it was discarded.  When the option is
+a repeat with the same TSval as the transmission it repeats, nothing from
+the peer between the two, and the same bytes is a duplicate, cited
+`duplicate-discarded` and setting no flag; any other repeat is a
+retransmission, and sets the flag on the record holding the bytes it
+repeats, if that record is not yet written.  A record cannot change once it
+is out, and a resend usually comes an RTO later, so most resends flag
+nothing; their `overlap-discarded` citation is what records them.  Before
+`0.7.0` the flag went on whichever record was accumulating.  When the option is
 absent, or the original has aged out of the reassembler's memory, the
 specification's fallback for a producer that cannot tell applies — every
 repeat is a retransmission — and `stats.ts_fallback` counts that it did.

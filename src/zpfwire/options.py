@@ -67,22 +67,23 @@ class ReassemblyOptions:
     Attributes:
         overlap: Which copy wins when retransmitted bytes disagree with bytes
             already accepted. ``"favor-old"`` keeps what was seen first, as
-            most receiving stacks do — and it is the only policy, because it
-            is the only one a single pass can keep: once a record has been
-            written, a later copy of its bytes cannot replace them.  Any
-            other rule means holding every run until the choice can be made
-            — until the peer acknowledges it, say — which is a different
-            reassembler.  The field stays so the digest names the rule and
-            so a future policy is a new value, not a new option.
+            most receiving stacks do, and is what a single pass can always
+            keep: once a record has been written, a later copy of its bytes
+            cannot replace them.  ``"favor-acked"`` keeps the copy the
+            receiver kept, by holding each run until the peer's ack covers
+            it and reading the Timestamps echo; see :data:`OVERLAP_POLICIES`
+            and :attr:`acked_hold`.
         reorder_window: Bytes a direction may hold out of order before the
             oldest gap is committed. ``0`` disables buffering entirely.
         flush_timeout: Seconds a gap may stay unfilled, measured in capture
             time, before it is committed.
         session_timeout: Seconds of silence after which a session is closed
             with reason ``"timeout"``.
-        coalesce: Join contiguous segments into one record, flushing on PSH
-            and at every boundary. When ``False``, each segment becomes its
-            own record.
+        coalesce: Join contiguous segments into one record, ending it where
+            a segment's PSH says, in sequence order, where the peer's data
+            answers it, and at every boundary. When ``False``, each segment
+            becomes its own record, including those drained from the
+            reorder buffer.
         checksum: What to do with a TCP segment whose checksum does not
             verify. A receiver discards it and takes the retransmission that
             follows, which is what ``"drop"`` does; ``"ignore"`` converts it

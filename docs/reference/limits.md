@@ -144,10 +144,11 @@ What it cannot tell is a forged *acknowledgement* that only covers bytes
 already seen.  One such ack, from a forgery impersonating the other side,
 releases a run still holding a forgery before the real segment arrives, and
 the real copy then has nothing to be contested against.  The forged bytes
-stay, and nothing counts them.  In the fidelity tool's stamped-stray cells
-(three forgeries, each stamped with the impersonated side's clock and
-carrying its ack), 8 of 224 `favor-acked` runs end this way; 162 are exact,
-and in the other 54 every wrong byte is counted as a fallback.  A capture
+stay, and nothing counts them.  The fidelity tool, `tools/fidelity.py`
+(see {doc}`../internals/contributing`), measures it with three forgeries per
+run, each stamped with the impersonated side's clock and carrying its ack:
+8 of 224 `favor-acked` runs end this way, 162 are exact, and in the other 54
+every wrong byte is counted as a fallback.  A capture
 alone cannot authenticate an acknowledgement; an RFC 5961 receiver with
 its challenge ACKs does better, because it is in the conversation.
 
