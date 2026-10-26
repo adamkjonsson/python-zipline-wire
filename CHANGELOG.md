@@ -35,6 +35,223 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 
 ---
 
+## [0.7.0] - 2026-10-26
+
+**The fidelity release.**  Writes spec **v0.23**
+(`zpf.SPEC_VERSION == (0, 23)`), unchanged from `0.6.0`, against packeteer
+**0.21.0** and python-zipline **0.7.0**.
+
+**Breaking, in what a conversion writes, with no way back by option.**  Every
+change below that moves output was found by `tools/fidelity.py`
+([#52](https://github.com/adamkjonsson/python-zipline-wire/issues/52)), which
+generates TCP traffic under chosen impairments and scores the conversion
+against what each side sent.  Each one corrects a statement the file made
+that was false:
+- a record that straddled a peer message, which put a response before the
+  request it answers ([#53](https://github.com/adamkjonsson/python-zipline-wire/issues/53),
+  [#55](https://github.com/adamkjonsson/python-zipline-wire/issues/55));
+- a `retransmit` flag on bytes nobody resent
+  ([#59](https://github.com/adamkjonsson/python-zipline-wire/issues/59));
+- a close that no record carried
+  ([#60](https://github.com/adamkjonsson/python-zipline-wire/issues/60));
+- a copy that was not one, or a forgery that passed as one
+  ([#56](https://github.com/adamkjonsson/python-zipline-wire/issues/56),
+  [#61](https://github.com/adamkjonsson/python-zipline-wire/issues/61));
+- under `favor-acked`, corrupted or forged bytes kept, and not counted
+  ([#54](https://github.com/adamkjonsson/python-zipline-wire/issues/54),
+  [#62](https://github.com/adamkjonsson/python-zipline-wire/issues/62)).
+
+For anyone reproducing a `.zpf`, eleven of the sixteen pinned fixtures
+decode differently — `delay`, `fragmentation`, `http`, `http_example`,
+`http_gzip`, `http_stream_1`, `no_errors`, `packet_loss`,
+`payload_corruption`, `retransmission` and `stray_1` — and so does
+`tcp_wrap_ts`.  The entries below say which change moves which; seven of the
+eleven only gain the FIN records they lacked.
+
+**Two options, both off by default and out of the digest until set.**
+`acked_hold` lets `favor-acked` wait for a resend past `flush_timeout`
+([#32](https://github.com/adamkjonsson/python-zipline-wire/issues/32)), and
+`require_timestamps` applies RFC 7323 §3.2 to keep forged segments out
+([#57](https://github.com/adamkjonsson/python-zipline-wire/issues/57)).
+
+**What the tool measured.**  Over the cells its first baseline and its last
+sweep share, runs that put a message before one it depends on fell from
+5,412 of 19,978 to 220 of 20,328, every one of those a forged segment's ack
+(more runs score now that none is void); copies and resends misjudged fell
+from 9,681 to none; and no conversion of the 32,256 reads back unclean.  The tool is in `tools/`, not the wheel; a public
+`zpfwire.fidelity` is [#63](https://github.com/adamkjonsson/python-zipline-wire/issues/63),
+and UDP fidelity [#64](https://github.com/adamkjonsson/python-zipline-wire/issues/64).
+
+**packeteer 0.21.0 is the floor**, for the suite: every corrupted segment
+now fails its checksum with data both ways
+([packeteer#227](https://github.com/adamkjonsson/packeteer/issues/227)).
+
+### Added
+
+- `ReassemblyOptions.acked_hold` and `--acked-hold SECONDS`: under
+  `favor-acked`, how long a closed run may wait for the receiver's covering
+  ack, in place of `flush_timeout` and `reorder_window`
+  ([#32](https://github.com/adamkjonsson/python-zipline-wire/issues/32)).
+  A resend comes an RTO after the copy it replaces, and on a bulk transfer
+  at a 1 s initial RTO the default bounds release about 90 corrupted copies
+  a run before their resend arrives. A 10 s hold releases none. `None` by
+  default, and left out of `params_digest` while `None`.
+- `ReassemblyOptions.require_timestamps` and `--require-timestamps`: drop a
+  segment without the TCP Timestamps option on a connection whose SYNs both
+  carried it, as RFC 7323 §3.2 has a receiver do. Its bytes, ack and flags
+  are dropped, and its payload is cited as `timestamp-missing`
+  ([#57](https://github.com/adamkjonsson/python-zipline-wire/issues/57)).
+  Forged segments usually lack the option, and with it every stray scenario
+  in the fidelity sweep converts exactly. Off by default, because a
+  middlebox stripping options mid-connection would make it drop real data;
+  no real capture in the test corpus loses a segment to it. Counted in
+  `ConversionStats.ts_missing` and `ts_missing_bytes`, and left out of
+  `params_digest` while off. `zpfwire.flow.REASON_TS_MISSING` names the
+  reason.
+
+### Changed
+
+- **Breaking:** a coalesced run ends where the peer answers it
+  ([#55](https://github.com/adamkjonsson/python-zipline-wire/issues/55)).
+  A peer segment carrying data or a FIN that acknowledges bytes of the open
+  run closes it. Before, a run ended only at PSH, so an unpushed request's
+  run took in the next request, after the response had answered it. The
+  record then held bytes from both sides of the response, and both the
+  causal merge and `--sequenced` placed it after the response, so the
+  response read before the request it answers. That happened in 35 of 40
+  generated request/response runs. A pure ACK does not close a run, so a
+  one-way transfer still coalesces. Under `favor-acked`, a copy swapped in
+  for the one first seen is now a **record of its own** with its own
+  `timestamp` and `ack`. It is a resend sent after the peer answered the
+  bytes around it, and in one record with them it dated the whole run
+  after that answer. Files with request/response traffic sent without PSH,
+  and `favor-acked` files with a swap, are written differently; none of the
+  pinned fixtures is.
+- **Breaking:** a run ends at PSH where the pushed segment's bytes join it,
+  in sequence order, and `coalesce=False` holds for segments drained from
+  the reorder buffer
+  ([#53](https://github.com/adamkjonsson/python-zipline-wire/issues/53)).
+  Before, the flush followed the *arriving* packet, with two consequences:
+  - a held, pushed segment ended whichever unrelated run was open;
+  - a backlog drained after a hole filled became one record whatever PSHs it
+    held, even under `coalesce=False`, contrary to that option's documented
+    "each segment becomes its own record".
+
+  Moves `delay` (24 → 30 records) and `packet_loss` (8 → 35), along with
+  the FIN records below.
+- **Breaking:** `retransmit` flags the record holding the resent range
+  ([#59](https://github.com/adamkjonsson/python-zipline-wire/issues/59)).
+  Before, it was set on whichever run was open when the resend was
+  discarded, which could be a later record holding no resent byte. A
+  record cannot change once written, and a resend usually comes an RTO
+  later, so most resends now flag nothing. Their `overlap-discarded`
+  citation is what says they happened. Moves `payload_corruption` (5
+  spurious flags) and `retransmission` (7), whose records the flags had
+  split now merge, and `tcp_wrap_ts` (1).
+- **Breaking:** a bare FIN after a pushed last segment, the usual way a
+  sender closes, is written as a zero-length record at its sequence number,
+  as a pure ACK is
+  ([#60](https://github.com/adamkjonsson/python-zipline-wire/issues/60)).
+  It reached no record before. A FIN beyond a hole ends the record that ends
+  where it sits, not the run open when it arrived. Adds FIN records to all
+  eleven moved fixtures, including 40 to `http_stream_1`.
+- **Breaking:** a capture-point copy of a resend that was itself discarded
+  is judged a copy, cited `duplicate-discarded` and counted in
+  `duplicates`, not taken for another resend
+  ([#56](https://github.com/adamkjonsson/python-zipline-wire/issues/56)).
+  Every such copy in the fidelity sweep was misjudged, 9,681 of them; none
+  is now. No stream byte moves; citations and stats do.
+- **Breaking:** a repeat is a capture-point copy only if its bytes equal
+  those already accepted, as well as its clock
+  ([#61](https://github.com/adamkjonsson/python-zipline-wire/issues/61)).
+  A mirror's copy is byte-identical by definition. A segment forged with
+  the real segment's TSval used to pass as one: as `duplicate-discarded`
+  when it lost, and, arriving first, by making the real segment its "copy",
+  which `favor-acked` never contests. The bytes are compared directly while
+  a run still holds them. Once they are written, a copy has to be the same
+  packet: the range of one remembered transmission, and a CRC32 of its
+  bytes, kept for each accepted segment. Under `favor-acked`, a receiver's
+  echo that names *both* copies, which such a forgery makes it do, is
+  counted in `acked_fallback_bytes` like one that names neither. No fixture
+  moves: 198 of 198 outputs are byte-identical to the commit before. In
+  the fidelity sweep's stamped-stray cells, segments taken for a copy of a
+  forgery, or forgeries taken for a copy, go from 18 to 0 under every
+  policy, `coalesce=False` included, where every record is written at
+  once. Reassembly is 2–6% slower per packet on the benchmark's synthetic
+  shapes, for the CRC, and unchanged on `http_stream_1.pcap`.
+- **Breaking:** under `favor-acked`, a copy of bytes the peer has already
+  acknowledged is not contested: the receiver chose with only the first
+  copy to hand, and discards a later one as old data
+  ([#62](https://github.com/adamkjonsson/python-zipline-wire/issues/62)).
+  It is discarded and cited `overlap-discarded`, as before `favor-acked`.
+  Contested, it was decided by the next covering ack, whose echo can name
+  a later segment sent in the copy's clock tick, so a forgery could be
+  swapped in for the bytes the receiver kept. An ack only counts here if
+  it acknowledges bytes seen sent, since a forgery copies a later
+  segment's ack. In the fidelity sweep's stamped-stray cells, `favor-acked`
+  runs keeping forged bytes that nothing counts go from 49 to 8 of 224,
+  and no run is worse. No fixture moves. The 8 are a forged
+  acknowledgement, which `docs/reference/limits.md` now documents.
+- **Breaking:** under `favor-acked`, a repeat whose original has aged out
+  of the reassembler's memory (`ts_fallback["stale"]`) is contested like a
+  resend, since it carries its own clock for the receiver's echo to match.
+  A resend a full RTO behind a bulk transfer is usually such a repeat. More
+  corrupted copies are swapped out, so `favor-acked` files with late
+  resends are written differently
+  ([#54](https://github.com/adamkjonsson/python-zipline-wire/issues/54)).
+
+- **The packeteer range is `>=0.21.0,<0.22`**, up from `>=0.16.0,<0.21`.
+  The floor names what the *suite* needs, as it has since `0.16.0`:
+  `0.21.0` fails every corrupted segment's checksum with data in both
+  directions ([packeteer#227](https://github.com/adamkjonsson/packeteer/issues/227)),
+  which the fidelity tests of two-way corruption depend on. Before it, half
+  those runs carried a corrupted segment that verified, and were voided
+  rather than scored. The code needs nothing newer.
+
+### Fixed
+
+- `acked_fallback_bytes` counts every contested byte `favor-acked` wrote as
+  `favor-old` would ([#54](https://github.com/adamkjonsson/python-zipline-wire/issues/54)).
+  Two kinds went uncounted before:
+  - a resend arriving after a bound released its run, judged against a
+    digest of each released segment as written;
+  - an ack whose echo named neither copy, as a cumulative ack over several
+    resends does.
+
+  On a 1 MiB transfer at a 1 s RTO, the stat went from 0 to exactly the
+  bytes left wrong.
+- `capture_to_zpf`, `convert` and `packets_to_zpf` annotate `sink` as
+  `str | PathLike[str] | IO[bytes] | IO[str]`. All three take
+  `face="jsonl"`, which zpf writes to a text stream, so a caller passing an
+  `io.StringIO` was right at runtime and wrong to a type checker
+  ([#58](https://github.com/adamkjonsson/python-zipline-wire/issues/58)).
+
+### Documentation
+
+- The contributing guide describes `tools/fidelity.py`, which measures how
+  well a conversion represents the traffic that was actually sent. packeteer
+  generates a TCP conversation under chosen impairments, and the tool scores
+  the converted `.zpf` against what each side sent: byte by byte, in causal
+  order and in time ([#52](https://github.com/adamkjonsson/python-zipline-wire/issues/52)).
+  Its strays can carry a Timestamps option
+  ([packeteer#228](https://github.com/adamkjonsson/packeteer/issues/228)), so
+  `require_timestamps` is measured against a forger who knows the clock as
+  well as one who does not.
+- The testing page lists `test_fidelity.py`, `test_pure_acks.py` and
+  `test_tcp_order.py`. The contributing guide's byte-identity commands no
+  longer assume `0.5.0`: `tools/byte_identity.py` now compares against the
+  last release tag by default. Pages that quote the fidelity tool say where
+  it is.
+- The reassembler's internals page describes this release's run
+  boundaries, flags, FIN records, judgement and `favor-acked` hold. It no
+  longer describes two helpers removed in `0.3.0` and `0.6.0`, nor says a
+  bare FIN gets no record. The zpf mapping documents the zero-length pure-ACK
+  and FIN records, the first missing since `0.6.0`, and where `retransmit`
+  now goes. `ReassemblyOptions.overlap` no longer calls `favor-old` the only
+  policy, which it has not been since `0.3.0`.
+
+---
+
 ## [0.6.0] - 2026-10-25
 
 **The performance release, and the pure-ACK release.**  Writes spec
@@ -1081,7 +1298,8 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.3.0...v0.4.0

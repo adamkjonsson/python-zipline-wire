@@ -29,14 +29,14 @@ Verify the install:
 ```
 
 ```
-zpfwire 0.6.0 (zipline 0.23)
+zpfwire 0.7.0 (zipline 0.23)
 ```
 
 The test run's header names the build of each sibling it ran against:
 
 ```
 zpf 0.7.0 from …/.venv/lib/python3.14/site-packages/zpf/__init__.py
-packeteer 0.20.0 from …/.venv/lib/python3.14/site-packages/packeteer/__init__.py
+packeteer 0.21.0 from …/.venv/lib/python3.14/site-packages/packeteer/__init__.py
 ```
 
 ## Working against the sibling checkouts
@@ -76,7 +76,7 @@ something else.
 ```
 
 The wheel declares a range for each sibling, closed above:
-`zpf>=0.7.0,<0.8` and `packeteer>=0.16.0,<0.21`. Both siblings are in `0.x`,
+`zpf>=0.7.0,<0.8` and `packeteer>=0.21.0,<0.22`. Both siblings are in `0.x`,
 where every minor may break, so a range stops at the last minor this tree
 was tested against. `CHANGELOG.md` names those releases. With neither sibling
 on PyPI, installing the wheel needs them supplied, as `requirements.txt`

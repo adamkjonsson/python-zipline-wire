@@ -35,6 +35,7 @@ __all__ = [
     "REASON_LATE_RETRANSMITTED",
     "REASON_OVERLAP",
     "REASON_PAWS",
+    "REASON_TS_MISSING",
     "CaptureSink",
     "FlowKey",
     "FlowTracker",
@@ -45,7 +46,9 @@ __all__ = [
 REASON_OVERLAP = "overlap-discarded"
 """Undecoded reason for retransmitted bytes dropped because the range was already accepted.
 
-The sender resent; the record covering the range carries ``retransmit``.
+The sender resent.  The record holding the range carries ``retransmit`` if it
+was not yet written when the resend came; a written record cannot change, and
+then this citation is what says so (#59).
 """
 
 REASON_DUPLICATE = "duplicate-discarded"
@@ -98,6 +101,16 @@ Written only under ``checksum="drop"``, and never for UDP, which is kept: a UDP
 stream's offsets could not show a datagram missing.  Doubles as the skip key
 for the same packets, since a packet dropped before it reaches a session is
 skipped in exactly the sense the tally means.
+"""
+
+REASON_TS_MISSING = "timestamp-missing"
+"""Undecoded reason for a segment without the Timestamps option on a connection that negotiated it.
+
+RFC 7323 §3.2: once both SYNs carried the option, a receiver SHOULD silently
+drop a non-RST segment that lacks it — which is what a segment forged by a
+third party without it is.  Written only under ``require_timestamps``,
+which is off by default: a middlebox stripping options mid-connection would
+make the rule drop real data (#57).
 """
 
 _BYTES_EXIST = "bytes"

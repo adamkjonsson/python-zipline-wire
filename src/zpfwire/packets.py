@@ -433,7 +433,7 @@ class _PacketTarget:
 
 def packets_to_zpf(
     source: str | os.PathLike[str] | IO[bytes],
-    sink: str | os.PathLike[str] | IO[bytes],
+    sink: str | os.PathLike[str] | IO[bytes] | IO[str],
     *,
     content_type: str | None = None,
     link_type: int | None = None,
@@ -454,7 +454,8 @@ def packets_to_zpf(
     Args:
         source: Path to the input ``.zpf``, binary or JSONL, or an open
             binary stream.
-        sink: Path to write, or an open binary stream.
+        sink: Path to write, or an open stream: binary for the binary face,
+            text for JSONL.
         content_type: The label that makes a record a packet.  ``None``, the
             default, selects both of the format's own, ``net:ip`` and
             ``net:ethernet``, each parsed as the link type it names.  Any

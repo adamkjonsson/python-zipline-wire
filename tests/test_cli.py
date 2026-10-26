@@ -210,6 +210,21 @@ def test_the_policy_is_recorded_in_the_file(tmp_path: pathlib.Path,
         assert next(iter(reader.decoders.values())).params_digest == expected
 
 
+def test_the_0_7_0_options_reach_the_policy(tmp_path: pathlib.Path,
+                                            monkeypatch: pytest.MonkeyPatch):
+    """``--acked-hold`` and ``--require-timestamps`` are the API's two fields (#32, #57)."""
+    out = tmp_path / "out.zpf"
+    run(monkeypatch, "convert", str(CAPTURES / "no_errors.pcap"), "-o", str(out),
+        "--overlap", "favor-acked", "--acked-hold", "10", "--require-timestamps", "-q")
+
+    from zpfwire import ReassemblyOptions
+
+    expected = ReassemblyOptions(overlap="favor-acked", acked_hold=10.0,
+                                 require_timestamps=True).params_digest()
+    with zpf.open(out) as reader:
+        assert next(iter(reader.decoders.values())).params_digest == expected
+
+
 # ── filtering ───────────────────────────────────────────────────────────
 
 

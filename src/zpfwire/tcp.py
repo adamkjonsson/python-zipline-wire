@@ -22,8 +22,9 @@ quietly.
 
 The TCP Timestamps option (RFC 7323) is read where it can settle something
 the reassembler would otherwise have to assume.  Every transmission of a byte
-range carries its own TSval; a copy of one transmission does not.  That is
-what separates a mirror port's duplicate from a retransmission, and the
+range carries its own TSval; a copy of one transmission does not, and
+carries the same bytes.  That is what separates a mirror port's duplicate
+from a retransmission, or from a segment forged with the right clock, and the
 specification's ``retransmit`` flag names the sender's act, so the
 distinction reaches the file.  Where the option is absent the rule degrades
 to the conservative reading the specification asks for — every repeat is a
@@ -36,16 +37,24 @@ the transmission that advanced its window — and it arrives after both
 copies.  So every run is held after it closes until the peer's ack covers
 it, and only then written; see :meth:`TcpFlow._settle`.
 
+A run ends where a segment's PSH says, in sequence order, and where the
+peer's data answers it, so that no record straddles a peer message (#53,
+#55); see :meth:`TcpFlow._drain` and :meth:`TcpFlow._answered`.
+
 A segment carrying only an ``ack`` is written too, by default since
 ``0.6.0`` (#37): a zero-length record at its wire sequence number, placed
 once nothing of its sender's will be stored below that number; see
-:meth:`TcpFlow._pure_ack`.
+:meth:`TcpFlow._pure_ack`.  So is a bare FIN that no record ends at, since
+``0.7.0`` (#60); see :meth:`TcpFlow._place_fin`.
 """
 
 from __future__ import annotations
 
 import bisect
+import itertools
+import zlib
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import zpf
@@ -62,6 +71,7 @@ from zpfwire.flow import (
     REASON_LATE_RETRANSMITTED,
     REASON_OVERLAP,
     REASON_PAWS,
+    REASON_TS_MISSING,
     FlowTracker,
 )
 
@@ -82,6 +92,15 @@ _SEQ_HALF = _SEQ_MOD >> 1
 # than that is not a resend of anything; if its clock is newer than ours, it
 # is from *ahead*, past the half-space edge serial arithmetic cannot cross.
 _MAX_WINDOW = 1 << 30
+# Discarded resends remembered per direction, to judge their copies (#56).  A
+# mirror's copy arrives within microseconds; this many resends cannot pass in
+# that time.
+_RESENDS_KEPT = 64
+# Released favor-acked segments remembered per direction, to tell whether a
+# resend arriving after its run was written disagreed with it (#54).  At
+# 1,448 bytes a segment this reaches about 95 MB back, past any RTO's worth
+# of traffic, for a dictionary of this many small entries.
+_RELEASED_KEPT = 65_536
 
 END_FIN = "fin"
 """Session End reason when both directions closed cleanly."""
@@ -117,6 +136,11 @@ TS_STALE = "stale"
 
 _DUPLICATE = "duplicate"
 _RETRANSMIT = "retransmit"
+# Verdicts on a repeat that carries its own clock, so that the peer's echo can
+# still choose between it and the copy kept: a resend, and a repeat whose
+# original has aged out of `recent` — a resend by the conservative reading,
+# and the usual verdict on one a whole RTO behind a bulk transfer (#54).
+_CONTESTABLE = frozenset({_RETRANSMIT, TS_STALE})
 _FAVOR_ACKED = "favor-acked"
 
 _FLAG_MAP = (
@@ -183,6 +207,9 @@ class _Pending:
     peer_count: int = 0
     # Disagreeing copies that arrived while it waited (favor-acked only).
     alternates: list[_Alternate] = field(default_factory=list)
+    # Whether it was resent while it waited: its record will carry
+    # ``retransmit`` once it has one (#59).
+    resent: bool = False
 
 
 @dataclass(frozen=True)
@@ -252,6 +279,9 @@ class _Sent:
     tsval: int | None
     peer_count: int
     pos: int
+    # A CRC32 of the bytes accepted, so a repeat can be judged a copy after
+    # they are written: a mirror's copy is the same packet (#61).
+    crc: int = 0
 
 
 @dataclass(frozen=True)
@@ -269,6 +299,24 @@ class _PureAck:
     origin: int | None
 
 
+@dataclass(frozen=True)
+class _TrailingFin:
+    """A FIN to store straight after a held run, as a zero-length record (#60).
+
+    Under favor-acked the last run may still be held when its FIN arrives.
+    Written at once, the FIN would precede that run; carried on it, the
+    record would differ from favor-old's, which wrote the run already.  So
+    it waits in the run's trailing list, in arrival order among the pure
+    ACKs, and is written as favor-old writes it.
+    """
+
+    seq: int
+    flags: int
+    origin: int | None
+    ts: int
+    ack: int
+
+
 @dataclass
 class _Run:
     """Contiguous bytes accumulating towards one record."""
@@ -283,7 +331,9 @@ class _Run:
     # Disagreeing copies of parts of this run, awaiting the peer's verdict.
     alternates: list[_Alternate] = field(default_factory=list)
     flags: int = 0
-    retransmit: bool = False
+    # Ranges of this run the sender resent, whose repeats were discarded:
+    # the records holding them carry ``retransmit`` (#59).
+    resent: list[tuple[int, int]] = field(default_factory=list)
     # Capture time when the run closed; what the favor-acked hold is timed from.
     closed_ts: int = 0
     # Packets whose flags, not bytes, reached the run — a FIN or RST with no
@@ -291,7 +341,7 @@ class _Run:
     flag_origins: list[int] = field(default_factory=list)
     # Pure ACKs to store straight after this run's record: their sequence
     # number lies at or past its start, so they cannot be stored before it.
-    trailing_acks: list[_PureAck] = field(default_factory=list)
+    trailing_acks: list[_PureAck | _TrailingFin] = field(default_factory=list)
 
     @property
     def end(self) -> int:
@@ -309,6 +359,9 @@ class _Stream:
     next_seq: int | None = None
     declared: bool = False
     syn_written: bool = False
+    # Whether this direction's SYN carried the Timestamps option: with the
+    # peer's, what RFC 7323 calls negotiating it.
+    syn_timestamps: bool = False
     fin: bool = False
     rst: bool = False
     pending: dict[int, _Pending] = field(default_factory=dict)
@@ -335,6 +388,14 @@ class _Stream:
     recent: list[_Sent] = field(default_factory=list)
     recent_head: int = 0
     recent_bytes: int = 0
+    # Repeats judged retransmissions and discarded: transmissions too, whose
+    # own copies a mirror shows a microsecond later (#56).  `recent` holds
+    # only what was accepted, so without these a copy of a discarded resend
+    # is judged against the original's clock, and taken for another resend.
+    # The copy follows at once, so a short memory serves.
+    resends: deque[tuple[_Sent, bytes]] = field(
+        default_factory=lambda: deque(maxlen=_RESENDS_KEPT),
+    )
     # Packets seen from the other direction, whatever they carried.
     peer_count: int = 0
     # RFC 7323 §4.3's TS.Recent: the TSval of the last segment accepted *in
@@ -348,10 +409,34 @@ class _Stream:
     # them, oldest first — so records still reach the writer in seq order.
     unacked: deque[_Run] = field(default_factory=deque)
     unacked_bytes: int = 0
+    # favor-acked: the segments of runs a bound released before the peer's
+    # ack covered them, as written: ``(seq, end) -> crc32``, oldest first.  A
+    # disagreeing resend that arrives after its run was released is a
+    # fallback as surely as one that arrived before, and only these can show
+    # it disagrees (#54).  A digest per segment rather than its bytes, so a
+    # resend a whole RTO behind is still within reach; see _RELEASED_KEPT.
+    released: dict[tuple[int, int], int] = field(default_factory=dict)
+    # The furthest the peer has acknowledged this direction: bytes below it
+    # the receiver has accepted, and a later copy of them it discards as old
+    # data, so favor-acked does not contest one (#62).
+    peer_acked: int | None = None
+    # One past the furthest sequence number seen from this direction, SYN and
+    # FIN included: what the peer can be seen to have acknowledged.  An ack
+    # beyond it acknowledges data not yet sent, which a receiver ignores
+    # (RFC 793, RFC 5961 §5); `peer_acked` does too (#62).
+    sent_end: int | None = None
     # Where the FIN sits: one past the last byte of the segment carrying it.
     # The FIN occupies that sequence number, so once every byte before it is
     # in, the next one the sender can use is one further on.
     fin_seq: int | None = None
+    # A FIN that arrived with no payload while bytes before it were still
+    # missing: ``(flags, origin, ts, ack)``.  A FIN ends the record that ends
+    # where it sits, so it waits for that record rather than marking
+    # whichever run is open; see TcpFlow._append and finish.
+    fin_deferred: tuple[int, int | None, int, int] | None = None
+    # Whether a record carries this direction's FIN yet: once, so that a
+    # resent or mirrored FIN does not close the stream twice (#60).
+    fin_placed: bool = False
     # Pure ACKs whose sequence number is ahead of where this direction's
     # bytes have been placed; see TcpFlow._release_acks.
     held_acks: list[_PureAck] = field(default_factory=list)
@@ -372,13 +457,37 @@ class TcpFlow(FlowTracker):
         """Take one segment of this conversation."""
         self.last_ts = pkt.ts_ticks
         stream = self._stream(pkt.src_endpoint)
+        if self._options.require_timestamps and self._unstamped(pkt):
+            # Dropped whole, as the receiver drops it: its bytes, its ack and
+            # its flags never happened (#57).
+            self._stats.ts_missing += 1
+            self._stats.ts_missing_bytes += len(pkt.payload)
+            self.undecoded(pkt.payload_offset, len(pkt.payload), reason=REASON_TS_MISSING)
+            return
+        end = _advance(pkt.seq, len(pkt.payload) + bool(pkt.tcp_flags & TCP_SYN)
+                       + bool(pkt.tcp_flags & TCP_FIN))
+        if stream.sent_end is None or _delta(end, stream.sent_end) > 0:
+            stream.sent_end = end
         for other in self._streams.values():
             if other is not stream:
                 other.peer_count += 1
+                if not pkt.tcp_flags & TCP_ACK:
+                    continue
+                self._answered(other, pkt)
+                # An ack beyond anything seen sent is no proof the receiver
+                # took the bytes: a forgery copies a later segment's ack.
+                # Ignoring it here only means a later copy is contested, as
+                # before #62 — whereas a capture whose order is not the
+                # wire's acks bytes it shows afterwards, which _settle must
+                # still read.
+                if other.sent_end is not None and _delta(pkt.ack, other.sent_end) <= 0 and (
+                    other.peer_acked is None or _delta(pkt.ack, other.peer_acked) > 0
+                ):
+                    other.peer_acked = pkt.ack
                 # This packet's ack settles the peer's held runs — before its
                 # own bytes are taken, since what it acknowledges arrived
                 # before it was sent.
-                if self._acked and pkt.tcp_flags & TCP_ACK:
+                if self._acked:
                     self._settle(other, pkt.ack, _tsecr(pkt))
         if self._acked:
             for held_stream in self._streams.values():
@@ -405,19 +514,48 @@ class TcpFlow(FlowTracker):
 
         closing = bool(pkt.tcp_flags & (TCP_FIN | TCP_RST))
         if closing:
-            stream.fin = stream.fin or bool(pkt.tcp_flags & TCP_FIN)
-            stream.rst = stream.rst or bool(pkt.tcp_flags & TCP_RST)
-            self._attach_flags(stream, pkt.tcp_flags, origin=pkt.payload_offset)
-            if pkt.tcp_flags & TCP_FIN and stream.fin_seq is None:
-                stream.fin_seq = _advance(pkt.seq, len(pkt.payload))
-                if stream.held_acks:
-                    self._release_acks(stream)
+            self._close(stream, pkt)
 
-        # A run ends where the sender said it did (PSH), where the connection
-        # ends, or at every segment when coalescing is off.
-        pushed = bool(pkt.tcp_flags & TCP_PSH) and bool(pkt.payload)
-        if closing or pushed or not self._options.coalesce:
+        # A run ends where the connection does.  Where the sender said it did
+        # (PSH), or at every segment when coalescing is off, it ends as the
+        # segment's bytes join it, in sequence order — see _drain (#53).
+        if closing:
             self._flush(stream)
+
+    def _close(self, stream: _Stream, pkt: PacketView) -> None:
+        """Take a FIN or RST: what it says about the stream, and which record it marks."""
+        stream.fin = stream.fin or bool(pkt.tcp_flags & TCP_FIN)
+        stream.rst = stream.rst or bool(pkt.tcp_flags & TCP_RST)
+        first_fin = bool(pkt.tcp_flags & TCP_FIN) and stream.fin_seq is None
+        if first_fin:
+            stream.fin_seq = _advance(pkt.seq, len(pkt.payload))
+            if stream.next_seq is None:
+                # A direction first seen at its FIN — a capture that
+                # caught only the teardown — begins there, as it would
+                # at a first data segment or pure ACK.
+                stream.next_seq = stream.fin_seq
+        if not pkt.tcp_flags & TCP_FIN:
+            self._attach_flags(stream, pkt.tcp_flags, origin=pkt.payload_offset)
+        elif stream.fin_placed:
+            pass  # a resend or a copy of a FIN already placed
+        elif stream.next_seq == stream.fin_seq:
+            self._place_fin(stream, pkt.tcp_flags, pkt.payload_offset,
+                            ts=pkt.ts_ticks, ack=pkt.ack)
+        elif stream.next_seq is not None and _delta(stream.fin_seq, stream.next_seq) > 0:
+            # Bytes before the FIN are still missing: it ends the record
+            # that will end where it sits, not the run open now.  A FIN
+            # with payload held behind the hole carries its own flags.
+            if not pkt.payload:
+                stream.fin_deferred = (pkt.tcp_flags, pkt.payload_offset, pkt.ts_ticks, pkt.ack)
+        else:
+            # The stream already runs past where the FIN sits — a forged
+            # segment reached beyond it — so no record can end there, and
+            # none may be written below what is out.  It marks the open
+            # run, as it did before 0.7.0.
+            self._attach_flags(stream, pkt.tcp_flags, origin=pkt.payload_offset)
+        # After the FIN is placed: an ACK sent after it sits one past it.
+        if first_fin and stream.held_acks:
+            self._release_acks(stream)
 
     def finish(self) -> str:
         """Flush every held-back byte and report why the session ended.
@@ -433,6 +571,19 @@ class TcpFlow(FlowTracker):
             # fallback: the evidence did not arrive, and that is counted.
             while stream.unacked:
                 self._write(stream, self._release_run(stream))
+            # A FIN whose preceding bytes never all came: nothing will end
+            # where it sits, so it is a record of its own, before the ACKs
+            # that followed it (#60).
+            if (
+                stream.fin_deferred is not None
+                and not stream.fin_placed
+                and stream.fin_seq is not None
+                and stream.next_seq is not None
+                and _delta(stream.fin_seq, stream.next_seq) >= 0
+            ):
+                flags, origin, ts, ack = stream.fin_deferred
+                stream.fin_deferred = None
+                self._write_fin(stream, flags, origin, ts=ts, ack=ack)
             # Pure ACKs still ahead of every placed byte: nothing more of
             # this direction will be stored, so they go last, in order.
             if stream.held_acks:
@@ -471,6 +622,7 @@ class TcpFlow(FlowTracker):
         if stream.declared or stream.isn is not None:
             return
         stream.isn = pkt.seq
+        stream.syn_timestamps = _tsval(pkt) is not None
         stream.role = TcpRole.RESPONDER if pkt.tcp_flags & TCP_ACK else TcpRole.INITIATOR
         # The SYN itself consumes one sequence number; data starts after it.
         stream.next_seq = _advance(pkt.seq, 1)
@@ -686,7 +838,7 @@ class TcpFlow(FlowTracker):
             self._append(stream, seq, data, ts=pkt.ts_ticks, ack=pkt.ack, flags=pkt.tcp_flags,
                          tsval=tsval, peer_count=stream.peer_count,
                          payload_offset=payload_offset)
-            self._drain(stream, pkt)
+            self._drain(stream, ends_previous=self._ends_run(pkt.tcp_flags))
         else:
             self._hold(stream, seq, data, pkt, tsval=tsval)
             self._maybe_commit_gap(stream, pkt)
@@ -704,7 +856,13 @@ class TcpFlow(FlowTracker):
         peer_count: int,
         payload_offset: int | None,
         alternates: list[_Alternate] | None = None,
+        resent: bool = False,
     ) -> None:
+        """Add one segment's bytes to the open run, starting one if needed.
+
+        *resent* says the segment was resent while it was held, and flags
+        the record its bytes land in (#59).
+        """
         if stream.run is None:
             stream.run = _Run(seq_start=seq)
         end = _advance(seq, len(data))
@@ -715,8 +873,16 @@ class TcpFlow(FlowTracker):
         ))
         if alternates:
             stream.run.alternates.extend(alternates)
-            stream.run.retransmit = True
-        self._remember(stream, seq, end, tsval, peer_count)
+        if resent:
+            stream.run.resent.append((seq, end))
+        if flags & TCP_FIN:
+            stream.fin_placed = True
+        if stream.fin_deferred is not None and end == stream.fin_seq:
+            fin_flags, origin, _, _ = stream.fin_deferred
+            stream.fin_deferred = None
+            stream.fin_placed = True
+            self._attach_flags(stream, fin_flags, origin=origin)
+        self._remember(stream, seq, end, tsval, peer_count, zlib.crc32(data))
         self._attach_flags(stream, flags)
         stream.next_seq = end
         if stream.held_acks:
@@ -735,8 +901,10 @@ class TcpFlow(FlowTracker):
             elif (
                 tsval == held.tsval
                 and stream.peer_count == held.peer_count
-                and len(data) == len(held.data)
+                and data == held.data
             ):
+                # A copy is the same transmission, so the same bytes: one
+                # that differs is not a copy, whatever its clock says (#61).
                 verdict = _DUPLICATE
             else:
                 verdict = _RETRANSMIT
@@ -755,7 +923,11 @@ class TcpFlow(FlowTracker):
                     ts=pkt.ts_ticks, ack=pkt.ack, payload_offset=pkt.payload_offset,
                 ))
                 return
-            self._discard(stream, verdict, pkt.payload_offset, 0, len(data))
+            # The record these bytes will be in does not exist yet: the held
+            # segment carries the resend to it.
+            if verdict != _DUPLICATE:
+                held.resent = True
+            self._discard(stream, verdict, pkt.payload_offset, 0, len(data), resent=None)
             return
         assert stream.next_seq is not None
         if not stream.pending:
@@ -772,8 +944,25 @@ class TcpFlow(FlowTracker):
         if stream.oldest_pending_ts is None:
             stream.oldest_pending_ts = pkt.ts_ticks
 
-    def _drain(self, stream: _Stream, pkt: PacketView) -> None:
-        """Absorb held segments that the newly-arrived bytes made contiguous."""
+    def _drain(self, stream: _Stream, *, ends_previous: bool) -> None:
+        """Absorb held segments that the newly-arrived bytes made contiguous.
+
+        A run ends where a segment's bytes join it and the segment says so —
+        at its PSH, or at once when coalescing is off — in sequence order,
+        not arrival order (#53).  So a drained backlog is written as the
+        records the same segments make in order, and a segment held with a
+        PSH ends nothing until its bytes are placed.  The run is closed
+        lazily, just before the next segment is appended, because a
+        superseded held segment, or the trimmed head of one, belongs to the
+        open run and must still find it open; and once more after the last.
+
+        Args:
+            stream: The direction to drain.
+            ends_previous: Whether the segment appended just before — the
+                fill — ends its run.  ``False`` from :meth:`_commit_gap`,
+                which flushed before the hole it gave up on.
+
+        """
         while stream.pending:
             seq = self._next_pending(stream)
             held = stream.pending[seq]
@@ -783,7 +972,7 @@ class TcpFlow(FlowTracker):
                 # later arrival, so the held segment is the original and the
                 # fill the repeat; the verdict is the same either way round.
                 # A retransmission flags the record covering the range, as at
-                # the other four sites, by decision (#31): the sender sent
+                # the other four sites, by decision (#31, #59): the sender sent
                 # these bytes twice, once alone and once inside the fill.
                 # That record is always the open run.  The fill was appended
                 # in this same call, by _accept just before it drains or by an
@@ -792,19 +981,25 @@ class TcpFlow(FlowTracker):
                 # the hole, so its range starts inside the run.
                 assert stream.run is not None, "a superseded held segment lies in the open run"
                 self._release(stream, seq)
-                verdict = self._judge(stream, seq, end, held.tsval, held.peer_count)
+                verdict = self._judge(stream, seq, end, held.tsval, held.peer_count, held.data)
                 if not self._contested(stream, verdict, seq, end, held.data, held):
-                    self._discard(stream, verdict, held.payload_offset, 0, len(held.data))
+                    self._discard(stream, verdict, held.payload_offset, 0, len(held.data),
+                                  resent=(seq, end))
                 continue
             if _delta(seq, stream.next_seq) > 0:
-                return
+                break
             trim = _delta(stream.next_seq, seq)
             self._release(stream, seq)
             if trim:
-                verdict = self._judge(stream, seq, stream.next_seq, held.tsval, held.peer_count)
+                verdict = self._judge(stream, seq, stream.next_seq, held.tsval, held.peer_count,
+                                      held.data[:trim])
                 if not self._contested(stream, verdict, seq, stream.next_seq,
                                        held.data[:trim], held):
-                    self._discard(stream, verdict, held.payload_offset, 0, trim)
+                    self._discard(stream, verdict, held.payload_offset, 0, trim,
+                                  resent=(seq, stream.next_seq))
+            if ends_previous:
+                self._flush(stream)
+            ends_previous = self._ends_run(held.flags)
             self._append(
                 stream,
                 stream.next_seq,
@@ -816,8 +1011,12 @@ class TcpFlow(FlowTracker):
                 peer_count=held.peer_count,
                 payload_offset=None if held.payload_offset is None else held.payload_offset + trim,
                 alternates=_clip(held.alternates, stream.next_seq, end),
+                resent=held.resent,
             )
-        stream.oldest_pending_ts = None
+        else:
+            stream.oldest_pending_ts = None
+        if ends_previous:
+            self._flush(stream)
 
     def _release(self, stream: _Stream, seq: int) -> None:
         held = stream.pending.pop(seq)
@@ -915,9 +1114,9 @@ class TcpFlow(FlowTracker):
             > self._options.flush_timeout
         )
         if over_window or stale:
-            self._commit_gap(stream, pkt)
+            self._commit_gap(stream)
 
-    def _commit_gap(self, stream: _Stream, pkt: PacketView) -> None:
+    def _commit_gap(self, stream: _Stream) -> None:
         assert stream.next_seq is not None
         target = self._next_pending(stream)
         if _delta(target, stream.next_seq) <= 0:  # pragma: no cover - drained already
@@ -934,10 +1133,96 @@ class TcpFlow(FlowTracker):
         stream.oldest_pending_ts = None
         if stream.held_acks:
             self._release_acks(stream)
-        self._drain(stream, pkt)
+        self._drain(stream, ends_previous=False)
+
+    def _unstamped(self, pkt: PacketView) -> bool:
+        """Say whether RFC 7323 §3.2 has a receiver drop *pkt* (#57).
+
+        Both SYNs must have carried the Timestamps option — a capture that
+        began mid-connection never saw them, and nothing is dropped — and
+        the segment must lack it and be neither a SYN nor an RST, which the
+        RFC exempts.
+        """
+        if pkt.tcp_flags & (TCP_SYN | TCP_RST) or _tsval(pkt) is not None:
+            return False
+        streams = self._streams.values()
+        return len(streams) == 2 and all(s.syn_timestamps for s in streams)
+
+    def _answered(self, stream: _Stream, pkt: PacketView) -> None:
+        """Close *stream*'s open run if *pkt*, from the peer, answers part of it (#55).
+
+        A peer segment carrying data — or a FIN, which takes a sequence
+        number as data does — that acknowledges bytes of the open run was
+        sent after those bytes arrived.  Anything this direction sends next
+        was sent after it, and is captured after it, whichever side of the
+        link the capture was taken on.  Joined to the run, such bytes would
+        make a record that straddles the peer's message: its early bytes
+        before it, its late ones after it.  Records are units, so no
+        position for that record is valid, and the causal merge, ordering
+        a peer record after one only once its ack covers the whole,
+        places it after the message that answered its first bytes.
+
+        A pure ACK answers nothing a record can be ordered against — a
+        zero-length record covers no byte — so it does not close the run,
+        and a one-way transfer still coalesces.
+        """
+        run = stream.run
+        if run is None or not run.data:
+            return
+        if not (pkt.payload or pkt.tcp_flags & TCP_FIN):
+            return
+        if _delta(pkt.ack, run.seq_start) > 0:
+            self._flush(stream)
+
+    def _place_fin(
+        self, stream: _Stream, flags: int, origin: int | None, *, ts: int, ack: int,
+    ) -> None:
+        """Put a FIN on the record that ends where it sits, or write it as its own (#60).
+
+        Every byte before it is placed, so that record is the open run.
+        Otherwise the last run is closed — a PSH flushed it, the usual way a
+        sender closes — and the FIN is a zero-length record at its sequence
+        number, as a pure ACK is: written now, or under favor-acked straight
+        after the run still held.
+        """
+        stream.fin_placed = True
+        if stream.run is not None:
+            self._attach_flags(stream, flags, origin=origin)
+        elif stream.unacked:
+            assert stream.fin_seq is not None
+            stream.unacked[-1].trailing_acks.append(
+                _TrailingFin(stream.fin_seq, flags, origin, ts, ack),
+            )
+        else:
+            self._write_fin(stream, flags, origin, ts=ts, ack=ack)
+
+    def _write_fin(
+        self, stream: _Stream, flags: int, origin: int | None, *, ts: int, ack: int,
+    ) -> None:
+        """Write a FIN that no run carries as a zero-length record at its number."""
+        assert stream.fin_seq is not None
+        stream.fin_placed = True
+        self.sink.record(
+            self.participant(stream.endpoint),
+            ts=ts,
+            payload=b"",
+            origins=(origin,),
+            hints=zpf.Hints(seq_start=stream.fin_seq, ack=ack),
+            flags=_RECORD_FLAGS[flags & 0xFF],
+        )
+        self._stats.records += 1
+
+    def _ends_run(self, flags: int) -> bool:
+        """Say whether a segment with *flags* closes the run it joins."""
+        return bool(flags & TCP_PSH) or not self._options.coalesce
 
     def _commit_remaining(self, stream: _Stream) -> None:
-        """At end of capture, take whatever is still held rather than drop it."""
+        """At end of capture, take whatever is still held rather than drop it.
+
+        Runs end at each held segment's PSH, or at every segment when
+        coalescing is off, as in :meth:`_drain` (#53).
+        """
+        ends_previous = False
         while stream.pending:
             assert stream.next_seq is not None
             target = self._next_pending(stream)
@@ -951,6 +1236,9 @@ class TcpFlow(FlowTracker):
                     self._release_acks(stream)
             self._release(stream, target)
             trim = max(0, _delta(stream.next_seq, target))
+            if ends_previous:
+                self._flush(stream)
+            ends_previous = self._ends_run(held.flags)
             self._append(
                 stream,
                 stream.next_seq,
@@ -963,6 +1251,7 @@ class TcpFlow(FlowTracker):
                 payload_offset=None if held.payload_offset is None else held.payload_offset + trim,
                 alternates=_clip(held.alternates, stream.next_seq,
                                  _advance(target, len(held.data))),
+                resent=held.resent,
             )
 
     def _count_repeat(
@@ -1017,11 +1306,15 @@ class TcpFlow(FlowTracker):
                            late, late_reason)
         for start, stop in self._unclaimed(gaps, seq, end):
             lo, hi = _advance(seq, start), _advance(seq, stop)
-            verdict = self._judge(stream, lo, hi, tsval, peer_count)
+            verdict = self._judge(stream, lo, hi, tsval, peer_count, data[start:stop])
+            if verdict in _CONTESTABLE:
+                assert tsval is not None  # either verdict needed it
+                stream.resends.append((_Sent(lo, hi, tsval, peer_count, 0), data[start:stop]))
             if self._contested(stream, verdict, lo, hi, data[start:stop], pkt,
                                skip=start):
                 continue
-            self._discard(stream, verdict, payload_offset, start, stop - start)
+            self._discard(stream, verdict, payload_offset, start, stop - start,
+                          resent=(lo, hi))
 
     def _cite(self, payload_offset: int | None, skip: int, length: int, reason: str) -> None:
         """Declare a sub-range of one segment's payload as undecoded."""
@@ -1077,7 +1370,13 @@ class TcpFlow(FlowTracker):
     # ── repeats ─────────────────────────────────────────────────────────
 
     def _remember(
-        self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
+        self,
+        stream: _Stream,
+        seq: int,
+        end: int,
+        tsval: int | None,
+        peer_count: int,
+        crc: int,
     ) -> None:
         """Record an accepted transmission so a later repeat of it can be judged."""
         # Every distance here runs forward — accepted transmissions only move
@@ -1089,7 +1388,7 @@ class TcpFlow(FlowTracker):
             pos = last.pos + (seq - last.seq) % _SEQ_MOD
         else:
             pos = 0
-        recent.append(_Sent(seq, end, tsval, peer_count, pos))
+        recent.append(_Sent(seq, end, tsval, peer_count, pos, crc))
         stream.recent_bytes += (end - seq) % _SEQ_MOD
         window = self._options.reorder_window
         if stream.recent_bytes <= window:
@@ -1105,19 +1404,27 @@ class TcpFlow(FlowTracker):
         stream.recent_head = head
 
     def _judge(
-        self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
+        self,
+        stream: _Stream,
+        seq: int,
+        end: int,
+        tsval: int | None,
+        peer_count: int,
+        data: bytes,
     ) -> str:
-        """Say whether a repeat of ``[seq, end)`` is a copy or a resend.
+        """Say whether a repeat of ``[seq, end)``, carrying *data*, is a copy or a resend.
 
         A **duplicate** is the same transmission seen twice — a mirror port, a
-        two-interface capture, a veth pair — and takes all three of: both it
-        and the transmission it repeats carried the option; the TSvals are
-        equal; and no packet from the peer arrived between the two.  The
-        third clause is what separates a copy from a fast retransmit on a
-        stack whose timestamp tick is coarser than its round trip: the
-        resend is triggered by the peer's duplicate ACKs, and they sit in the
-        capture between original and resend, while a copy follows its
-        original with nothing between.
+        two-interface capture, a veth pair — and takes all of: both it and
+        the transmission it repeats carried the option; the TSvals are equal;
+        no packet from the peer arrived between the two; and the bytes are
+        the same.  The third clause is what separates a copy from a fast
+        retransmit on a stack whose timestamp tick is coarser than its round
+        trip: the resend is triggered by the peer's duplicate ACKs, and they
+        sit in the capture between original and resend, while a copy follows
+        its original with nothing between.  The fourth is what separates it
+        from a forgery stamped with the right clock (#61): a copy is
+        byte-identical by definition.  See :meth:`_same_bytes`.
 
         Anything else is a **retransmission** — the reading RFC 7323 supports
         and the one the specification asks a producer to fall back to.  The
@@ -1130,6 +1437,31 @@ class TcpFlow(FlowTracker):
         resend inside its original's tick, a fast retransmit looks exactly like
         a copy.  The rule then calls it a duplicate, which is the wrong way
         round for the specification's SHOULD, and is recorded as a limit.
+
+        The clock's clauses are :meth:`_judge_clock`'s.
+        """
+        if tsval is not None:
+            # A copy of a resend that was itself discarded: the same clauses,
+            # against the resend rather than the copy that was kept.
+            for sent, resent in stream.resends:
+                if (
+                    sent.tsval == tsval
+                    and sent.peer_count == peer_count
+                    and _delta(seq, sent.seq) >= 0
+                    and _delta(sent.end, end) >= 0
+                ):
+                    offset = _delta(seq, sent.seq)
+                    if resent[offset:offset + len(data)] == data:
+                        return _DUPLICATE
+        verdict = self._judge_clock(stream, seq, end, tsval, peer_count)
+        if verdict == _DUPLICATE and not self._same_bytes(stream, seq, end, data):
+            return _RETRANSMIT
+        return verdict
+
+    def _judge_clock(
+        self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
+    ) -> str:
+        """Judge a repeat against ``recent`` by the clock alone: the first three clauses.
 
         ``recent`` is ascending, so the transmissions overlapping the range
         are a contiguous run of it, found by bisection rather than a scan
@@ -1171,6 +1503,54 @@ class TcpFlow(FlowTracker):
             covered += hi - lo
         return _DUPLICATE if covered >= length else TS_STALE
 
+    def _same_bytes(self, stream: _Stream, seq: int, end: int, data: bytes) -> bool:
+        """Say whether *data* is what was accepted over ``[seq, end)`` (#61).
+
+        Compared byte for byte while a run still holds them.  Once they are
+        written, a copy is the same packet as one transmission ``recent``
+        remembers — the same range and a CRC32 of the same bytes — and
+        anything else the clock alone would call a copy is not one.
+        """
+        kept = self._kept_bytes(stream, seq, end)
+        if kept is not None:
+            return kept == data
+        # Accepted ranges are ascending and disjoint, so the only one that can
+        # match exactly is the first ending at or past *end* — found as
+        # _judge_clock finds its run, by bisection while recent spans no more
+        # than _MAX_WINDOW, and by a scan when it does.
+        recent, head = stream.recent, stream.recent_head
+        first, last = recent[head], recent[-1]
+        if last.pos + _delta(last.end, last.seq) - first.pos <= _MAX_WINDOW:
+            at = bisect.bisect_left(recent, 0, head, len(recent),
+                                    key=lambda sent: _delta(sent.end, end))
+            candidates = recent[at:at + 1]
+        else:
+            candidates = recent[head:]
+        crc = zlib.crc32(data)
+        return any(sent.seq == seq and sent.end == end and sent.crc == crc
+                   for sent in candidates)
+
+    def _kept_bytes(self, stream: _Stream, seq: int, end: int) -> bytes | None:
+        """Return the accepted bytes of ``[seq, end)`` while a run still holds them all.
+
+        ``None`` once any of them is written: a record is not kept in memory
+        after it is out.
+        """
+        out = bytearray()
+        cursor = seq
+        runs = sorted(self._covering_runs(stream, seq, end),
+                      key=lambda run: _delta(run.seq_start, seq))
+        for run in runs:
+            if _delta(run.seq_start, cursor) > 0:
+                return None
+            offset = _delta(cursor, run.seq_start)
+            take = min(_delta(end, cursor), len(run.data) - offset)
+            out += run.data[offset:offset + take]
+            cursor = _advance(cursor, take)
+            if cursor == end:
+                return bytes(out)
+        return None
+
     def _contested(
         self,
         stream: _Stream,
@@ -1187,16 +1567,30 @@ class TcpFlow(FlowTracker):
         Returns ``True`` when the range was taken up as an alternate — and so
         must not be counted or cited now, since which copy loses is not yet
         known — and ``False`` when the caller should discard it as usual:
-        the policy is ``favor-old``, the verdict is not a retransmission (a
-        duplicate or an unjudgeable repeat has no second clock to match an
-        echo against), or the copies agree byte-for-byte, where the choice is
-        moot.  A part of the range that no open or held run covers has
-        already been settled by the peer's ack, and is discarded too.
+        the policy is ``favor-old``, the repeat is a duplicate or carries no
+        option (neither has a second clock to match an echo against — a
+        stale repeat does, and is contested like a resend), the peer had
+        already acknowledged the range when the copy came, so the receiver
+        had chosen with only the first copy to hand (#62), or the copies
+        agree byte-for-byte, where the choice is moot.  A part of the range
+        that no open or held run covers has already been settled by the
+        peer's ack, and is discarded too — or was released by a bound before
+        the ack came, and then a copy that disagrees with what was written is
+        counted as a fallback (#54).
         """
-        if not self._acked or verdict != _RETRANSMIT:
+        if not self._acked or verdict not in _CONTESTABLE:
             return False
+        if stream.peer_acked is not None and _delta(stream.peer_acked, end) >= 0:
+            # The receiver acknowledged these bytes before this copy came, with
+            # only the first copy to hand: its choice is made, and it drops
+            # this one below RCV.NXT.  Contested, a later ack's echo could
+            # name it by a coincidence of clock ticks, and swap it in (#62).
+            return False
+        digest = stream.released.get((seq, end))
+        if digest is not None and digest != zlib.crc32(data):
+            self._stats.acked_fallback_bytes += len(data)
         tsval = source.tsval if isinstance(source, _Pending) else _tsval(source)
-        assert tsval is not None  # a retransmission verdict needed it
+        assert tsval is not None  # either verdict needed it
         ts = source.ts if isinstance(source, _Pending) else source.ts_ticks
         payload_offset = source.payload_offset
         if payload_offset is not None:
@@ -1209,11 +1603,13 @@ class TcpFlow(FlowTracker):
                 continue
             kept = bytes(run.data[a - offset:b - offset])
             copy = data[a:b]
-            run.retransmit = True
             if kept == copy:
+                run.resent.append((_advance(seq, a), _advance(seq, b)))
                 self._stats.overlap_bytes += b - a
                 self._cite(payload_offset, a, b - a, REASON_OVERLAP)
             else:
+                # A disagreeing copy is a resend of these bytes, and flags the
+                # record that ends up holding them; see _write.
                 run.alternates.append(_Alternate(
                     seq=_advance(seq, a), end=_advance(seq, b), tsval=tsval, data=copy,
                     ts=ts, ack=source.ack,
@@ -1239,8 +1635,18 @@ class TcpFlow(FlowTracker):
         payload_offset: int | None,
         skip: int,
         length: int,
+        *,
+        resent: tuple[int, int] | None,
     ) -> None:
-        """Count and cite a repeated range under its verdict, and flag the run if a resend."""
+        """Count and cite a repeated range under its verdict, and flag the record if a resend.
+
+        A resend flags the record that holds its range (#59): whichever open
+        or held run covers *resent*, the ``[seq, end)`` it repeated.  Bytes
+        already written flag nothing — a record cannot change once it is
+        out — and their ``overlap-discarded`` citation is what says the
+        sender resent them.  ``None`` when the caller carries the flag
+        itself, to a record that does not exist yet.
+        """
         if verdict == _DUPLICATE:
             self._stats.duplicate_bytes += length
             self._stats.duplicates += 1
@@ -1250,8 +1656,9 @@ class TcpFlow(FlowTracker):
             self._stats.ts_fallback[verdict] += 1
         self._stats.overlap_bytes += length
         self._cite(payload_offset, skip, length, REASON_OVERLAP)
-        if stream.run is not None:
-            stream.run.retransmit = True
+        if resent is not None:
+            for run in self._covering_runs(stream, *resent):
+                run.resent.append(resent)
 
     # ── emission ────────────────────────────────────────────────────────
 
@@ -1311,18 +1718,39 @@ class TcpFlow(FlowTracker):
     def _settle_stale(self, stream: _Stream, now: int) -> None:
         """Write held runs the bounds say have waited long enough, on the fallback.
 
-        The two bounds are the policy's own: a run whose ack has not come
-        within ``flush_timeout`` of its closing, or the oldest run once the
-        hold exceeds ``reorder_window`` bytes, is written as ``favor-old``
-        would have written it, and every contested byte in it is counted as a
-        fallback.  A one-way capture, where no ack ever comes, writes every
-        run this way.
+        By default the bounds are the policy's own: a run whose ack has not
+        come within ``flush_timeout`` of its closing, or the oldest run once
+        the hold exceeds ``reorder_window`` bytes.  With ``acked_hold`` set,
+        it is the one bound, in seconds (#32).  A released run is written as
+        ``favor-old`` would have written it, and every contested byte in it
+        is counted as a fallback — including bytes contested only later, by
+        a resend that arrives after the release (#54), which is why the run
+        is remembered as written.  A one-way capture, where no ack ever
+        comes, writes every run this way.
         """
+        hold = self._options.acked_hold
+        timeout = self._options.flush_timeout if hold is None else hold
         while stream.unacked and (
-            (now - stream.unacked[0].closed_ts) / self._tick_hz > self._options.flush_timeout
-            or stream.unacked_bytes > self._options.reorder_window
+            (now - stream.unacked[0].closed_ts) / self._tick_hz > timeout
+            or (hold is None and stream.unacked_bytes > self._options.reorder_window)
         ):
-            self._write(stream, self._release_run(stream))
+            run = self._release_run(stream)
+            self._write(stream, run)
+            self._remember_released(stream, run)
+
+    def _remember_released(self, stream: _Stream, run: _Run) -> None:
+        """Keep a digest of each segment of a released run, as written (#54).
+
+        A resend repeats its original's boundaries, so it is judged against
+        the segment it resends; one that does not line up with a remembered
+        segment cannot be judged, and is not counted.
+        """
+        for c in run.contributors:
+            offset = _delta(c.seq, run.seq_start)
+            data = run.data[offset:offset + _delta(c.end, c.seq)]
+            stream.released[c.seq, c.end] = zlib.crc32(data)
+        while len(stream.released) > _RELEASED_KEPT:
+            del stream.released[next(iter(stream.released))]
 
     def _release_run(self, stream: _Stream) -> _Run:
         run = stream.unacked.popleft()
@@ -1330,23 +1758,29 @@ class TcpFlow(FlowTracker):
         return run
 
     def _write(self, stream: _Stream, run: _Run) -> None:
-        """Resolve a run's alternates and write it as one record.
+        """Resolve a run's alternates and write it as its records.
 
         Each alternate carries its own verdict, taken from the first peer ack
         that covered its range (see :class:`_Alternate`).  One with no
         verdict — the run is being written because a bound expired or the
         session ended — or whose ack carried no option loses on the
         fallback, and is counted as such.
+
+        A copy swapped in is a record of its own (#55).  It is a resend,
+        sent after the peer answered the bytes around it, so in one record
+        with them it would straddle the peer's message: its time, the last
+        contributor's, would date the whole run after the message that
+        acknowledged its start.  Apart, each record's ``ts``, ``ack`` and
+        flags are its own, and all of them true.  A run with no swap is one
+        record, as before.
         """
+        swapped: list[tuple[int, int]] = []
         for alt in run.alternates:
             kept = _within(run.contributors, alt.seq, alt.end)
             evidence = alt.evidence
-            swap = (
-                alt.decided
-                and evidence is not None
-                and alt.tsval == evidence
-                and all(c.tsval != evidence for c in kept)
-            )
+            names_alt = alt.tsval == evidence
+            names_kept = any(c.tsval == evidence for c in kept)
+            swap = alt.decided and evidence is not None and names_alt and not names_kept
             if swap:
                 offset = _delta(alt.seq, run.seq_start)
                 run.data[offset:offset + len(alt.data)] = alt.data
@@ -1360,33 +1794,57 @@ class TcpFlow(FlowTracker):
                     seq=alt.seq, end=alt.end, tsval=alt.tsval, ts=alt.ts, ack=alt.ack,
                     payload_offset=alt.payload_offset,
                 ))
+                swapped.append((alt.seq, alt.end))
                 self._stats.acked_swaps += 1
             else:
-                if not alt.decided or evidence is None:
+                # No verdict, or one naming neither copy — a cumulative ack
+                # that jumped over several resends echoes only the last
+                # filler's clock (#54) — or both, when a forgery carries the
+                # real segment's clock (#61), leaves the choice to favor-old.
+                if not alt.decided or evidence is None or names_alt == names_kept:
                     self._stats.acked_fallback_bytes += len(alt.data)
                 self._stats.overlap_bytes += len(alt.data)
                 self._cite(alt.payload_offset, 0, len(alt.data), REASON_OVERLAP)
 
-        flags = _RECORD_FLAGS[run.flags & 0xFF]
-        if run.retransmit:
-            flags |= RecordFlags.RETRANSMIT
-
-        ts, ts_first, ack = _hints(run)
-        self.sink.record(
-            self.participant(stream.endpoint),
-            ts=ts,
-            payload=bytes(run.data),
-            origins=[*(c.payload_offset for c in run.contributors), *run.flag_origins],
-            hints=zpf.Hints(seq_start=run.seq_start, ack=ack),
-            flags=flags,
-            # Only worth stating when the run coalesced more than one packet;
-            # for a single segment it would repeat `ts`.
-            ts_first=ts_first if ts_first != ts else None,
-        )
-        self._stats.records += 1
-        self._stats.payload_bytes += len(run.data)
-        for held in run.trailing_acks:
-            self._write_ack(stream, held)
+        pieces = _pieces(run, swapped)
+        trailing = list(run.trailing_acks)
+        for index, (seq, end) in enumerate(pieces):
+            last = index == len(pieces) - 1
+            offset = _delta(seq, run.seq_start)
+            data = bytes(run.data[offset:offset + _delta(end, seq)])
+            contributors = _inside(run.contributors, seq, end)
+            # The run's TCP flags — a PSH or FIN — belong to its end.
+            flags = _RECORD_FLAGS[run.flags & 0xFF] if last else RecordFlags(0)
+            # A range resent, and a disagreeing copy swapped in or not, flag
+            # the record holding them (#59).
+            ranges = [*run.resent, *((alt.seq, alt.end) for alt in run.alternates)]
+            if any(_delta(b, seq) > 0 and _delta(end, a) > 0 for a, b in ranges):
+                flags |= RecordFlags.RETRANSMIT
+            ts, ts_first, ack = _hints(contributors)
+            self.sink.record(
+                self.participant(stream.endpoint),
+                ts=ts,
+                payload=data,
+                origins=[*(c.payload_offset for c in contributors),
+                         *(run.flag_origins if last else ())],
+                hints=zpf.Hints(seq_start=seq, ack=ack),
+                flags=flags,
+                # Only worth stating when the run coalesced more than one packet;
+                # for a single segment it would repeat `ts`.
+                ts_first=ts_first if ts_first != ts else None,
+            )
+            self._stats.records += 1
+            self._stats.payload_bytes += len(data)
+            # What trails the run follows the piece it falls in: records are
+            # stored in serial order, and a pure ACK inside the run's range
+            # would precede a later piece's start (#55).  They are ascending,
+            # released as the frontier passed them.
+            while trailing and (last or _delta(trailing[0].seq, pieces[index + 1][0]) < 0):
+                held = trailing.pop(0)
+                if isinstance(held, _TrailingFin):
+                    self._write_fin(stream, held.flags, held.origin, ts=held.ts, ack=held.ack)
+                else:
+                    self._write_ack(stream, held)
 
 
 def _tsecr(pkt: PacketView) -> int | None:
@@ -1397,8 +1855,8 @@ def _tsecr(pkt: PacketView) -> int | None:
     return options.timestamps[1]
 
 
-def _hints(run: _Run) -> tuple[int, int, int | None]:
-    """Return a run's ``(ts, ts_first, ack)`` from the transmissions that made it.
+def _hints(contributors: list[_Contribution]) -> tuple[int, int, int | None]:
+    """Return a record's ``(ts, ts_first, ack)`` from the transmissions that made it.
 
     All three are extremes over the run's contributing packets, not the
     packet that happened to be appended last: a segment held out of order
@@ -1428,13 +1886,48 @@ def _hints(run: _Run) -> tuple[int, int, int | None]:
     resend, later than the copy it displaces — moves ``ts`` the way the rule
     says, and the displaced copy stops counting.
     """
-    ts = max(c.ts for c in run.contributors)
-    ts_first = min(c.ts for c in run.contributors)
-    ack: int | None = None
-    for c in run.contributors:
-        if ack is None or _delta(c.ack, ack) > 0:
-            ack = c.ack
-    return ts, ts_first, ack
+    ts = max(c.ts for c in contributors)
+    ts_first = min(c.ts for c in contributors)
+    return ts, ts_first, _serial_max(c.ack for c in contributors)
+
+
+def _pieces(run: _Run, swapped: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the ``(seq, end)`` of each record a run is written as.
+
+    The whole run, unless a copy was swapped in; then each swapped range is
+    a piece, and so is each stretch between them.
+    """
+    cuts = sorted({_delta(edge, run.seq_start) for seq, end in swapped for edge in (seq, end)})
+    bounds = [0, *(cut for cut in cuts if 0 < cut < len(run.data)), len(run.data)]
+    return [
+        (_advance(run.seq_start, a), _advance(run.seq_start, b))
+        for a, b in itertools.pairwise(bounds)
+    ]
+
+
+def _inside(contributors: list[_Contribution], seq: int, end: int) -> list[_Contribution]:
+    """Return the parts of *contributors* that fall inside ``[seq, end)``."""
+    parts: list[_Contribution] = []
+    for c in contributors:
+        a = max(_delta(seq, c.seq), 0)
+        b = min(_delta(end, c.seq), _delta(c.end, c.seq))
+        if b <= a:
+            continue
+        parts.append(_Contribution(
+            _advance(c.seq, a), _advance(c.seq, b), c.tsval, c.ts, c.ack,
+            None if c.payload_offset is None else c.payload_offset + a,
+        ))
+    return parts
+
+
+def _serial_max(acks: Iterable[int]) -> int:
+    """Return the furthest of *acks* in serial order (RFC 1982)."""
+    best: int | None = None
+    for ack in acks:
+        if best is None or _delta(ack, best) > 0:
+            best = ack
+    assert best is not None, "a run has at least one contributor"
+    return best
 
 
 def _within(contributors: list[_Contribution], seq: int, end: int) -> list[_Contribution]:

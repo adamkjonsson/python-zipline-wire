@@ -2,7 +2,7 @@
 
 Three structures were rewritten for speed in ``0.6.0``: the next held
 segment is the first entry of a sorted list instead of a ``min`` over the
-buffer, ``_judge`` bisects ``recent`` instead of scanning it, and a repeat
+buffer, ``_judge_clock`` bisects ``recent`` instead of scanning it, and a repeat
 is checked against the committed gaps at the tail instead of every gap the
 connection committed.  None may change a decision, and the fixtures barely
 reach any of them, so this file checks
@@ -131,10 +131,12 @@ class CheckedFlow(TcpFlow):
         self.calls["next_pending"] += 1
         return got
 
-    def _judge(
+    def _judge_clock(
         self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
     ) -> str:
-        got = super()._judge(stream, seq, end, tsval, peer_count)
+        # The scan #43 rewrote.  `_judge` adds what 0.5.0 never judged, a
+        # copy of a discarded resend (#56) and the bytes (#61), around it.
+        got = super()._judge_clock(stream, seq, end, tsval, peer_count)
         live = stream.recent[stream.recent_head:]
         assert got == reference_judge(live, seq, end, tsval, peer_count)
         self.calls[f"judge:{got}"] += 1

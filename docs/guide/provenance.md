@@ -80,6 +80,7 @@ Those are the exact bytes the reassembler dropped.
 | `REASON_LATE_REORDERED` | `late-reordered` | Late, and the original: delayed by the network — a wider window would have kept it |
 | `REASON_LATE_RETRANSMITTED` | `late-retransmitted` | Late, and a resend of an original that was lost — nothing would have kept it |
 | `REASON_PAWS` | `paws-rejected` | An old segment from before a sequence wrap, dropped whole as a receiver drops it |
+| `REASON_TS_MISSING` | `timestamp-missing` | A segment without the Timestamps option on a connection that negotiated it, dropped whole under `require_timestamps` (RFC 7323 §3.2) |
 | `REASON_CHECKSUM` | `bad-checksum` | A TCP segment discarded because its checksum did not verify, under `checksum="drop"` |
 
 All are `reason_class="bytes"` — the *bytes-exist* class, meaning a consumer

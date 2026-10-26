@@ -14,6 +14,16 @@ Since ``0.6.0`` stores pure ACKs by default (#37), the ``0.2.0`` decode is
 what ``pure_acks=False`` writes, and is pinned that way; the default's own
 decode of the same sixteen is pinned beside it.
 
+``0.7.0`` moves eleven of them, by deliberate breaks the changelog names
+by fixture.  Seven only gain the FIN records they lacked: a bare FIN after
+a pushed last segment reached no record (#60) — ``fragmentation``,
+``http``, ``http_example``, ``http_gzip``, ``http_stream_1`` (40 FINs),
+``no_errors`` and ``stray_1``.  The other four gain theirs too, and move
+for one more reason each: drained segments now end where their own PSH
+says (#53), in ``delay`` and ``packet_loss``; and ``retransmission`` and
+``payload_corruption`` lose ``retransmit`` flags that sat on records
+holding no resent byte, so records the flags had split merge (#59).
+
 The digest is of the decode, not the file — see
 :func:`helpers.decode_digest` for what that leaves out and why.
 """
@@ -29,31 +39,31 @@ from zpfwire import ReassemblyOptions, capture_to_zpf
 
 PINNED: dict[str, str] = {
     "delay.pcap":
-        "sha256:511351a6a1887623eeae22ac789de722990e99aa705925a6aa339d40691caddf",
+        "sha256:16d42e03651abfefcfadf98f2a932ae6f33c3c115b0db0f61164fd0f5d398512",
     "dns_example.pcapng":
         "sha256:de6b86ea894ccbe004c8783989b1444a49838ccb7c5c206fd99920e3c2614115",
     "fragmentation.pcap":
-        "sha256:cb97928045ea38d4bfe52d2731d3c07c56906a14e8ec689e8a58f0ea75aed9b9",
+        "sha256:4e4f195cd37494bfe1d75b8f652252ffd0ea5d6884c2f1133b313ecf90527035",
     "http.pcap":
-        "sha256:8a432b8fea3ccd8bf89c6c06543e46f1a83d83cee4431ae725a77cd2f92d8271",
+        "sha256:16d164f8c74d06ba4ecd0e1625429709f41544eb29f4b46871ef4783a691b448",
     "http_example.pcapng":
-        "sha256:bd05a35f65ecc6ddaa2a677ac445a3dc9e47a4d180bd57c2022b83388706a049",
+        "sha256:7669dff25fee1124e4cb3cd277f6488d4352878faff4723c6e38a49bbf7bc1c9",
     "http_gzip.pcap":
-        "sha256:15d92138439e7a8454525fb337967a470cd63ca534b4a8dd3f84d4b5b6c5e678",
+        "sha256:149336b5648dfa06f4ae40dd144db3d6789f7daf872f7a4d58a6637bb0d3409c",
     "http_stream_1.pcap":
-        "sha256:b149024c0d39e7784e8ffb23794a764a0042206378340c12285760c8e89397d7",
+        "sha256:12a6e17cc664d80d51f22ac68ca48b7a1ff88d88cad77b0a64668f8c9b03e1e2",
     "no_errors.pcap":
-        "sha256:85040d6ced7a442c33535d1343ffa5643a1596c9cb77e52e8407e1d45fb6091d",
+        "sha256:a42a6c98d958495efb7ac759ca5f4fac676814fa72ed85f00ad4271ea76e67b8",
     "packet_loss.pcap":
-        "sha256:6dae1da715dfaafdfd302f51a4c2af0329bf8c381b67798a95d25b3d14bd47d3",
+        "sha256:471f24d3360118feaf766a5c9fc6c6f9e1bb11a3175e74adb6c5f3e4d0830645",
     "payload_corruption.pcap":
-        "sha256:eaf62e08df5b58a85edde36c82859628459b7b501e019173ad8938b254bd7d4f",
+        "sha256:cde25744bdca79f8e003e037fc5351cdd50b17787df1860bb3c154da7a2b3aaf",
     "retransmission.pcap":
-        "sha256:0eba04f3c32711ee5f5dce4bedcd2f5b02990c4ed0cf90fcde4257664a704f28",
+        "sha256:fe401fe9ec6cea780ed69dfd18e39b67cfd55dfd3604fd8414c6a47fe93f607d",
     "sctp.pcap":
         "sha256:9b2b0fabd4c907df514a658a029a3955711e620ee05718952c636f531a612864",
     "stray_1.pcap":
-        "sha256:f6cb490fe44727a003aab5cf11e86e083200f57605e593a2230318375f1b2b4a",
+        "sha256:654e6fada44dde7b7b3f24a3610e752b3af6a001caab7b70a4faae9905ba8431",
     "sudden_termination_1.pcap":
         "sha256:6005b9090f0bf25d4c9f64d160fafda8471072c75b79ded688ac8ae9dc7f06e8",
     "sudden_termination_2.pcap":
@@ -75,31 +85,31 @@ TIMESTAMPS_FIXTURES = frozenset({
 
 PINNED_PURE_ACKS: dict[str, str] = {
     "delay.pcap":
-        "sha256:67ceafe6746681d8f504e6b2d036d1e1a67830d34834f3be92e8031a884b4f4b",
+        "sha256:66f08a418b547aaa26fca42a6c3730b68a41252f4e48e636d8976e30381fb883",
     "dns_example.pcapng":
         "sha256:976cd6695a8df7c9763f120bf4f71250d43cd1ce4b31365193b722fafef8858d",
     "fragmentation.pcap":
-        "sha256:2dd7247811a63f194e1fe3359112e4fb607b15af52b164ea15fc602219fe2697",
+        "sha256:4d1b57613a143f0c5347d86d276399a9b523a0233fa2852f1d1df919acfeaf62",
     "http.pcap":
-        "sha256:eed2ee1f4b34feddcdb57c731def20363df94c8fae3bc65ae45c2665a8434511",
+        "sha256:deaa3f7451ded6b3524018b52703b83fe9742f2be0971bc5842121f3f64c1b37",
     "http_example.pcapng":
-        "sha256:a1275155ef34966a37fc593f941ff4f21938c0e3fe0c09ca68c2edc7d7d4b17b",
+        "sha256:0294260b61dba7991cf4ae409d9873dc6aa6eed9f14860b866e4a7694fdc7359",
     "http_gzip.pcap":
-        "sha256:8772e5e0d5e7773e019e1c2f05507005fef486a425acfa70686dc21b1c31c75a",
+        "sha256:f136713a5cc206a1050e3c90cc5838f3328ba849cea200c389df31032cea3311",
     "http_stream_1.pcap":
-        "sha256:d70ff30af9585105e7038f057194c908b0a87c4dcaa57879747860895b7a1aa0",
+        "sha256:e7e390d01b2b9241a93eb292f22da47e7227cb55baf82bb32803b27082e8a559",
     "no_errors.pcap":
-        "sha256:737518a72852e79850ea0be2613db0db77877d504a41915e5bd3cfe0e6a061f4",
+        "sha256:e4efb9a93ddefea5851fa9127d3e7d8b3bafc0d44cf2802c9b2fb4b8b9779e69",
     "packet_loss.pcap":
-        "sha256:4e880517d2a19633f158ad40a0b87a8ba4fff9108479848197ccdbd467a6a54d",
+        "sha256:9ae9e6e999002431460bc72476e3f2dc78eb242814e400f08405ff56baffbffd",
     "payload_corruption.pcap":
-        "sha256:b9a649482b13ecbb7ca8303bf35b7240c76f6c40c069310bb30cc5310f101557",
+        "sha256:7a72d69b05102b069cc1339e6d0dc432f01beb3622e03c3c2a21d6ba45141d79",
     "retransmission.pcap":
-        "sha256:67660a8c7c16494e4899006b9a035ac4fab8639ef7f4d6dc0e27dc1d516a1b13",
+        "sha256:f69a1643a4c6c85693b38684cd05d3377a4d0f3f1341f7d69ba29c37f2799912",
     "sctp.pcap":
         "sha256:ce24ef9a7a157526737840cf379e312a31871e3a8b946f8619c6c48a981f3d09",
     "stray_1.pcap":
-        "sha256:45fc7049746c4cb08ff7cd52c9c7985324f9dc27c3e140dab993cd11335c4661",
+        "sha256:df095079c3abf0ad206c3354a377db4921d1e63ee8a7a04a412c4a3fd7aba85f",
     "sudden_termination_1.pcap":
         "sha256:6c52a8a42d61e7bf31a132200867f0307ebde69b8f8ddd270a040ec7c3de2fe8",
     "sudden_termination_2.pcap":

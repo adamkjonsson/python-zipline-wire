@@ -130,6 +130,10 @@ follow the reference to fetch them.  See {doc}`../guide/provenance`.
 .. autodata:: zpfwire.flow.REASON_PAWS
 ```
 
+```{eval-rst}
+.. autodata:: zpfwire.flow.REASON_TS_MISSING
+```
+
 When a repeat could not be judged by the Timestamps option it is cited as
 `REASON_OVERLAP` — the conservative reading — and the reason it could not be
 is counted under one of these keys in

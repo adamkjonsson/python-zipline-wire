@@ -15,6 +15,8 @@ options = ReassemblyOptions(
     coalesce=True,
     checksum="ignore",
     pure_acks=True,
+    acked_hold=None,
+    require_timestamps=False,
 )
 stats = zpfwire.capture_to_zpf("capture.pcap", "out.zpf", options=options)
 ```
@@ -102,23 +104,36 @@ would discard the whole stream.
 
 What it costs, and why it could not be the default: the evidence arrives
 *after* both copies, so every run is **held after it closes until the peer's
-ack covers it**, and only then written.  The hold is bounded by the two
-bounds the policy already has — `reorder_window` bytes of closed runs per
-direction, `flush_timeout` seconds since a run closed — and a run the bound
-releases, or that the session ends on, is written as `favor-old` would have
-written it.  So is a range whose copies both lacked the option, or whose
-covering ack did.  Every such byte is counted in
-`stats.acked_fallback_bytes`, so a file's digest never names a rule the file
-silently did not follow; `stats.acked_swaps` counts the ranges where the
-receiver's choice was *not* the first copy.  A one-way capture, with no acks
+ack covers it**, and only then written.  By default the hold is bounded by
+the two bounds the policy already has — `reorder_window` bytes of closed runs
+per direction, `flush_timeout` seconds since a run closed — or, when
+`acked_hold` is set, by that alone (below).  A run the bound releases, or
+that the session ends on, is written as `favor-old` would have written it.
+So is a range whose copies both lacked the option, whose covering ack did, or
+whose ack echoed neither copy, as a cumulative ack that jumps over several
+resends does — or both, as when a forgery carries the real segment's clock.  Every such byte is counted in `stats.acked_fallback_bytes`,
+including a resend that arrives *after* its run was released (since `0.7.0`;
+before, those were written as `favor-old` and counted nowhere), so a file's
+digest never names a rule the file silently did not follow;
+`stats.acked_swaps` counts the ranges where the receiver's choice was *not*
+the first copy.  A one-way capture, with no acks
 in it at all, falls back on every contested byte and says so.  Only
 *disagreeing* copies are held against a run, so memory is bounded by real
 disagreements, not by repeats.
 
-The record covering a swapped range carries `retransmit` either way — the
-flag is the sender's act — and its `timestamp` moves to the resend, which is
-now the packet that completed it.  The loser is cited as an `Undecoded`
-region wherever it lay in the capture.
+A copy of bytes the receiver had already acknowledged is not contested: it
+chose with only the first copy to hand, and a later one is old data to it.
+Its acknowledgement counts only if it covers bytes the capture has seen
+sent, since a forged segment carries another segment's ack.  What the policy
+cannot tell is a forged acknowledgement of bytes already seen; see
+{doc}`../reference/limits`.
+
+A swapped-in copy is **a record of its own**, carrying `retransmit` — the
+flag is the sender's act — and the resend's own `timestamp` and `ack`.  The
+resend went out after the peer had answered the bytes around it, so in one
+record with them it would straddle the peer's message and no causal position
+for it would be valid; apart, every stamp on every record is true.  The loser
+is cited as an `Undecoded` region wherever it lay in the capture.
 
 A `"favor-new"` was offered until 0.2.0 and never read, for the reason that
 makes `"favor-acked"` need the hold: a writer cannot prefer a later copy
@@ -131,6 +146,47 @@ can hide bytes in the other.  If you are analysing traffic adversarially, this
 is the setting to know about — `"favor-acked"` is the one that follows the
 receiver rather than a rule the sender can predict — and the digest is what
 lets you prove which rule the file was built under.
+
+### `acked_hold` — how long `favor-acked` waits
+
+Under `overlap="favor-acked"`, seconds a closed run may wait for the
+receiver's covering ack.  `None`, the default, bounds the hold by
+`flush_timeout` and `reorder_window`, which is right while a resend arrives
+within them.  It often does not: a resend comes an RTO after the copy it
+replaces, and an initial RTO of a second behind a bulk transfer puts
+hundreds of kilobytes, and the evidence, past both bounds.
+
+```python
+ReassemblyOptions(overlap="favor-acked", acked_hold=10.0)
+```
+
+Set, it is the hold's only bound, so the memory it takes is the traffic it
+spans.  Measured by the fidelity tool (`tools/fidelity.py`; see
+{doc}`../internals/contributing`) on a 1 MiB transfer at a 1 s RTO with a
+fifth of its segments corrupted, the default hold keeps about 90 corrupted
+copies a run, every byte of them in `acked_fallback_bytes`; a 10 s hold keeps
+none.  Left out of `params_digest` while `None`, so a policy that does not
+set it declares the digest it declared before the field existed.
+
+### `require_timestamps` — RFC 7323's rule for a missing option
+
+RFC 7323 §3.2: once both SYNs carried the Timestamps option, a receiver
+SHOULD silently drop a non-RST segment that lacks it.  With
+`require_timestamps=True` the reassembler does the same — the segment's
+bytes, its ack and its flags — and cites its payload as `timestamp-missing`,
+counted in `stats.ts_missing`.
+
+```python
+ReassemblyOptions(require_timestamps=True)
+```
+
+A segment forged by a third party usually lacks the option, so this keeps
+strays out of the stream: they otherwise win under every policy, since the
+first copy is kept and an ack covers a length, not content.  It is off by
+default because a middlebox that strips options mid-connection would make it
+drop real data.  A capture that began after the handshake never saw the
+negotiation and drops nothing; none of the real Timestamps captures in the
+test corpus loses a segment to it.  Left out of `params_digest` while off.
 
 ### `session_timeout` — when a conversation is over
 
@@ -147,8 +203,27 @@ endpoint pair when a client reuses a port hours later.
 ### `coalesce` — record granularity
 
 With `coalesce=True` (the default), contiguous bytes are joined into one
-record, flushed on PSH, on a gap, on FIN or RST, at a timeout, and at the end
-of the capture.  With `coalesce=False`, every segment becomes its own record.
+record.  A run ends:
+
+- **at PSH**, where the pushed segment's bytes join it — in sequence order,
+  so a segment held out of order ends its own run when it drains, not
+  whichever run was open when it arrived;
+- **when the peer answers it**: a peer segment carrying data, or a FIN,
+  that acknowledges any of its bytes.  What the sender writes next was
+  written after that answer, and in one record with the bytes before it
+  would straddle the peer's message, which no causal order can place.  A
+  pure ACK answers nothing a record can be ordered against, so a one-way
+  transfer still coalesces;
+- on a gap, on FIN or RST, at a timeout, and at the end of the capture.
+
+With `coalesce=False`, every segment becomes its own record, including
+those drained after a hole fills.  Both rules are `0.7.0`'s; before it a run
+ended only at the arriving packet's PSH, and a backlog drained after a hole
+was one record however many pushed segments it held.
+
+A FIN ends the record that ends where it sits.  When that record was already
+written — a pushed last segment, then a bare FIN, the usual close — the FIN
+is a zero-length record at its sequence number, as a pure ACK is.
 
 ```python
 ReassemblyOptions(coalesce=False)            # one record per segment
@@ -296,8 +371,13 @@ that **every transmission of a byte range gets its own value, and a copy of
 one transmission does not**.
 
 **A repeated segment is a copy, not a resend**, when it carries the same
-TSval as the transmission it repeats and nothing from the peer arrived
-between the two.  That is what a mirror port, a two-interface capture or a
+TSval as the transmission it repeats, nothing from the peer arrived between
+the two, and its bytes are the same.  The last clause is since `0.7.0`: a
+copy is byte-identical by definition, and a segment forged with the right
+clock is not one.  While a run still holds the accepted bytes they are
+compared directly; once they are written, a copy has to be the same packet
+as one remembered transmission, the same range with a CRC32 of the same
+bytes.  That is what a mirror port, a two-interface capture or a
 veth pair produces: every packet twice, a microsecond apart, the sender
 having sent once.  Such a copy is discarded and cited as
 `duplicate-discarded`, counted in `stats.duplicates`, and — the part that
@@ -306,7 +386,13 @@ bytes.  The specification names that flag as the sender's act, and a mirror
 is not the sender.
 
 A repeat with a **later** TSval is a retransmission, cited
-`overlap-discarded` and flagged as before.  So is a repeat with the *same*
+`overlap-discarded`, and flags the record holding the bytes it repeats —
+if that record is not yet written; a record cannot change once it is out,
+and a resend usually comes an RTO later, so most resends flag nothing and
+their citation is what records them.  Before `0.7.0` the flag went on
+whichever run happened to be open, which could be a later record holding no
+resent byte.  A copy *of a resend* is a copy too, judged against the resend
+rather than the original it repeats.  So is a repeat with the *same*
 TSval that has a packet from the peer between it and its original: a fast
 retransmit is triggered by the peer's duplicate ACKs, and on a stack whose
 timestamp tick is coarser than its round trip the resend can land inside the

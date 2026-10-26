@@ -21,7 +21,7 @@ every *other* consumer of that library.  Filing it fixes it once.
 
 ## What it produced
 
-Forty-two issues so far, and three are open: zipline#166, a fragmented UDP
+Forty-four issues so far, and three are open: zipline#166, a fragmented UDP
 datagram over a unit-sequence input, which this tree marks `undecodable`
 until the format answers; zipline#168, whether a stream's extent counts a
 FIN's sequence number; and python-zipline#101, the writer's cost per record.
@@ -63,6 +63,8 @@ within days.
 | #164 | A generated retransmission kept the original's acknowledgement number, so a direction's acks stepped backwards on every resend after peer data | Fixed the same day (0.16.0); reviewed here across 20 seeds × four impairments |
 | #204 | `write_pcap` and `write_pcapng` annotated their records as a `list` though they stream any iterable, so a typed export had to materialise every packet | `Iterable[PacketTuple]`, a consumed-once contract and its tests (0.18.0) |
 | #213 | Checksum verification looped in Python once per 16-bit word, the largest single cost of reading a capture, found by profiling this tree | The internet checksum computed in C (0.20.0): `iter_packets` 39% faster on `http_stream_1.pcap`, every output byte-identical, confirmed here on `.dev1` |
+| #227 | With data both ways, a corrupted segment was rebuilt with a fresh checksum over its damaged payload, so it verified: half the fidelity tool's two-way corruption runs had to be voided | The byte flipped after the rebuild (0.21.0); reviewed here on `.dev1`: only those segments' bytes move, over 20 seeds per case, and no run is void |
+| #228 | A stray never carried the Timestamps option, so an RFC 7323 §3.2 receiver — this tree's `require_timestamps` — dropped every one and was never tested by them | `stray_timestamps`, stamping each stray as the side it impersonates (0.21.0); reviewed here on `.dev1`, and it found #61 here |
 
 **python-zipline**:
 
