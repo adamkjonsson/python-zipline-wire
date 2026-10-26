@@ -75,12 +75,20 @@ class ConversionStats:
             ``favor-old`` policy would have written wrong.
         acked_fallback_bytes: Under ``favor-acked``, bytes of disagreeing
             copies decided as ``favor-old`` would decide them because the
-            evidence never came: no ack covered the run before
-            ``flush_timeout`` or ``reorder_window`` was reached, or the ack
-            that did carried no Timestamps option, or the session ended
-            first.  Non-zero means the file's overlap policy was, for those
-            bytes, not the one its Decoder Descriptor names — which is why
-            it is counted rather than silent.
+            evidence never came: no ack covered the run before its hold's
+            bound was reached (``flush_timeout`` or ``reorder_window``, or
+            ``acked_hold``), or the ack that did carried no Timestamps
+            option, or echoed neither copy, or the session ended first.
+            Since ``0.7.0`` this includes a resend that arrives after its
+            run was released, which is the usual case when the resend comes
+            an RTO later than the bounds allow (#54).  Non-zero means the
+            file's overlap policy was, for those bytes, not the one its
+            Decoder Descriptor names — which is why it is counted rather
+            than silent.
+        ts_missing: TCP segments dropped under ``require_timestamps``: no
+            Timestamps option on a connection that negotiated it (#57).
+        ts_missing_bytes: Payload bytes those segments carried, cited as
+            ``timestamp-missing``.
         ts_fallback: How often a repeat could not be judged by the Timestamps
             option and was treated as a retransmission, keyed by why —
             :data:`~zpfwire.tcp.TS_ABSENT` when either side lacked the
@@ -143,6 +151,8 @@ class ConversionStats:
     wrap_resolved: int = 0
     acked_swaps: int = 0
     acked_fallback_bytes: int = 0
+    ts_missing: int = 0
+    ts_missing_bytes: int = 0
     ts_fallback: Counter[str] = field(default_factory=Counter)
     bad_checksum: int = 0
     checksum_dropped_bytes: int = 0
@@ -206,28 +216,7 @@ class ConversionStats:
                 f"duplicates   {self.duplicates} of {self.packets} packets were copies, "
                 f"{self.duplicate_bytes} bytes (discarded)",
             )
-        if self.paws_bytes:
-            lines.append(f"paws         {self.paws_bytes} bytes rejected (older than the clock)")
-        if self.wrap_resolved:
-            lines.append(
-                f"wrap         {self.wrap_resolved} hole(s) wider than 2^30 bytes; "
-                "the session was split there",
-            )
-        if self.acked_swaps:
-            lines.append(
-                f"acked        {self.acked_swaps} range(s) took the copy the receiver echoed",
-            )
-        if self.acked_fallback_bytes:
-            lines.append(
-                f"acked        {self.acked_fallback_bytes} contested bytes decided as favor-old "
-                "(no ack evidence)",
-            )
-        if self.ts_fallback:
-            why = ", ".join(f"{key}: {count}" for key, count in sorted(self.ts_fallback.items()))
-            lines.append(
-                f"ts fallback  {sum(self.ts_fallback.values())} repeat(s) treated as "
-                f"retransmitted without timestamp evidence ({why})",
-            )
+        lines += self._timestamp_lines()
         if self.bad_checksum:
             lines.append(f"bad cksum    {self.bad_checksum} packet(s)")
         if self.checksum_dropped_bytes:
@@ -244,3 +233,36 @@ class ConversionStats:
         if self.unlocatable_bytes:
             lines.append(f"uncited      {self.unlocatable_bytes} bytes (no capture range)")
         return "\n".join(lines)
+
+
+    def _timestamp_lines(self) -> list[str]:
+        """Return the summary lines the Timestamps option and ``favor-acked`` decide."""
+        lines = []
+        if self.paws_bytes:
+            lines.append(f"paws         {self.paws_bytes} bytes rejected (older than the clock)")
+        if self.wrap_resolved:
+            lines.append(
+                f"wrap         {self.wrap_resolved} hole(s) wider than 2^30 bytes; "
+                "the session was split there",
+            )
+        if self.acked_swaps:
+            lines.append(
+                f"acked        {self.acked_swaps} range(s) took the copy the receiver echoed",
+            )
+        if self.acked_fallback_bytes:
+            lines.append(
+                f"acked        {self.acked_fallback_bytes} contested bytes decided as favor-old "
+                "(no ack evidence)",
+            )
+        if self.ts_missing:
+            lines.append(
+                f"ts missing   {self.ts_missing} segment(s) without the Timestamps option "
+                f"dropped, {self.ts_missing_bytes} bytes (RFC 7323 §3.2)",
+            )
+        if self.ts_fallback:
+            why = ", ".join(f"{key}: {count}" for key, count in sorted(self.ts_fallback.items()))
+            lines.append(
+                f"ts fallback  {sum(self.ts_fallback.values())} repeat(s) treated as "
+                f"retransmitted without timestamp evidence ({why})",
+            )
+        return lines

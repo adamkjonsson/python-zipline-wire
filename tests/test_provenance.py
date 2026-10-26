@@ -274,8 +274,8 @@ def test_a_held_segment_does_not_drag_the_stamps_backwards(
     out = to_zpf(
         capture_of(
             [tcp_packet(seq=ISN, flags=TCP_SYN),                            # 1_000_000
-             tcp_packet(seq=ISN + 3, payload=b"bb"),                        # 1_001_000, held
-             tcp_packet(seq=ISN + 1, flags=TCP_PSH | TCP_ACK,
+             tcp_packet(seq=ISN + 3, flags=TCP_PSH | TCP_ACK, payload=b"bb"),  # 1_001_000, held
+             tcp_packet(seq=ISN + 1, flags=TCP_ACK,
                         payload=b"aa")],                                    # 1_002_000, fills
             start_us=1_000_000,
             step_us=1_000,
@@ -303,8 +303,8 @@ def test_the_ack_is_the_highest_a_contributor_carried_not_the_last_appended(
     out = to_zpf(
         capture_of(
             [tcp_packet(seq=ISN, flags=TCP_SYN),
-             tcp_packet(seq=ISN + 3, ack=6000, payload=b"bb"),            # held
-             tcp_packet(seq=ISN + 1, ack=7000, flags=TCP_PSH | TCP_ACK,
+             tcp_packet(seq=ISN + 3, ack=6000, flags=TCP_PSH | TCP_ACK, payload=b"bb"),  # held
+             tcp_packet(seq=ISN + 1, ack=7000, flags=TCP_ACK,
                         payload=b"aa")],                                  # fills
             start_us=1_000_000,
             step_us=1_000,
@@ -331,8 +331,8 @@ def test_a_higher_ack_on_the_held_segment_is_kept_by_rule_not_by_luck(
     out = to_zpf(
         capture_of(
             [tcp_packet(seq=ISN, flags=TCP_SYN),
-             tcp_packet(seq=ISN + 3, ack=9000, payload=b"bb"),            # held
-             tcp_packet(seq=ISN + 1, ack=5000, flags=TCP_PSH | TCP_ACK,
+             tcp_packet(seq=ISN + 3, ack=9000, flags=TCP_PSH | TCP_ACK, payload=b"bb"),  # held
+             tcp_packet(seq=ISN + 1, ack=5000, flags=TCP_ACK,
                         payload=b"aa")],                                  # fills
             start_us=1_000_000,
             step_us=1_000,
@@ -359,8 +359,8 @@ def test_the_ack_maximum_is_serial_so_it_survives_a_wrap(
     out = to_zpf(
         capture_of(
             [tcp_packet(seq=ISN, flags=TCP_SYN),
-             tcp_packet(seq=ISN + 3, ack=before_wrap, payload=b"bb"),
-             tcp_packet(seq=ISN + 1, ack=after_wrap, flags=TCP_PSH | TCP_ACK,
+             tcp_packet(seq=ISN + 3, ack=before_wrap, flags=TCP_PSH | TCP_ACK, payload=b"bb"),
+             tcp_packet(seq=ISN + 1, ack=after_wrap, flags=TCP_ACK,
                         payload=b"aa")],
             start_us=1_000_000,
             step_us=1_000,

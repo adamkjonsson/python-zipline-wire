@@ -1607,6 +1607,9 @@ POLICIES: tuple[Policy, ...] = (
     Policy("no-coalesce", ReassemblyOptions(coalesce=False)),
     Policy("no-pure-acks", ReassemblyOptions(pure_acks=False)),
     Policy("sequenced", ReassemblyOptions(), sequenced=True),
+    # Since 0.7.0: a hold past flush_timeout (#32), and RFC 7323 §3.2 (#57).
+    Policy("favor-acked, hold 10 s", ReassemblyOptions(overlap="favor-acked", acked_hold=10.0)),
+    Policy("require-timestamps", ReassemblyOptions(require_timestamps=True)),
 )
 
 
@@ -1660,8 +1663,11 @@ def sweep_one(job: tuple[str, str, int]) -> list[dict[str, Any]]:
     for policy in POLICIES:
         try:
             m = measure(r, policy.options, sequenced=policy.sequenced)
-        except Unclean as error:
-            results.append({**base, "policy": policy.name, "unclean": str(error)})
+        except (Unclean, zpf.ZpfError) as error:
+            # A file that reads back unclean, or one the writer refused to
+            # write: either way a bug, reported as such, and not scored.
+            results.append({**base, "policy": policy.name,
+                            "unclean": f"{type(error).__name__}: {error}"})
             continue
         stats = m.conversion.stats
         a = m.accounting

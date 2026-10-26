@@ -128,13 +128,31 @@ def test_a_mirrored_capture_sets_no_retransmit_flag(tmp_path: pathlib.Path):
     assert out.stats.ts_fallback == {}
 
 
+def resent_ranges(out: object, capture: pathlib.Path) -> list[tuple[str, int, int]]:
+    """Each range a discarded resend repeated, as ``(sender, seq, end)``.
+
+    Read from the file's ``overlap-discarded`` citations, located in the
+    capture, so it does not depend on how the reassembler flags records.
+    """
+    packets = [p for p in CaptureReader(path=capture) if p.payload and p.payload_offset is not None]
+    ranges = []
+    for u in out.undecoded:  # type: ignore[attr-defined]
+        if u.reason != "overlap-discarded":
+            continue
+        p = next(p for p in packets
+                 if p.payload_offset <= u.off_start < p.payload_offset + len(p.payload))
+        seq = (p.seq + u.off_start - p.payload_offset) % 2**32
+        ranges.append((p.src_endpoint, seq, (seq + u.off_end - u.off_start) % 2**32))
+    return ranges
+
+
 @pytest.mark.parametrize(("name", "flags", "overlap"), [
-    ("tcp_lossy_ts.pcap", 7, 8384),
-    ("tcp_reorder_ts.pcap", 4, 5240),
-    ("tcp_corrupt_ts.pcap", 2, 2620),
-    ("tcp_wrap_ts.pcap", 1, 2096),
+    ("tcp_lossy_ts.pcap", 6, 8384),
+    ("tcp_reorder_ts.pcap", 1, 5240),
+    ("tcp_corrupt_ts.pcap", 1, 2620),
+    ("tcp_wrap_ts.pcap", 0, 2096),
 ])
-def test_a_real_resend_keeps_its_flag(
+def test_a_real_resend_is_judged_one_and_flags_only_what_it_resent(
     tmp_path: pathlib.Path, name: str, flags: int, overlap: int,
 ):
     """Every resend in the corpus carries a later TSval, and none is a duplicate.
@@ -142,6 +160,15 @@ def test_a_real_resend_keeps_its_flag(
     ``tcp_reorder_ts`` is the guard against over-correcting: its resends are
     *spurious* — the originals arrived, late — but the sender did resend, and
     that is what the flag says.
+
+    The flag is on the record holding the resent range (#59), so every
+    flagged record holds bytes a discarded resend repeated.  A resend of
+    bytes already written flags nothing — a record cannot change once it is
+    out — and its ``overlap-discarded`` citation is what says it.  Here, a
+    resend comes an RTO after its record was written, which is most of them:
+    before #59 the flags these four captures carried fell on whichever run
+    happened to be open, and ``tcp_wrap_ts``'s one flag was on bytes nobody
+    resent.
     """
     out = to_zpf(CAPTURES / name, tmp_path)
 
@@ -149,6 +176,18 @@ def test_a_real_resend_keeps_its_flag(
     assert out.stats.duplicates == 0
     assert out.stats.overlap_bytes == overlap
     assert out.stats.ts_fallback == {}
+    (session,) = out.sessions
+    endpoint = {p.participant_id: p.endpoint for p in session.participants}
+    resent = resent_ranges(out, CAPTURES / name)
+    for record in session.records:
+        if not record.flags & zpf.RecordFlags.RETRANSMIT:
+            continue
+        end = (record.seq_start + len(record.payload)) % 2**32
+        assert any(
+            sender == endpoint[record.sender_pid]
+            and 0 < (end - seq) % 2**32 < 2**31 and 0 < (stop - record.seq_start) % 2**32 < 2**31
+            for sender, seq, stop in resent
+        ), record
 
 
 @pytest.mark.parametrize("name", REAL)
@@ -192,11 +231,17 @@ def test_generated_retransmissions_are_all_retransmissions(tmp_path: pathlib.Pat
 
 
 def test_a_duplicated_retransmission_is_both(tmp_path: pathlib.Path):
-    """``DUP[RETRANS[n]]``: the resend is a resend, its copy is a copy."""
+    """``DUP[RETRANS[n]]``: the resend is a resend, its copy is a copy.
+
+    All 18 copies are duplicates — 16 of originals and the 2 of resends,
+    which until #56 were judged against the original's clock and taken for
+    further resends — and the overlap is the resends' alone, exactly what
+    the same seed gives without duplication.
+    """
     out = generated(tmp_path, retransmission_probability=0.3, duplicate_probability=0.3)
 
-    assert out.stats.duplicates == 16
-    assert out.stats.overlap_bytes == 13369
+    assert out.stats.duplicates == 18
+    assert out.stats.overlap_bytes == 12028
     assert out.stats.ts_fallback == {}
 
 
@@ -285,13 +330,16 @@ def test_the_stream_that_wraps_is_untouched_by_the_wrap_rules(tmp_path: pathlib.
     """``tcp_wrap_ts`` decodes exactly as it did before any rule read the option.
 
     Under ``0.5.0``'s defaults: pure ACKs, stored since ``0.6.0``, are not
-    what this pins.
+    what this pins.  Re-pinned for ``0.7.0``, where the wrap rules still do
+    nothing here, but three fixes move it: its FIN reaches a record (#60),
+    its one ``retransmit`` flag, on bytes nobody resent, is gone (#59), and
+    a drained backlog ends at its own PSH (#53).
     """
     out = tmp_path / "wrap.zpf"
     capture_to_zpf(CAPTURES / "tcp_wrap_ts.pcap", out, options=ReassemblyOptions(pure_acks=False))
 
     assert decode_digest(out) == (
-        "sha256:1b7cb603bfa511d1495a579d38540b9ee319b63f395ed90d3719a5b9a1f7eb1e"
+        "sha256:85b5300202d8777b37a535e5f7ad0278417ec20c9ee75f9eb2ca3e044b80e125"
     )
 
 

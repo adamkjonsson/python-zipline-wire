@@ -33,6 +33,116 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+Every change below that moves output was found by `tools/fidelity.py`
+(#52), which scores a conversion against the traffic packeteer generated it
+from. The plan quotes each fix's cells before and after. For anyone
+reproducing a `.zpf`, eleven of the sixteen pinned fixtures decode
+differently: `delay`, `fragmentation`, `http`, `http_example`, `http_gzip`,
+`http_stream_1`, `no_errors`, `packet_loss`, `payload_corruption`,
+`retransmission` and `stray_1`. So does `tcp_wrap_ts`. The entries below say
+which change moves which.
+
+### Added
+
+- `ReassemblyOptions.acked_hold` and `--acked-hold SECONDS`: under
+  `favor-acked`, how long a closed run may wait for the receiver's covering
+  ack, in place of `flush_timeout` and `reorder_window`
+  ([#32](https://github.com/adamkjonsson/python-zipline-wire/issues/32)).
+  A resend comes an RTO after the copy it replaces, and on a bulk transfer
+  at a 1 s initial RTO the default bounds release about 90 corrupted copies
+  a run before their resend arrives. A 10 s hold releases none. `None` by
+  default, and left out of `params_digest` while `None`.
+- `ReassemblyOptions.require_timestamps` and `--require-timestamps`: drop a
+  segment without the TCP Timestamps option on a connection whose SYNs both
+  carried it, as RFC 7323 §3.2 has a receiver do. Its bytes, ack and flags
+  are dropped, and its payload is cited as `timestamp-missing`
+  ([#57](https://github.com/adamkjonsson/python-zipline-wire/issues/57)).
+  Forged segments usually lack the option, and with it every stray scenario
+  in the fidelity sweep converts exactly. Off by default, because a
+  middlebox stripping options mid-connection would make it drop real data;
+  no real capture in the test corpus loses a segment to it. Counted in
+  `ConversionStats.ts_missing` and `ts_missing_bytes`, and left out of
+  `params_digest` while off. `zpfwire.flow.REASON_TS_MISSING` names the
+  reason.
+
+### Changed
+
+- **Breaking:** a coalesced run ends where the peer answers it
+  ([#55](https://github.com/adamkjonsson/python-zipline-wire/issues/55)).
+  A peer segment carrying data or a FIN that acknowledges bytes of the open
+  run closes it. Before, a run ended only at PSH, so an unpushed request's
+  run took in the next request, after the response had answered it. The
+  record then held bytes from both sides of the response, and both the
+  causal merge and `--sequenced` placed it after the response, so the
+  response read before the request it answers. That happened in 35 of 40
+  generated request/response runs. A pure ACK does not close a run, so a
+  one-way transfer still coalesces. Under `favor-acked`, a copy swapped in
+  for the one first seen is now a **record of its own** with its own
+  `timestamp` and `ack`. It is a resend sent after the peer answered the
+  bytes around it, and in one record with them it dated the whole run
+  after that answer. Files with request/response traffic sent without PSH,
+  and `favor-acked` files with a swap, are written differently; none of the
+  pinned fixtures is.
+- **Breaking:** a run ends at PSH where the pushed segment's bytes join it,
+  in sequence order, and `coalesce=False` holds for segments drained from
+  the reorder buffer
+  ([#53](https://github.com/adamkjonsson/python-zipline-wire/issues/53)).
+  Before, the flush followed the *arriving* packet, with two consequences:
+  - a held, pushed segment ended whichever unrelated run was open;
+  - a backlog drained after a hole filled became one record whatever PSHs it
+    held, even under `coalesce=False`, contrary to that option's documented
+    "each segment becomes its own record".
+
+  Moves `delay` (24 → 30 records) and `packet_loss` (8 → 35), along with
+  the FIN records below.
+- **Breaking:** `retransmit` flags the record holding the resent range
+  ([#59](https://github.com/adamkjonsson/python-zipline-wire/issues/59)).
+  Before, it was set on whichever run was open when the resend was
+  discarded, which could be a later record holding no resent byte. A
+  record cannot change once written, and a resend usually comes an RTO
+  later, so most resends now flag nothing. Their `overlap-discarded`
+  citation is what says they happened. Moves `payload_corruption` (5
+  spurious flags) and `retransmission` (7), whose records the flags had
+  split now merge, and `tcp_wrap_ts` (1).
+- **Breaking:** a bare FIN after a pushed last segment, the usual way a
+  sender closes, is written as a zero-length record at its sequence number,
+  as a pure ACK is
+  ([#60](https://github.com/adamkjonsson/python-zipline-wire/issues/60)).
+  It reached no record before. A FIN beyond a hole ends the record that ends
+  where it sits, not the run open when it arrived. Adds FIN records to all
+  eleven moved fixtures, including 40 to `http_stream_1`.
+- **Breaking:** a capture-point copy of a resend that was itself discarded
+  is judged a copy, cited `duplicate-discarded` and counted in
+  `duplicates`, not taken for another resend
+  ([#56](https://github.com/adamkjonsson/python-zipline-wire/issues/56)).
+  Every such copy in the fidelity sweep was misjudged, 9,681 of them; none
+  is now. No stream byte moves; citations and stats do.
+- **Breaking:** under `favor-acked`, a repeat whose original has aged out
+  of the reassembler's memory (`ts_fallback["stale"]`) is contested like a
+  resend, since it carries its own clock for the receiver's echo to match.
+  A resend a full RTO behind a bulk transfer is usually such a repeat. More
+  corrupted copies are swapped out, so `favor-acked` files with late
+  resends are written differently
+  ([#54](https://github.com/adamkjonsson/python-zipline-wire/issues/54)).
+
+### Fixed
+
+- `acked_fallback_bytes` counts every contested byte `favor-acked` wrote as
+  `favor-old` would ([#54](https://github.com/adamkjonsson/python-zipline-wire/issues/54)).
+  Two kinds went uncounted before:
+  - a resend arriving after a bound released its run, judged against a
+    digest of each released segment as written;
+  - an ack whose echo named neither copy, as a cumulative ack over several
+    resends does.
+
+  On a 1 MiB transfer at a 1 s RTO, the stat went from 0 to exactly the
+  bytes left wrong.
+- `capture_to_zpf`, `convert` and `packets_to_zpf` annotate `sink` as
+  `str | PathLike[str] | IO[bytes] | IO[str]`. All three take
+  `face="jsonl"`, which zpf writes to a text stream, so a caller passing an
+  `io.StringIO` was right at runtime and wrong to a type checker
+  ([#58](https://github.com/adamkjonsson/python-zipline-wire/issues/58)).
+
 ### Documentation
 
 - The contributing guide describes `tools/fidelity.py`, which measures how

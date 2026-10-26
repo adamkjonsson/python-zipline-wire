@@ -135,6 +135,8 @@ Note: some bytes never reached the output. Raise --reorder-window or
 | `--no-coalesce` | one record per segment instead of per contiguous byte run |
 | `--no-pure-acks` | fold each pure ACK's `ack` into the next data record instead of storing it, as before `0.6.0`: about a fifth smaller and faster to write, but readers lose the ordering and timing the pure ACKs carry |
 | `--checksum {ignore,drop}` | whether to discard a TCP segment whose checksum does not verify; a UDP datagram is always kept |
+| `--acked-hold SECONDS` | under `favor-acked`, how long a run may wait for the receiver's ack, for paths whose resend comes later than `--flush-timeout` |
+| `--require-timestamps` | drop a segment lacking the TCP Timestamps option on a connection that negotiated it (RFC 7323 §3.2), which keeps forged segments out |
 
 These are hashed into the file's decoder descriptor, so a `.zpf` records the
 policy that produced it.

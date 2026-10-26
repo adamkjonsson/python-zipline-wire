@@ -103,6 +103,8 @@ def _options(args: argparse.Namespace) -> ReassemblyOptions:
         coalesce=not args.no_coalesce,
         checksum=args.checksum,
         pure_acks=not args.no_pure_acks,
+        acked_hold=args.acked_hold,
+        require_timestamps=args.require_timestamps,
     )
 
 
@@ -331,6 +333,15 @@ def main() -> None:
                                  "of storing it as a zero-length record, as before 0.6.0: "
                                  "smaller and faster to write, but readers lose the order "
                                  "and timing pure ACKs carry")
+    reassembly.add_argument("--acked-hold", type=_positive_float, default=None,
+                            metavar="SECONDS",
+                            help="under --overlap favor-acked, how long a run may wait for "
+                                 "the receiver's ack, in place of --flush-timeout and "
+                                 "--reorder-window (default: those two)")
+    reassembly.add_argument("--require-timestamps", action="store_true",
+                            help="drop a segment without the Timestamps option on a "
+                                 "connection that negotiated it, as RFC 7323 §3.2 has a "
+                                 "receiver do: forged segments usually lack it")
     reassembly.add_argument("--checksum", choices=CHECKSUM_POLICIES, default="ignore",
                             help="what to do with a TCP segment whose checksum does "
                                  "not verify (default: ignore); a UDP datagram is "

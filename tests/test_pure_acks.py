@@ -172,9 +172,9 @@ def test_a_pure_ack_ahead_of_held_bytes_waits_for_them(tmp_path: pathlib.Path):
     """Stored at its own number, it may only follow every record of its sender that starts below."""
     out = to_zpf(tcp_segments([
         Seg(1, b"ab"),
-        Seg(7, b"gh"),             # held: bytes 3-6 have not arrived
+        Seg(7, b"gh", flags=TCP_PSH),  # held: bytes 3-6 have not arrived
         Seg(9, b"", ack=700),      # the sender's next number is 9
-        Seg(3, b"cdef", flags=TCP_PSH),
+        Seg(3, b"cdef"),
     ]), tmp_path)
 
     run, ack = out.only.by(0)

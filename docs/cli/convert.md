@@ -116,11 +116,14 @@ they turn up later.  These settings are what decide when that happens.
 | `--no-coalesce` | off | Emit one record per segment instead of one per contiguous byte run |
 | `--no-pure-acks` | off | Fold each pure ACK's `ack` into the next data record instead of storing it as a zero-length record, as every release before `0.6.0` did. Writes exactly what `0.5.0` wrote. Smaller and faster to write, since there are about as many pure ACKs as data segments (19% less output and 23% less time on a 4,140-packet HTTP capture), at the cost of the ordering and timing they give readers — see {doc}`../guide/reassembly` |
 | `--checksum {ignore,drop}` | `ignore` | What to do with a TCP segment whose checksum does not verify. `drop` discards it as a receiver would, leaving the retransmission to supply the bytes. A UDP datagram is kept under either, and counted: a UDP stream could not show one missing |
+| `--acked-hold SECONDS` | unset | Under `--overlap favor-acked`, how long a run may wait for the receiver's ack, in place of `--flush-timeout` and `--reorder-window`. For paths whose resend comes later than those bounds allow; every byte a bound decides is counted either way |
+| `--require-timestamps` | off | Drop a segment without the TCP Timestamps option on a connection that negotiated it, as RFC 7323 §3.2 has a receiver do. Forged segments usually lack it. Off by default: a middlebox stripping options mid-connection would make it drop real data |
 
-All seven are hashed into the file's decoder descriptor as a `params_digest`,
+All nine are hashed into the file's decoder descriptor as a `params_digest`,
 so a `.zpf` records the policy that produced it and a conversion can be
-reproduced.  `--no-pure-acks` is recorded by its absence, so an opted-out
-file declares the digest `0.5.0` declared for the same policy.  {doc}`../guide/reassembly` works through what each one costs.
+reproduced.  `--no-pure-acks`, `--acked-hold` and `--require-timestamps` are
+recorded by their absence when not given, so a file that does not use them
+declares the digest an older release declared for the same policy.  {doc}`../guide/reassembly` works through what each one costs.
 
 ## Causal order
 

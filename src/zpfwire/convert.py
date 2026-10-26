@@ -109,7 +109,7 @@ class _CaptureTarget:
 
 def capture_to_zpf(
     source: str | os.PathLike[str] | IO[bytes],
-    sink: str | os.PathLike[str] | IO[bytes],
+    sink: str | os.PathLike[str] | IO[bytes] | IO[str],
     *,
     options: ReassemblyOptions | None = None,
     tcp: bool = True,
@@ -125,7 +125,8 @@ def capture_to_zpf(
 
     Args:
         source: Path to a pcap or pcapng file, or an open binary stream.
-        sink: Path to write, or an open stream.
+        sink: Path to write, or an open stream: binary for the binary face,
+            text for JSONL.
         options: Reassembly policy; the defaults if omitted.
         tcp: Convert TCP conversations.
         udp: Convert UDP conversations.
@@ -174,7 +175,7 @@ def capture_to_zpf(
 
 def convert(
     reader: CaptureReader,
-    sink: str | os.PathLike[str] | IO[bytes],
+    sink: str | os.PathLike[str] | IO[bytes] | IO[str],
     *,
     options: ReassemblyOptions | None = None,
     wanted: Iterable[str] = ("tcp", "udp"),
@@ -192,7 +193,8 @@ def convert(
 
     Args:
         reader: The capture to convert.
-        sink: Path to write, or an open stream.
+        sink: Path to write, or an open stream: binary for the binary face,
+            text for JSONL.
         options: Reassembly policy; the defaults if omitted.
         wanted: Which transports to convert.
         digest: Content digest of the capture, for the Source Descriptor.

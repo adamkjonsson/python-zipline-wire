@@ -458,17 +458,24 @@ def test_pushed_messages_keep_their_causal_order(name: str, sequenced: bool):
         assert order.inversions == 0, (seed, order.positions)
 
 
-@pytest.mark.xfail(strict=True, reason="Phase 5: a coalesced run spans an unpushed message")
 @pytest.mark.parametrize("sequenced", [False, True], ids=["merge", "sequenced"])
-def test_an_unpushed_message_keeps_its_causal_order(sequenced: bool):
-    """Seed 3's first request ends without PSH, and its run takes in the second.
+@pytest.mark.parametrize("name", ORDERED)
+def test_unpushed_messages_keep_their_causal_order(name: str, sequenced: bool):
+    """At packeteer's PSH rate, half the messages end without PSH, and order holds anyway.
 
-    The record holds bytes sent before the response and bytes sent after
-    it, so no position for it is valid: the response lands before the
-    request it answers.
+    Until #55 a run ended only at PSH, so an unpushed request's run took in
+    the next request too, after the response had answered it: a record
+    holding bytes from both sides of the response, which no position could
+    place.  In 35 of 40 clean runs the response came before its request.
+    A run now ends where peer data answers it.  Strays are converted with
+    ``require_timestamps`` (#57): a forged segment's ack is a forgery too,
+    and drained into a real record it misplaces it.
     """
-    order = measure(prototype(), sequenced=sequenced).order
-    assert order.inversions == 0, order.positions
+    options = ReassemblyOptions(require_timestamps=True) if name == "stray" else None
+    for seed in SEEDS:
+        r = run(Scenario(seed=seed, impairments=ORDERED[name]))
+        order = measure(r, options, sequenced=sequenced).order
+        assert order.inversions == 0, (seed, order.positions)
 
 
 def test_a_reply_sent_into_a_loss_does_not_depend_on_the_request():

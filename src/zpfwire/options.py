@@ -109,6 +109,24 @@ class ReassemblyOptions:
             written. ``False`` folds each ``ack`` into the next data record
             instead, which is what every release before ``0.6.0`` did, and
             writes exactly what ``0.5.0`` wrote; see :meth:`params_digest`.
+        acked_hold: Under ``overlap="favor-acked"``, seconds a closed run may
+            wait for the receiver's covering ack before it is written on the
+            fallback.  ``None``, the default, bounds the hold by
+            :attr:`flush_timeout` and :attr:`reorder_window`, which is right
+            while a resend arrives within them.  A path whose resend comes
+            later — a bulk transfer behind an initial RTO of a second, a
+            delayed-ACK stack under load — releases runs before their
+            contest, and every such byte is counted in
+            ``acked_fallback_bytes`` (#32).  Set, it is the hold's only
+            bound, so the memory it takes is the traffic it spans.
+        require_timestamps: Drop a TCP segment that lacks the Timestamps
+            option on a connection whose two SYNs both carried it, as RFC
+            7323 §3.2 has a receiver do: bytes, ack and flags, cited as
+            ``timestamp-missing``.  A segment forged by a third party usually
+            lacks the option, so this keeps strays out of the stream.  Off by
+            default, because a middlebox that strips options mid-connection
+            would make it drop real data; a capture that began after the
+            handshake never applies it (#57).
 
     """
 
@@ -119,6 +137,8 @@ class ReassemblyOptions:
     coalesce: bool = True
     checksum: str = "ignore"
     pure_acks: bool = True
+    acked_hold: float | None = None
+    require_timestamps: bool = False
 
     def __post_init__(self) -> None:
         """Validate the policy.
@@ -137,6 +157,8 @@ class ReassemblyOptions:
             raise ValueError("flush_timeout must not be negative")
         if self.session_timeout < 0:
             raise ValueError("session_timeout must not be negative")
+        if self.acked_hold is not None and self.acked_hold < 0:
+            raise ValueError("acked_hold must not be negative")
         if self.checksum not in CHECKSUM_POLICIES:
             raise ValueError(
                 f"checksum must be one of {', '.join(CHECKSUM_POLICIES)}, "
@@ -154,7 +176,10 @@ class ReassemblyOptions:
         behaviour of every release before it existed.  So a conversion that
         opts out declares the digest ``0.5.0`` declared for the same policy,
         as well as writing the same bytes, and one that does not is told
-        apart by its digest.
+        apart by its digest.  :attr:`acked_hold` is left out when it is
+        ``None``, and :attr:`require_timestamps` when it is ``False``, on
+        the same rule: a policy that does not set them declares the digest it
+        declared before the fields existed (#32, #57).
 
         Returns:
             A digest string such as ``"sha256:1f3a…"``.
@@ -163,5 +188,9 @@ class ReassemblyOptions:
         policy = asdict(self)
         if not self.pure_acks:
             del policy["pure_acks"]
+        if self.acked_hold is None:
+            del policy["acked_hold"]
+        if not self.require_timestamps:
+            del policy["require_timestamps"]
         canonical = json.dumps(policy, sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
