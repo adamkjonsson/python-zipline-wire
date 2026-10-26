@@ -125,6 +125,14 @@ which change moves which.
   resends are written differently
   ([#54](https://github.com/adamkjonsson/python-zipline-wire/issues/54)).
 
+- **The packeteer range is `>=0.21.0,<0.22`**, up from `>=0.16.0,<0.21`.
+  The floor names what the *suite* needs, as it has since `0.16.0`:
+  `0.21.0` fails every corrupted segment's checksum with data in both
+  directions ([packeteer#227](https://github.com/adamkjonsson/packeteer/issues/227)),
+  which the fidelity tests of two-way corruption depend on. Before it, half
+  those runs carried a corrupted segment that verified, and were voided
+  rather than scored. The code needs nothing newer.
+
 ### Fixed
 
 - `acked_fallback_bytes` counts every contested byte `favor-acked` wrote as
@@ -150,6 +158,10 @@ which change moves which.
   generates a TCP conversation under chosen impairments, and the tool scores
   the converted `.zpf` against what each side sent: byte by byte, in causal
   order and in time ([#52](https://github.com/adamkjonsson/python-zipline-wire/issues/52)).
+  Its strays can carry a Timestamps option
+  ([packeteer#228](https://github.com/adamkjonsson/packeteer/issues/228)), so
+  `require_timestamps` is measured against a forger who knows the clock as
+  well as one who does not.
 
 ---
 

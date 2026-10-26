@@ -34,17 +34,18 @@ classifiers = [
 # implementing 0.23, and refuses a 0.21 file outright, which is what an
 # unbounded pin would have done to this tree's users at the next spec port.
 #
-# packeteer's floor names what the suite needs, not only the code: 0.16.0's
-# generator no longer acknowledges past a corrupted segment before its resend
-# (packeteer#163), which the generated favor-acked test depends on (#30).
+# packeteer's floor names what the suite needs, not only the code: 0.21.0
+# fails every corrupted segment's checksum with data both ways (packeteer#227),
+# which the fidelity tests of the two-way corruption cells depend on, as 0.16.0
+# was needed before it for the generated favor-acked test (packeteer#163, #30).
 # The code itself needs nothing newer.  Its ceiling is the next minor above
-# 0.20.0, the release this tree is built and tested against.
+# 0.21.0, the release this tree is built and tested against.
 #
 # Neither sibling is on PyPI: requirements.txt installs the exact releases
 # from their tags, and tests/test_package.py holds those tags inside these
 # ranges.
 dependencies = [
-    "packeteer>=0.16.0,<0.21",
+    "packeteer>=0.21.0,<0.22",
     "zpf>=0.7.0,<0.8",
 ]
 

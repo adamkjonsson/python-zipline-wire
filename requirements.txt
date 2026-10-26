@@ -10,7 +10,7 @@
 #
 # To work against the sibling checkouts instead, use a second venv; see
 # requirements-dev-siblings.txt.
-packeteer @ git+https://github.com/adamkjonsson/packeteer.git@v0.20.0
+packeteer @ git+https://github.com/adamkjonsson/packeteer.git@v0.21.0
 zpf @ git+https://github.com/adamkjonsson/python-zipline.git@v0.7.0
 
 # Testing

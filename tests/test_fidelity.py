@@ -52,11 +52,12 @@ ALONE = {
     "loss-recovered": Impairments(packet_loss_probability=0.1, retransmit_lost=True),
     "retransmission": Impairments(retransmission_probability=0.2),
     "duplication": Impairments(duplicate_probability=0.2),
+    "corruption": Impairments(payload_corruption_probability=0.2),
     "stray": Impairments(stray_packet_count=3),
     "rst": Impairments(server_rst_probability=1.0),
 }
-"""Every impairment the tree can score today, alone.  Corruption is not here:
-under the prototype's two-way shape packeteer#227 voids half its runs."""
+"""Every impairment, alone.  Corruption joined in packeteer 0.21.0: before
+it, packeteer#227 voided half the prototype's corruption runs."""
 
 
 def prototype(seed: int = 3, **impairments: object) -> Run:
@@ -252,19 +253,33 @@ def test_no_seed_voids_an_impairment_the_tree_can_score(name: str):
 # ── the self-checks ─────────────────────────────────────────────────────
 
 
-def test_packeteer_227_voids_the_prototype_s_corruption():
-    """Two of the three corrupted segments carry valid checksums.
+def test_every_corrupted_segment_fails_its_checksum():
+    """packeteer#227, fixed in 0.21.0: the prototype's seed 3 is no longer void.
 
-    The run is evidence about packeteer, not zpfwire: ``checksum="drop"``
-    keeps those two, and so does a real receiver.  Not shimmed (Decision 6).
+    Under 0.20.0 two of its three corrupted segments carried valid checksums,
+    and the run was voided rather than scored (Decision 6).
     """
     r = prototype(payload_corruption_probability=0.2)
 
-    assert r.void == (
-        "packeteer#227: CORRUPT[1] [5/7] (packet 16) is corrupt and its checksum verifies",
-        "packeteer#227: CORRUPT[3] [1/4] (packet 23) is corrupt and its checksum verifies",
+    corrupt = payload_entries(r, "CORRUPT")
+    assert r.void == ()
+    assert len(corrupt) == 3
+    assert not any(e.checksum_ok for e in corrupt)
+
+
+def test_a_corrupted_segment_with_a_valid_checksum_voids_the_run():
+    """The packeteer#227 check stays: a regression there must void, not score."""
+    r = prototype(payload_corruption_probability=0.2)
+    entries = tuple(
+        dataclasses.replace(e, checksum_ok=True) if e.label == "CORRUPT[1] [5/7]" else e
+        for e in r.ledger.entries
     )
-    assert len(payload_entries(r, "CORRUPT")) == 3
+
+    failures = self_check(r.truth, dataclasses.replace(r.ledger, entries=entries))
+
+    assert failures == [
+        "packeteer#227: CORRUPT[1] [5/7] (packet 16) is corrupt and its checksum verifies",
+    ]
 
 
 def test_a_truth_that_is_not_what_was_sent_voids_the_run():
@@ -312,18 +327,18 @@ def test_what_must_be_perfect_is(name: str):
 
 @pytest.mark.parametrize("policy", POLICIES)
 def test_the_prototype_s_corruption_row(policy: str):
-    """1 c2s + 2 s2c wrong by default, none under ``favor-acked``, 2 s2c dropping.
+    """1 c2s + 2 s2c wrong by default, none under ``favor-acked`` or dropping.
 
-    The run is void (packeteer#227): measured, so the scorer can be held to
-    the prototype's numbers, but never reported.  The two s2c bytes
-    ``checksum="drop"`` keeps are the two corrupted copies whose checksums
-    verify.
+    Under packeteer 0.20.0 the run was void (packeteer#227), and
+    ``checksum="drop"`` kept two s2c bytes: the two corrupted copies whose
+    checksums verified.  Since 0.21.0 every corrupted copy fails its
+    checksum, so dropping keeps none.
     """
     r = prototype(payload_corruption_probability=0.2)
     m = measure(r, POLICIES[policy])
 
-    expected = {"favor-old": (1, 2), "favor-acked": (0, 0), "checksum-drop": (0, 2)}[policy]
-    assert r.void
+    expected = {"favor-old": (1, 2), "favor-acked": (0, 0), "checksum-drop": (0, 0)}[policy]
+    assert r.void == ()
     assert (m.bytes["c2s"].substituted, m.bytes["s2c"].substituted) == expected
     assert m.total.causes == ({"substituted:corrupt": sum(expected)} if sum(expected) else {})
     assert m.total.missing_declared == m.total.missing_past_end == 0

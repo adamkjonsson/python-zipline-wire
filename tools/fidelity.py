@@ -113,6 +113,11 @@ class Impairments:
         rst_propagation_delay: Seconds before the client learns of the reset.
         stray_packet_count: Forged segments injected at real sequence numbers.
         stray_timing_window: How near its victim a stray is placed, in packets.
+        stray_timestamps: Whether a stray carries a Timestamps option, stamped
+            as the side it impersonates would stamp it (packeteer#228, since
+            0.21.0).  Without it, RFC 7323 §3.2 — zpfwire's
+            ``require_timestamps`` — drops every stray, and the stray cells
+            say nothing about a forger who knows the clock.
         duplicate_probability: Chance the capture point sees a packet twice.
 
     """
@@ -126,6 +131,7 @@ class Impairments:
     rst_propagation_delay: float = 0.0
     stray_packet_count: int = 0
     stray_timing_window: int | None = None
+    stray_timestamps: bool = False
     duplicate_probability: float = 0.0
 
 
@@ -577,9 +583,10 @@ def self_check(truth: Truth, ledger: Ledger) -> list[str]:
     """
     failures = []
     for entry in ledger.entries:
-        # packeteer#227: rebuilding a corrupted segment to fix its
-        # acknowledgement recomputes its checksum, so the receiver — and
-        # ``checksum="drop"`` — would accept the corrupted bytes.
+        # packeteer#227, fixed in 0.21.0: rebuilding a corrupted segment to
+        # fix its acknowledgement recomputed its checksum, so the receiver —
+        # and ``checksum="drop"`` — would accept the corrupted bytes.  Kept,
+        # so that a regression voids runs rather than scoring them.
         if entry.corrupt and entry.checksum_ok:
             failures.append(
                 f"packeteer#227: {entry.label} (packet {entry.index}) is corrupt "
@@ -1579,6 +1586,7 @@ HARMS: tuple[Harm, ...] = (
     Harm("corruption 0.2", Impairments(payload_corruption_probability=0.2), "CORRUPT"),
     Harm("stray 1", Impairments(stray_packet_count=1), "STRAY"),
     Harm("stray 3", Impairments(stray_packet_count=3), "STRAY"),
+    Harm("stray 3, stamped", Impairments(stray_packet_count=3, stray_timestamps=True), "STRAY"),
     Harm("rst", Impairments(server_rst_probability=1.0), "reset"),
 )
 
@@ -1828,7 +1836,8 @@ def report(rows: list[dict[str, Any]], header: list[str]) -> str:
     """
     lines = ["# Fidelity sweep", "", *(f"- {line}" for line in header), ""]
     lines += [
-        "A cell is scored over runs that are not void (packeteer#227), read back clean,",
+        "A cell is scored over runs that are not void (the generator's output not what",
+        "the truth claims, as with packeteer#227 before 0.21.0), read back clean,",
         f"and exercised its impairment; fewer than {EXERCISED} and it is *not exercised*.",
         "Fidelity is correct ÷ sent, recovery correct ÷ available; each is median / worst.",
         "*Failing* counts runs with an accounting failure, *inverted* runs placing a",
