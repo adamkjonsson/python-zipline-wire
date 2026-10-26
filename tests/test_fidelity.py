@@ -1,9 +1,14 @@
-"""The fidelity tool's truth and ledger (``0.7.0`` Phase 1).
+"""The fidelity tool (``0.7.0``): truth and ledger, then the byte scorer.
 
-The ledger is the reference every later score is measured against, so these
-pin it against what packeteer documents it generates: each impairment alone,
-loss with and without recovery, and the self-checks that void a run whose
-input is not what the truth claims.  Nothing here converts a capture.
+The ledger is the reference every later score is measured against, so the
+first half pins it against what packeteer documents it generates: each
+impairment alone, loss with and without recovery, and the self-checks that
+void a run whose input is not what the truth claims.
+
+The second half converts.  Scores are reported, not asserted (Decision 4),
+except where perfection is required — no impairment, duplication with
+retransmission, recovered loss — and except the prototype's own numbers,
+which are what show the scorer measures what the prototype did.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+import zpf
 from fidelity import (
     BLOCK,
     DIRECTIONS,
@@ -20,10 +26,18 @@ from fidelity import (
     Run,
     Scenario,
     Truth,
+    account,
+    convert,
     kinds_of,
+    measure,
     run,
+    score_bytes,
     self_check,
 )
+from packeteer.generate.tcp import TCP_RST
+from packeteer.generate.tcp_stream import TCPStream
+
+from zpfwire import ReassemblyOptions
 
 SEEDS = range(40)
 ONE_WAY = (("c2s", 3000), ("c2s", 9000))
@@ -260,3 +274,156 @@ def test_a_truth_that_is_not_what_was_sent_voids_the_run():
 
     assert any("does not carry the truth" in f for f in failures)
     assert any("FIN-ACK" in f and "not the truth's end 3801" in f for f in failures)
+
+
+# ── the byte scorer ─────────────────────────────────────────────────────
+
+PERFECT = {
+    "clean": Impairments(),
+    "duplication-and-retransmission": Impairments(
+        duplicate_probability=0.2, retransmission_probability=0.2,
+    ),
+    "loss-recovered": Impairments(packet_loss_probability=0.1, retransmit_lost=True),
+}
+"""Where perfection is required: nothing was destroyed, and nothing ambiguous."""
+
+POLICIES = {
+    "favor-old": ReassemblyOptions(),
+    "favor-acked": ReassemblyOptions(overlap="favor-acked"),
+    "checksum-drop": ReassemblyOptions(checksum="drop"),
+}
+
+
+@pytest.mark.parametrize("name", PERFECT)
+def test_what_must_be_perfect_is(name: str):
+    """Fidelity 1 and recovery 1 over 40 seeds, and the file's account of itself holds."""
+    for seed in SEEDS:
+        r = run(Scenario(seed=seed, impairments=PERFECT[name]))
+        m = measure(r)
+
+        assert r.void == (), seed
+        assert m.total.fidelity == 1.0 and m.total.recovery == 1.0, (seed, m.bytes)
+        assert m.total.causes == {} and m.total.extra == 0, seed
+        assert m.accounting.failures(late_bytes=m.conversion.stats.late_bytes) == [], seed
+
+
+@pytest.mark.parametrize("policy", POLICIES)
+def test_the_prototype_s_corruption_row(policy: str):
+    """1 c2s + 2 s2c wrong by default, none under ``favor-acked``, 2 s2c dropping.
+
+    The run is void (packeteer#227): measured, so the scorer can be held to
+    the prototype's numbers, but never reported.  The two s2c bytes
+    ``checksum="drop"`` keeps are the two corrupted copies whose checksums
+    verify.
+    """
+    r = prototype(payload_corruption_probability=0.2)
+    m = measure(r, POLICIES[policy])
+
+    expected = {"favor-old": (1, 2), "favor-acked": (0, 0), "checksum-drop": (0, 2)}[policy]
+    assert r.void
+    assert (m.bytes["c2s"].substituted, m.bytes["s2c"].substituted) == expected
+    assert m.total.causes == ({"substituted:corrupt": sum(expected)} if sum(expected) else {})
+    assert m.total.missing_declared == m.total.missing_past_end == 0
+
+
+@pytest.mark.parametrize("policy", POLICIES)
+def test_the_prototype_s_stray_row(policy: str):
+    """Strays win under every policy: the first forgery arrives first.
+
+    ``STRAY[0]``'s 348 bytes and the last 2 of ``STRAY[1]``'s 350, at the
+    same offset, are written before the real segment arrives.  Two of the
+    350 equal the truth by chance — one in 256 — so 348 are wrong.  The
+    prototype counted 349 over different payloads.
+    """
+    m = measure(prototype(stray_packet_count=3), POLICIES[policy])
+
+    assert m.bytes["c2s"].substituted == 348
+    assert m.bytes["c2s"].correct == 3800 - 348
+    assert m.total.causes == {"substituted:stray": 348}
+    assert m.bytes["c2s"].available == 3800
+    assert m.total.recovery == m.total.fidelity
+
+
+def test_lost_bytes_lower_fidelity_and_leave_recovery_alone():
+    m = measure(prototype(packet_loss_probability=0.1))
+
+    assert m.bytes["s2c"].missing_declared == 1448
+    assert m.total.causes == {"missing:lost": 1448}
+    assert m.total.recovery == 1.0
+    assert m.total.fidelity == (17800 - 1448) / 17800
+    assert m.accounting.gaps == m.accounting.gaps_in_file == m.accounting.holes == 1
+
+
+def test_a_lost_tail_is_missing_past_the_end():
+    """``chunks()`` yields no trailing Gap: only the truth can see this."""
+    tail = next(
+        r for seed in SEEDS
+        if (r := run(Scenario(seed=seed, impairments=Impairments(packet_loss_probability=0.1))))
+        and any(stop == r.ledger.sent[d] for d in DIRECTIONS for _, stop in r.ledger.lost[d])
+    )
+    m = measure(tail)
+
+    assert m.total.missing_past_end > 0
+    assert m.total.causes["missing:lost"] == m.total.missing_declared + m.total.missing_past_end
+
+
+def test_copies_are_judged_copies():
+    """Duplication alone: every repeat is a copy of one transmission, and is cited so."""
+    for seed in range(10):
+        a = measure(run(Scenario(seed=seed, impairments=Impairments(duplicate_probability=0.3))))
+        a = a.accounting
+        assert a.copies_as_resends == 0 and a.resends_as_copies == 0, seed
+        assert set(a.judged) <= {("copy", "duplicate-discarded")}, seed
+
+
+# ── shown to fail ───────────────────────────────────────────────────────
+
+
+def test_an_output_one_byte_off_scores_nothing():
+    """Position-unique payloads: a stream written one offset late matches by chance only."""
+    r = prototype()
+    output = convert(r.stream).output
+    # As chunks() would yield it: a leading Gap before the first byte.
+    shifted = {
+        d: (zpf.Gap(0, 1), *(
+            zpf.Segment(c.data, c.off_start + 1, c.off_end + 1, c.ts)
+            for c in output.chunks[d]
+        ))
+        for d in DIRECTIONS
+    }
+    late = dataclasses.replace(output, chunks=shifted)
+
+    for direction in DIRECTIONS:
+        score = score_bytes(r, late, direction)
+        assert score.fidelity < 0.01
+        assert score.missing_declared == 1 and score.extra == 1
+
+
+def test_a_missing_citation_is_bytes_lost_quietly():
+    r = prototype(duplicate_probability=0.2)
+    conversion = convert(r.stream)
+    start, stop, _ = conversion.output.undecoded[0]
+    output = dataclasses.replace(conversion.output, undecoded=conversion.output.undecoded[1:])
+
+    accounting = account(r, dataclasses.replace(conversion, output=output))
+
+    assert account(r, conversion).failures() == []
+    assert accounting.quiet == stop - start
+    assert accounting.failures() == [
+        f"{stop - start} captured bytes reached no record and no citation",
+    ]
+
+
+def test_a_reset_the_file_does_not_show_is_reported():
+    """The ledger saw an RST; a capture without it ends the session otherwise."""
+    r = prototype(server_rst_probability=1.0)
+    unreset = TCPStream([p for p in r.stream.packets if not p.flags & TCP_RST])
+    # Citations are located in the converted stream, so the ledger is
+    # rebuilt from it — and told of the reset the capture no longer shows.
+    ledger = dataclasses.replace(Ledger.of(unreset, r.truth), reset=True)
+    conversion = convert(unreset)
+    accounting = account(dataclasses.replace(r, stream=unreset, ledger=ledger), conversion)
+
+    assert accounting.expected_end == "rst"
+    assert accounting.end_reason != "rst"
+    assert f"the session ends {accounting.end_reason!r}, not 'rst'" in accounting.failures()

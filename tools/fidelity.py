@@ -5,10 +5,9 @@ impairments of our choosing and knows exactly what each application sent;
 zpfwire converts the impaired capture; the tool scores the ``.zpf`` against
 what was sent.  ``plans/V0.7.0-RELEASE-PLAN.md`` is the design.
 
-This is Phase 1: **the truth and the ledger**, built from the generator alone.
-Nothing here reads a ``.zpf``, and nothing here imports zpfwire — the ledger
-is the reference the conversion is measured against, so it must not be
-derived from the thing measured.
+**The truth and the ledger** (Phase 1) are built from the generator alone.
+They never consult zpfwire: they are the reference the conversion is
+measured against, so they must not be derived from the thing measured.
 
 - :class:`Scenario` — messages by direction and size, a seed, and
   :class:`Impairments`.
@@ -19,17 +18,34 @@ derived from the thing measured.
   the truth ranges no captured packet carries.
 - :func:`self_check` — the conditions under which the run is not evidence
   about zpfwire at all, and is voided rather than scored.
+
+**The byte scorer** (Phase 2) converts the run and reads the file back
+through zpf's public reader only.
+
+- :func:`measure` — convert, read back, score.  A file that fails this
+  project's load-bearing assertion raises :class:`Unclean` rather than
+  scoring.
+- :class:`ByteScore` — every sent offset is correct, substituted, missing
+  inside a ``Gap``, or missing past the end; with *fidelity* against what
+  was sent, *recovery* against what was captured, and each error attributed
+  to its cause.
+- :class:`Accounting` — whether the file and its stats tell the truth about
+  themselves: every uncited captured byte in exactly one record, the gap
+  count, the duplicate-or-resend judgement, the end reason.
 """
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
 import hashlib
+import io
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal
 
+import zpf
 from packeteer.generate.payloads.base import AppMessage
 from packeteer.generate.tcp import TCP_FIN, TCP_RST, TCP_SYN
 from packeteer.generate.tcp_stream import (
@@ -39,6 +55,9 @@ from packeteer.generate.tcp_stream import (
     generate_tcp_stream,
 )
 from packeteer.parse import parse_packet
+from packeteer.pcap import write_pcap
+
+from zpfwire import ConversionStats, ReassemblyOptions, capture_to_zpf
 
 Direction = Literal["c2s", "s2c"]
 DIRECTIONS: tuple[Direction, Direction] = ("c2s", "s2c")
@@ -49,6 +68,9 @@ wall clock, which would make a seed reproduce everything but the timeline."""
 
 BLOCK = 16
 """Bytes per position-unique payload block."""
+
+CLIENT = ("10.0.0.1", 54321)
+"""The client's address and port: a participant there sends ``c2s``."""
 
 _KEY = b"zpfwire-fidelity"
 _WRAP = 2**32
@@ -137,7 +159,7 @@ class Scenario:
         """
         messages = self.messages()
         return generate_tcp_stream(
-            client_ip="10.0.0.1", server_ip="10.0.0.2",
+            client_ip=CLIENT[0], client_port=CLIENT[1], server_ip="10.0.0.2",
             # packeteer sends ``messages[i % len(messages)]`` for each of
             # ``num_data_packets``, so anything else would repeat or truncate.
             num_data_packets=len(messages),
@@ -259,6 +281,8 @@ class Entry:
         checksum_ok: Whether its transport checksum verifies.
         matches: Whether its payload equals the truth at :attr:`offset`;
             ``None`` without payload.
+        payload: Its payload bytes.
+        payload_at: Where its payload starts in its frame.
 
     """
 
@@ -274,6 +298,8 @@ class Entry:
     tsval: int | None
     checksum_ok: bool
     matches: bool | None
+    payload: bytes = dataclasses.field(default=b"", repr=False)
+    payload_at: int = dataclasses.field(default=0, repr=False)
 
     @property
     def kind(self) -> str:
@@ -373,7 +399,7 @@ class Ledger:
             _entry(index, packet, isn, truth) for index, packet in enumerate(stream.packets)
         )
         reset = any(e.flags & TCP_RST for e in entries)
-        sent = {d: len(truth.streams[d]) for d in DIRECTIONS}
+        sent: dict[Direction, int] = {d: len(truth.streams[d]) for d in DIRECTIONS}
         if reset:
             for d in DIRECTIONS:
                 sent[d] = max((e.end for e in entries
@@ -466,6 +492,8 @@ def _entry(
         # not produce it (packeteer#68); nothing here is truncated.
         checksum_ok=parsed.transport.checksum is None,
         matches=None if expected is None else expected == body,
+        payload=body,
+        payload_at=parsed.payload_offset or 0,
     )
 
 
@@ -594,3 +622,615 @@ def run(scenario: Scenario) -> Run:
     truth = Truth.of(scenario)
     ledger = Ledger.of(stream, truth)
     return Run(scenario, stream, truth, ledger, tuple(self_check(truth, ledger)))
+
+
+# ── Converting and reading back ─────────────────────────────────────────
+
+_PCAP_HEADER = 24
+_PCAP_RECORD = 16
+
+
+class Unclean(Exception):
+    """A conversion that fails ``diagnostics == []`` and ``unplaceable == []``.
+
+    Not scored: it is a bug in its own right.
+    """
+
+
+@dataclass(frozen=True)
+class Output:
+    """What a reader of the converted file gets, by direction.
+
+    Attributes:
+        chunks: Each direction's :meth:`zpf.StreamView.chunks`.
+        records: Each direction's records with payload, as ``(offset,
+            record)``, the offset relative to the participant's ISN plus one.
+        undecoded: Every Undecoded block, as ``(start, end, reason)`` in
+            capture-file bytes.
+        end_reason: The session's end reason.
+        sessions: How many sessions the file holds; a run is one connection.
+
+    """
+
+    chunks: dict[Direction, tuple[zpf.Segment | zpf.Gap, ...]]
+    records: dict[Direction, tuple[tuple[int, zpf.Record], ...]]
+    undecoded: tuple[tuple[int, int, str], ...]
+    end_reason: str | None
+    sessions: int
+
+
+@dataclass(frozen=True)
+class Conversion:
+    """One run converted under one policy.
+
+    Attributes:
+        options: The reassembly policy.
+        sequenced: Whether the session was written in causal order.
+        stats: What the conversion reported.
+        output: What the file holds.
+
+    """
+
+    options: ReassemblyOptions
+    sequenced: bool
+    stats: ConversionStats
+    output: Output
+
+
+def convert(
+    stream: TCPStream, options: ReassemblyOptions | None = None, *, sequenced: bool = False,
+) -> Conversion:
+    """Convert a generated stream in memory and read the file back.
+
+    Args:
+        stream: The stream, usually a :attr:`Run.stream`.
+        options: The reassembly policy; zpfwire's defaults when ``None``.
+        sequenced: Whether to write the session in causal order.
+
+    Returns:
+        The conversion.
+
+    Raises:
+        Unclean: If the file does not read back clean.
+
+    """
+    options = options or ReassemblyOptions()
+    capture = io.BytesIO()
+    write_pcap(stream.to_pcap_tuples(), file_object=capture)
+    capture.seek(0)
+    sink = io.BytesIO()
+    stats = capture_to_zpf(capture, sink, options=options, sequenced=sequenced,
+                           produced_at=None)
+    return Conversion(options, sequenced, stats, read(sink.getvalue()))
+
+
+def read(data: bytes) -> Output:
+    """Read a converted file through zpf's public reader.
+
+    Args:
+        data: The ``.zpf`` file's bytes.
+
+    Returns:
+        What it holds.
+
+    Raises:
+        Unclean: If it does not read back clean.
+
+    """
+    chunks: dict[Direction, tuple[zpf.Segment | zpf.Gap, ...]] = dict.fromkeys(DIRECTIONS, ())
+    records: dict[Direction, tuple[tuple[int, zpf.Record], ...]] = dict.fromkeys(DIRECTIONS, ())
+    with zpf.open(io.BytesIO(data)) as reader:
+        sessions = reader.sessions()
+        end_reason = None
+        for session in sessions:
+            end_reason = session.end.reason if session.end else None
+            for _ in session.records():
+                pass
+            for view in session.reassemble():
+                participant = view.participant
+                direction: Direction = (
+                    "c2s" if participant.endpoint == "{}:{}".format(*CLIENT) else "s2c"
+                )
+                assert participant.isn is not None, participant
+                chunks[direction] += tuple(view.chunks())
+                records[direction] += tuple(
+                    ((r.seq_start - participant.isn - 1) % _WRAP, r)
+                    for r in session.stream(participant.participant_id)
+                    if r.payload and r.seq_start is not None
+                )
+        if reader.diagnostics or reader.unplaceable:
+            raise Unclean(f"diagnostics {reader.diagnostics}, unplaceable {reader.unplaceable}")
+        undecoded = tuple((u.off_start, u.off_end, u.reason or "") for u in reader.undecoded)
+    return Output(chunks, records, undecoded, end_reason, len(sessions))
+
+
+# ── The byte scorer ─────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ByteScore:
+    """Every offset a sender sent, classified by what the file holds there.
+
+    Per direction, every offset in ``[0, sent)`` is exactly one of correct,
+    substituted, missing inside a ``Gap``, or missing past the end.  The
+    last needs the truth: ``chunks()`` never yields a trailing ``Gap``.
+
+    Attributes:
+        sent: Bytes the sender sent (:attr:`Ledger.sent`).
+        correct: Offsets holding the true byte.
+        substituted: Offsets holding a different byte.
+        missing_declared: Offsets inside a ``Gap``.
+        missing_past_end: Offsets past the last ``Segment``.
+        extra: Output bytes at or past ``sent``.
+        available: Offsets where some captured, non-stray packet carries the
+            true byte: the ceiling a reassembler could reach.
+        causes: Bytes by error and cause.  ``substituted:stray`` and
+            ``substituted:corrupt`` are bytes a forged or damaged copy put
+            there; ``substituted:other`` matches no captured copy and is a
+            bug.  ``missing:lost`` is a range no non-stray packet carried;
+            ``missing:dropped`` one that some packet did.
+
+    """
+
+    sent: int
+    correct: int
+    substituted: int
+    missing_declared: int
+    missing_past_end: int
+    extra: int
+    available: int
+    causes: dict[str, int]
+
+    def __add__(self, other: ByteScore) -> ByteScore:
+        """Add two scores, as both directions of a run or many runs of a cell."""
+        causes = dict(self.causes)
+        for cause, count in other.causes.items():
+            causes[cause] = causes.get(cause, 0) + count
+        return ByteScore(
+            sent=self.sent + other.sent,
+            correct=self.correct + other.correct,
+            substituted=self.substituted + other.substituted,
+            missing_declared=self.missing_declared + other.missing_declared,
+            missing_past_end=self.missing_past_end + other.missing_past_end,
+            extra=self.extra + other.extra,
+            available=self.available + other.available,
+            causes=causes,
+        )
+
+    @property
+    def fidelity(self) -> float:
+        """Correct over sent: what a reader of the file gets."""
+        return self.correct / self.sent if self.sent else 1.0
+
+    @property
+    def recovery(self) -> float:
+        """Correct over available: what the reassembler made of what it was given."""
+        return self.correct / self.available if self.available else 1.0
+
+
+def score_bytes(run: Run, output: Output, direction: Direction) -> ByteScore:
+    """Score one direction of a converted run against its truth.
+
+    Args:
+        run: The run.
+        output: What its conversion holds.
+        direction: Which direction to score.
+
+    Returns:
+        The direction's score.
+
+    """
+    truth = run.truth.streams[direction]
+    sent = run.ledger.sent[direction]
+    held = bytearray(sent)
+    have = bytearray(sent)
+    declared = bytearray(sent)
+    extra = 0
+    end = 0
+    substituted: list[tuple[int, int]] = []
+    correct = 0
+    for chunk in output.chunks[direction]:
+        start, stop = min(chunk.off_start, sent), min(chunk.off_end, sent)
+        if isinstance(chunk, zpf.Gap):
+            declared[start:stop] = b"\x01" * (stop - start)
+            continue
+        end = max(end, chunk.off_end)
+        extra += chunk.off_end - max(chunk.off_start, sent)
+        data = chunk.data[:stop - start]
+        held[start:stop] = data
+        have[start:stop] = b"\x01" * (stop - start)
+        good, wrong = _compare(data, truth, start)
+        correct += good
+        substituted += wrong
+
+    covered, available = _coverage(run.ledger, truth, direction, sent)
+    present = have.count(1)
+    missing_declared = declared.count(1)
+    past_end = sent - min(end, sent)
+    assert present + missing_declared + past_end == sent, "a hole that is not a Gap"
+
+    causes = {"missing:lost": 0, "missing:dropped": 0}
+    for start, stop in _runs(declared) + ([(end, sent)] if past_end else []):
+        carried = covered[start:stop].count(1)
+        causes["missing:lost"] += (stop - start) - carried
+        causes["missing:dropped"] += carried
+    for offset, value in substituted:
+        cause = _substitute_cause(run.ledger, direction, offset, value)
+        causes[f"substituted:{cause}"] = causes.get(f"substituted:{cause}", 0) + 1
+    return ByteScore(
+        sent=sent,
+        correct=correct,
+        substituted=len(substituted),
+        missing_declared=missing_declared,
+        missing_past_end=past_end,
+        extra=max(extra, 0),
+        available=available.count(1),
+        causes={cause: count for cause, count in causes.items() if count},
+    )
+
+
+def _compare(data: bytes, truth: bytes, start: int) -> tuple[int, list[tuple[int, int]]]:
+    """Count the bytes of *data* equal to *truth* at *start*, and list the others."""
+    good = 0
+    wrong = []
+    step = 4096
+    for at in range(0, len(data), step):
+        piece = data[at:at + step]
+        if piece == truth[start + at:start + at + len(piece)]:
+            good += len(piece)
+            continue
+        for i, value in enumerate(piece):
+            if value == truth[start + at + i]:
+                good += 1
+            else:
+                wrong.append((start + at + i, value))
+    return good, wrong
+
+
+def _coverage(
+    ledger: Ledger, truth: bytes, direction: Direction, sent: int,
+) -> tuple[bytearray, bytearray]:
+    """Mark where captured non-stray packets carry anything, and the true byte."""
+    covered = bytearray(sent)
+    available = bytearray(sent)
+    for entry in ledger.data(direction):
+        if entry.stray:
+            continue
+        start, stop = min(entry.offset, sent), min(entry.end, sent)
+        covered[start:stop] = b"\x01" * (stop - start)
+        if entry.matches:
+            available[start:stop] = b"\x01" * (stop - start)
+            continue
+        for i in range(start, stop):
+            if entry.payload[i - entry.offset] == truth[i]:
+                available[i] = 1
+    return covered, available
+
+
+def _runs(mask: bytearray) -> list[tuple[int, int]]:
+    """Return the ``(start, end)`` runs of set bytes in *mask*."""
+    runs = []
+    at = mask.find(1)
+    while at != -1:
+        stop = mask.find(0, at)
+        stop = len(mask) if stop == -1 else stop
+        runs.append((at, stop))
+        at = mask.find(1, stop)
+    return runs
+
+
+def _substitute_cause(ledger: Ledger, direction: Direction, offset: int, value: int) -> str:
+    """Name the captured copy that put *value* at *offset*: ``stray``, ``corrupt`` or ``other``."""
+    carriers = [
+        e for e in ledger.data(direction)
+        if e.offset <= offset < e.end and e.payload[offset - e.offset] == value
+    ]
+    if any(e.stray for e in carriers):
+        return "stray"
+    if any(e.corrupt for e in carriers):
+        return "corrupt"
+    return "other"
+
+
+# ── Accounting ──────────────────────────────────────────────────────────
+
+REASON_DUPLICATE = "duplicate-discarded"
+"""zpfwire's Undecoded reason for a copy of one transmission."""
+
+
+@dataclass(frozen=True)
+class Accounting:
+    """Whether the file and its stats tell the truth about themselves.
+
+    Attributes:
+        quiet: Captured payload bytes in no record and cited by no
+            Undecoded block: lost quietly, against ``README.md``'s promise.
+        invented: Record bytes that no uncited captured byte accounts for —
+            a byte both written and cited, or written twice.
+        mismatched: Record bytes that differ from the uncited captured byte
+            at their offset.
+        miscited: Cited bytes outside every captured payload.
+        gaps: ``stats.gaps``.
+        gaps_in_file: ``Gap`` chunks across both directions.
+        holes: Ranges inside each direction's captured extent that no
+            captured packet carries: what the network forced.
+        judged: Packets cited as discarded, by what packeteer says they were
+            and the reason zpfwire gave: ``("copy", "duplicate-discarded")``
+            is right, ``("resend", "duplicate-discarded")`` is a resend taken
+            for a copy.  ``copy`` is a ``DUP`` of anything, ``resend`` a
+            ``RETRANS``, ``original`` a first transmission (``DATA`` or
+            ``CORRUPT``) that lost to an earlier or better copy, and
+            ``stray`` a forgery.
+        end_reason: The session's end reason.
+        expected_end: What the ledger says the capture shows: ``rst`` when
+            it holds an RST, ``fin`` when it holds a FIN from each side, and
+            otherwise ``capture-end`` — packeteer never resends a lost FIN,
+            so a capture missing one never sees the conversation close.
+
+    """
+
+    quiet: int
+    invented: int
+    mismatched: int
+    miscited: int
+    gaps: int
+    gaps_in_file: int
+    holes: int
+    judged: dict[tuple[str, str], int]
+    end_reason: str | None
+    expected_end: str
+
+    @property
+    def copies_as_resends(self) -> int:
+        """Copies of one transmission judged a resend."""
+        return sum(n for (kind, reason), n in self.judged.items()
+                   if kind == "copy" and reason != REASON_DUPLICATE)
+
+    @property
+    def resends_as_copies(self) -> int:
+        """Transmissions of their own — a resend or an original — judged a copy."""
+        return sum(self.judged.get((kind, REASON_DUPLICATE), 0) for kind in ("resend", "original"))
+
+    def failures(self, *, late_bytes: int = 0) -> list[str]:
+        """Return each way the file or its stats misstate what happened.
+
+        Args:
+            late_bytes: ``stats.late_bytes``.  A gap the policy committed and
+                the network later filled is a gap with no hole behind it.
+
+        Returns:
+            One line per failure.  The duplicate-or-resend judgement is a
+            measurement, not a failure, and is not among them.
+
+        """
+        failures = []
+        if self.quiet:
+            failures.append(f"{self.quiet} captured bytes reached no record and no citation")
+        if self.invented:
+            failures.append(f"{self.invented} record bytes come from no uncited captured byte")
+        if self.mismatched:
+            failures.append(f"{self.mismatched} record bytes differ from the captured byte")
+        if self.miscited:
+            failures.append(f"{self.miscited} cited bytes lie in no captured payload")
+        if self.gaps != self.gaps_in_file:
+            failures.append(f"stats.gaps is {self.gaps}, the file has {self.gaps_in_file}")
+        if self.gaps_in_file < self.holes or (self.gaps_in_file > self.holes and not late_bytes):
+            failures.append(f"the file has {self.gaps_in_file} gaps for {self.holes} holes")
+        if self.end_reason != self.expected_end:
+            failures.append(f"the session ends {self.end_reason!r}, not {self.expected_end!r}")
+        return failures
+
+
+def account(run: Run, conversion: Conversion) -> Accounting:
+    """Check a conversion's file and stats against the ledger.
+
+    Args:
+        run: The run converted.  Its stream must be the one converted, since
+            citations are located in that stream's capture.
+        conversion: The conversion.
+
+    Returns:
+        The accounting.
+
+    """
+    output = conversion.output
+    payloads = _payload_locations(run)
+    starts = [start for start, _, _ in payloads]
+    cited: dict[int, list[tuple[int, int]]] = {}
+    reasons: dict[int, set[str]] = {}
+    miscited = 0
+    for start, stop, reason in output.undecoded:
+        at = bisect.bisect_right(starts, start) - 1
+        if at < 0 or stop > payloads[at][1]:
+            miscited += stop - start
+            continue
+        base, _, entry = payloads[at]
+        cited.setdefault(entry.index, []).append((start - base, stop - base))
+        reasons.setdefault(entry.index, set()).add(reason)
+
+    quiet = invented = mismatched = 0
+    for direction in DIRECTIONS:
+        pieces = [
+            (entry.offset + a, entry.payload[a:b])
+            for entry in run.ledger.data(direction)
+            for a, b in _complement(cited.get(entry.index, []), entry.length)
+        ]
+        written = [(offset, record.payload) for offset, record in output.records[direction]]
+        q, i = _multiplicity(pieces, written)
+        quiet += q
+        invented += i
+        mismatched += _mismatched(pieces, written)
+
+    judged: dict[tuple[str, str], int] = {}
+    for index, why in reasons.items():
+        entry = run.ledger.entries[index]
+        kind = (
+            "stray" if entry.stray
+            else "copy" if entry.kind == "DUP"
+            else "resend" if entry.kind == "RETRANS"
+            else "original"
+        )
+        for reason in why:
+            judged[kind, reason] = judged.get((kind, reason), 0) + 1
+
+    return Accounting(
+        quiet=quiet,
+        invented=invented,
+        mismatched=mismatched,
+        miscited=miscited,
+        gaps=conversion.stats.gaps,
+        gaps_in_file=sum(isinstance(c, zpf.Gap) for d in DIRECTIONS for c in output.chunks[d]),
+        holes=sum(_holes(run.ledger, d) for d in DIRECTIONS),
+        judged=judged,
+        end_reason=output.end_reason,
+        expected_end=_expected_end(run.ledger),
+    )
+
+
+def _expected_end(ledger: Ledger) -> str:
+    """Return how the captured conversation ends, by the ledger."""
+    if ledger.reset:
+        return "rst"
+    closed = {e.direction for e in ledger.entries if e.flags & TCP_FIN}
+    return "fin" if closed == set(DIRECTIONS) else "capture-end"
+
+
+def _payload_locations(run: Run) -> list[tuple[int, int, Entry]]:
+    """Each payload's ``(start, end, entry)`` in the capture's bytes, in order."""
+    locations = []
+    at = _PCAP_HEADER
+    for packet, entry in zip(run.stream.packets, run.ledger.entries, strict=True):
+        frame = at + _PCAP_RECORD
+        if entry.length:
+            start = frame + entry.payload_at
+            locations.append((start, start + entry.length, entry))
+        at = frame + len(packet.raw)
+    return locations
+
+
+def _complement(ranges: list[tuple[int, int]], length: int) -> list[tuple[int, int]]:
+    """Return the parts of ``[0, length)`` that *ranges* do not cover."""
+    out = []
+    edge = 0
+    for start, stop in sorted(ranges):
+        if start > edge:
+            out.append((edge, start))
+        edge = max(edge, stop)
+    if edge < length:
+        out.append((edge, length))
+    return out
+
+
+def _multiplicity(
+    pieces: list[tuple[int, bytes]], written: list[tuple[int, bytes]],
+) -> tuple[int, int]:
+    """Compare how many uncited bytes and record bytes fall at each offset.
+
+    Returns:
+        Bytes uncited more often than written, and written more often than
+        uncited.
+
+    """
+    events: dict[int, list[int]] = {}
+    for column, spans in ((0, pieces), (1, written)):
+        for offset, data in spans:
+            events.setdefault(offset, [0, 0])[column] += 1
+            events.setdefault(offset + len(data), [0, 0])[column] -= 1
+    quiet = invented = 0
+    depth = [0, 0]
+    previous = 0
+    for position in sorted(events):
+        width = position - previous
+        if depth[0] > depth[1]:
+            quiet += (depth[0] - depth[1]) * width
+        elif depth[1] > depth[0]:
+            invented += (depth[1] - depth[0]) * width
+        depth = [depth[0] + events[position][0], depth[1] + events[position][1]]
+        previous = position
+    return quiet, invented
+
+
+def _mismatched(pieces: list[tuple[int, bytes]], written: list[tuple[int, bytes]]) -> int:
+    """Count record bytes that differ from an uncited captured byte at their offset."""
+    if not written:
+        return 0
+    extent = max(offset + len(data) for offset, data in written)
+    image = bytearray(extent)
+    for offset, data in written:
+        image[offset:offset + len(data)] = data
+    differing = 0
+    for offset, data in pieces:
+        stop = min(offset + len(data), extent)
+        if offset >= stop:
+            continue
+        mine = data[:stop - offset]
+        if image[offset:stop] != mine:
+            differing += sum(a != b for a, b in zip(image[offset:stop], mine, strict=True))
+    return differing
+
+
+def _holes(ledger: Ledger, direction: Direction) -> int:
+    """Count the ranges below a direction's furthest captured byte that nothing carries."""
+    spans = sorted((e.offset, e.end) for e in ledger.data(direction))
+    holes = 0
+    edge = 0
+    for start, stop in spans:
+        if start > edge:
+            holes += 1
+        edge = max(edge, stop)
+    return holes
+
+
+# ── A measurement ───────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """One run, converted under one policy, scored and accounted for.
+
+    Attributes:
+        run: The run.
+        conversion: Its conversion.
+        bytes: The byte score, by direction.
+        accounting: The file's account of itself.
+
+    """
+
+    run: Run
+    conversion: Conversion
+    bytes: dict[Direction, ByteScore]
+    accounting: Accounting
+
+    @property
+    def total(self) -> ByteScore:
+        """Both directions' scores, added."""
+        return self.bytes["c2s"] + self.bytes["s2c"]
+
+
+def measure(
+    run: Run, options: ReassemblyOptions | None = None, *, sequenced: bool = False,
+) -> Measurement:
+    """Convert a run, read it back, and score it.
+
+    A void run is measured all the same: :attr:`Run.void` is what keeps it
+    out of a report, and a test may want its numbers regardless.
+
+    Args:
+        run: The run.
+        options: The reassembly policy; zpfwire's defaults when ``None``.
+        sequenced: Whether to write the session in causal order.
+
+    Returns:
+        The measurement.
+
+    Raises:
+        Unclean: If the file does not read back clean.
+
+    """
+    conversion = convert(run.stream, options, sequenced=sequenced)
+    return Measurement(
+        run=run,
+        conversion=conversion,
+        bytes={d: score_bytes(run, conversion.output, d) for d in DIRECTIONS},
+        accounting=account(run, conversion),
+    )
