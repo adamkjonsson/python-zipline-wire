@@ -47,7 +47,7 @@ from typing import Literal
 
 import zpf
 from packeteer.generate.payloads.base import AppMessage
-from packeteer.generate.tcp import TCP_FIN, TCP_RST, TCP_SYN
+from packeteer.generate.tcp import TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN
 from packeteer.generate.tcp_stream import (
     TCPStream,
     TCPStreamConfig,
@@ -130,12 +130,18 @@ class Scenario:
         shape: Each message's direction and length, in the order sent.
         seed: packeteer's seed.  Payloads do not depend on it.
         impairments: What the network does to it.
+        psh_probability: The chance a message's last segment carries PSH,
+            drawn once per message.  packeteer's default, 0.5, leaves half
+            the messages unpushed; a real stack pushes at the end of nearly
+            every write.  Not an impairment — what the sender does — and it
+            matters, since zpfwire ends a coalesced run at PSH.
 
     """
 
     shape: tuple[tuple[Direction, int], ...] = PROTOTYPE
     seed: int = 0
     impairments: Impairments = Impairments()
+    psh_probability: float = 0.5
 
     def messages(self) -> list[AppMessage]:
         """Return the messages, each payload position-unique.
@@ -165,6 +171,7 @@ class Scenario:
             num_data_packets=len(messages),
             config=TCPStreamConfig(
                 seed=self.seed, base_time=BASE_TIME, messages=messages,
+                psh_probability=self.psh_probability,
                 **dataclasses.asdict(self.impairments),
             ),
         )
@@ -283,6 +290,9 @@ class Entry:
             ``None`` without payload.
         payload: Its payload bytes.
         payload_at: Where its payload starts in its frame.
+        acked: How much of the peer's truth it acknowledges, as an offset
+            in the peer's stream: every peer byte before it had arrived.
+            ``None`` without the ACK flag, or before the peer's SYN.
 
     """
 
@@ -300,6 +310,7 @@ class Entry:
     matches: bool | None
     payload: bytes = dataclasses.field(default=b"", repr=False)
     payload_at: int = dataclasses.field(default=0, repr=False)
+    acked: int | None = None
 
     @property
     def kind(self) -> str:
@@ -477,6 +488,12 @@ def _entry(
     if packet.flags & TCP_SYN:
         offset = -1
     expected = truth.streams[direction][offset:offset + len(body)] if body else None
+    peer: Direction = "s2c" if direction == "c2s" else "c2s"
+    acked = None
+    if packet.flags & TCP_ACK and peer in isn:
+        acked = (packet.ack - isn[peer] - 1) % _WRAP
+        if acked >= _WRAP // 2:  # the ack of a SYN: nothing of the stream yet
+            acked = 0
     return Entry(
         index=index,
         label=packet.label,
@@ -494,6 +511,7 @@ def _entry(
         matches=None if expected is None else expected == body,
         payload=body,
         payload_at=parsed.payload_offset or 0,
+        acked=acked,
     )
 
 
@@ -649,6 +667,11 @@ class Output:
             capture-file bytes.
         end_reason: The session's end reason.
         sessions: How many sessions the file holds; a run is one connection.
+        timeline: The records with payload in :meth:`zpf.SessionReader.timeline`
+            order — stored order for a sequenced session, the causal merge
+            otherwise — as ``(direction, offset, record)``.
+        tick_hz: The file's ticks per second.
+        epoch: The file's ``time_epoch``, in ticks.
 
     """
 
@@ -657,6 +680,21 @@ class Output:
     undecoded: tuple[tuple[int, int, str], ...]
     end_reason: str | None
     sessions: int
+    timeline: tuple[tuple[Direction, int, zpf.Record], ...] = ()
+    tick_hz: int = 1_000_000
+    epoch: int = 0
+
+    def usec(self, ticks: int) -> int:
+        """Return a record time as microseconds since the Unix epoch, as the ledger keeps them.
+
+        Args:
+            ticks: A record's ``timestamp`` or ``ts_first``.
+
+        Returns:
+            The same instant in microseconds.
+
+        """
+        return (self.epoch + ticks) * 1_000_000 // self.tick_hz
 
 
 @dataclass(frozen=True)
@@ -668,6 +706,7 @@ class Conversion:
         sequenced: Whether the session was written in causal order.
         stats: What the conversion reported.
         output: What the file holds.
+        data: The file itself.
 
     """
 
@@ -675,10 +714,15 @@ class Conversion:
     sequenced: bool
     stats: ConversionStats
     output: Output
+    data: bytes = dataclasses.field(default=b"", repr=False)
 
 
 def convert(
-    stream: TCPStream, options: ReassemblyOptions | None = None, *, sequenced: bool = False,
+    stream: TCPStream,
+    options: ReassemblyOptions | None = None,
+    *,
+    sequenced: bool = False,
+    face: Literal["binary", "jsonl"] = "binary",
 ) -> Conversion:
     """Convert a generated stream in memory and read the file back.
 
@@ -686,6 +730,8 @@ def convert(
         stream: The stream, usually a :attr:`Run.stream`.
         options: The reassembly policy; zpfwire's defaults when ``None``.
         sequenced: Whether to write the session in causal order.
+        face: The file's face.  JSONL is one block per line, which is what
+            lets a test reorder records by hand.
 
     Returns:
         The conversion.
@@ -698,10 +744,13 @@ def convert(
     capture = io.BytesIO()
     write_pcap(stream.to_pcap_tuples(), file_object=capture)
     capture.seek(0)
-    sink = io.BytesIO()
+    # The JSONL face is written to a text stream; zpf reads it back from bytes.
+    sink = io.StringIO() if face == "jsonl" else io.BytesIO()
     stats = capture_to_zpf(capture, sink, options=options, sequenced=sequenced,
-                           produced_at=None)
-    return Conversion(options, sequenced, stats, read(sink.getvalue()))
+                           face=face, produced_at=None)
+    value = sink.getvalue()
+    data = value.encode() if isinstance(value, str) else value
+    return Conversion(options, sequenced, stats, read(data), data)
 
 
 def read(data: bytes) -> Output:
@@ -719,6 +768,7 @@ def read(data: bytes) -> Output:
     """
     chunks: dict[Direction, tuple[zpf.Segment | zpf.Gap, ...]] = dict.fromkeys(DIRECTIONS, ())
     records: dict[Direction, tuple[tuple[int, zpf.Record], ...]] = dict.fromkeys(DIRECTIONS, ())
+    timeline: list[tuple[Direction, int, zpf.Record]] = []
     with zpf.open(io.BytesIO(data)) as reader:
         sessions = reader.sessions()
         end_reason = None
@@ -726,22 +776,32 @@ def read(data: bytes) -> Output:
             end_reason = session.end.reason if session.end else None
             for _ in session.records():
                 pass
+            origins: dict[int, tuple[Direction, int]] = {}
             for view in session.reassemble():
                 participant = view.participant
                 direction: Direction = (
                     "c2s" if participant.endpoint == "{}:{}".format(*CLIENT) else "s2c"
                 )
                 assert participant.isn is not None, participant
+                origins[participant.participant_id] = (direction, participant.isn)
                 chunks[direction] += tuple(view.chunks())
                 records[direction] += tuple(
                     ((r.seq_start - participant.isn - 1) % _WRAP, r)
                     for r in session.stream(participant.participant_id)
                     if r.payload and r.seq_start is not None
                 )
+            for record in session.timeline():
+                if record.payload and record.seq_start is not None:
+                    direction, isn = origins[record.sender_pid]
+                    timeline.append((direction, (record.seq_start - isn - 1) % _WRAP, record))
         if reader.diagnostics or reader.unplaceable:
             raise Unclean(f"diagnostics {reader.diagnostics}, unplaceable {reader.unplaceable}")
         undecoded = tuple((u.off_start, u.off_end, u.reason or "") for u in reader.undecoded)
-    return Output(chunks, records, undecoded, end_reason, len(sessions))
+        header = reader.header
+        assert header is not None, "a file read to the end has a header"
+        tick_hz, epoch = header.tick_hz, header.time_epoch or 0
+    return Output(chunks, records, undecoded, end_reason, len(sessions),
+                  tuple(timeline), tick_hz, epoch)
 
 
 # ── The byte scorer ─────────────────────────────────────────────────────
@@ -1181,6 +1241,183 @@ def _holes(ledger: Ledger, direction: Direction) -> int:
     return holes
 
 
+# ── Order and timing ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Timing:
+    """When the file says a message was sent, against when it was.
+
+    Read from the record holding the message's first byte.  A coalesced
+    record is one unit, so its ``timestamp`` is when its *last* packet
+    arrived and its ``ts_first`` when its first did: a message that does
+    not start its record, or does not end it, is dated by its neighbours.
+
+    Attributes:
+        message: The message's index.
+        recovered: Whether its first segment's original was lost and only a
+            resend captured.  The true send time is then the resend's less
+            the retransmission timeout — what packeteer schedules it at —
+            and the record is expected to be late by about that much.
+        correct: Whether the file holds the true byte there.  A forged first
+            byte is timed too, and what it times is the forgery.
+        starts_record: Whether the message's first byte is its record's.
+        timestamp_error: The record's ``timestamp`` less the true send time,
+            in microseconds.
+        ts_first_error: The same for ``ts_first``, or ``None`` where the
+            record carries none.
+
+    """
+
+    message: int
+    recovered: bool
+    correct: bool
+    starts_record: bool
+    timestamp_error: int
+    ts_first_error: int | None
+
+
+@dataclass(frozen=True)
+class OrderScore:
+    """Where each message's first byte falls in the session's timeline.
+
+    packeteer emits messages strictly in order, but message order is not the
+    causal order once a segment is lost: the generator keeps sending, and a
+    receiver's acknowledgement stays at the hole, so a reply sent meanwhile
+    acknowledges nothing of the message it follows.  What the wire
+    establishes is narrower, and it is what neither the causal merge nor a
+    sequenced session may break: message *j* **depends on** message *i*
+    when *j*'s first segment, as first captured, acknowledged *i*'s first
+    byte, or *i* is earlier in *j*'s own direction — closed transitively.
+
+    Attributes:
+        positions: Each message's first byte's position in the timeline,
+            counting records with payload; ``None`` where the file does not
+            hold that byte.
+        inversions: Pairs where a message is placed before one it depends
+            on: each a failure.  Pairs involving a forged first byte are not
+            counted — the forgery's position is the forgery's.
+        reordered: Pairs placed against plain message order, dependency or
+            not.  Reported, not a failure.  Two messages whose first bytes
+            share a record are not a pair: the record's offsets order them.
+        forged: Messages whose first byte the file holds wrongly.
+        timing: One sample per placed message.
+
+    """
+
+    positions: tuple[int | None, ...]
+    inversions: int
+    reordered: int
+    forged: int
+    timing: tuple[Timing, ...]
+
+    @property
+    def unplaced(self) -> int:
+        """Messages whose first byte the file does not hold."""
+        return sum(p is None for p in self.positions)
+
+
+def dependencies(run: Run) -> list[set[int]]:
+    """Return, for each message, the earlier messages it depends on.
+
+    Args:
+        run: The run.
+
+    Returns:
+        ``deps[j]``: the messages *j* depends on, transitively.  See
+        :class:`OrderScore`.
+
+    """
+    messages = run.truth.messages
+    deps: list[set[int]] = []
+    for j, message in enumerate(messages):
+        first = _first_copy(run.ledger, message.direction, message.offset)
+        direct = {
+            i for i, earlier in enumerate(messages[:j])
+            if earlier.direction == message.direction
+            or (first is not None and first.acked is not None and first.acked > earlier.offset)
+        }
+        closed = set(direct)
+        for i in direct:
+            closed |= deps[i]
+        deps.append(closed)
+    return deps
+
+
+def _first_copy(ledger: Ledger, direction: Direction, offset: int) -> Entry | None:
+    """Return the earliest captured, non-stray packet carrying *offset*."""
+    carriers = [e for e in ledger.data(direction)
+                if not e.stray and e.offset <= offset < e.end]
+    return min(carriers, key=lambda e: e.usec, default=None)
+
+
+def score_order(run: Run, output: Output) -> OrderScore:
+    """Score the order and timing of a converted run's messages.
+
+    Args:
+        run: The run.
+        output: What its conversion holds.
+
+    Returns:
+        The score.
+
+    """
+    placed: dict[Direction, list[tuple[int, int, int]]] = {d: [] for d in DIRECTIONS}
+    for position, (direction, offset, record) in enumerate(output.timeline):
+        placed[direction].append((offset, offset + len(record.payload), position))
+    for spans in placed.values():
+        spans.sort()
+
+    positions: list[int | None] = []
+    timing = []
+    rto = round(run.scenario.impairments.retransmission_timeout * 1_000_000)
+    for message in run.truth.messages:
+        spans = placed[message.direction]
+        at = bisect.bisect_right(spans, (message.offset, _WRAP, 0)) - 1
+        if at < 0 or not spans[at][0] <= message.offset < spans[at][1]:
+            positions.append(None)
+            continue
+        start, _, position = spans[at]
+        positions.append(position)
+        segment = next(
+            (s for s in run.ledger.segments if s.direction == message.direction
+             and s.offset <= message.offset < s.offset + s.length),
+            None,
+        )
+        if segment is None:  # a forged byte where nothing real was captured
+            continue
+        sent = segment.first_usec - rto if segment.sent_usec is None else segment.sent_usec
+        record = output.timeline[position][2]
+        held = record.payload[message.offset - start]
+        timing.append(Timing(
+            message=message.index,
+            recovered=segment.sent_usec is None,
+            correct=held == run.truth.streams[message.direction][message.offset],
+            starts_record=start == message.offset,
+            timestamp_error=output.usec(record.timestamp) - sent,
+            ts_first_error=None if record.ts_first is None else output.usec(record.ts_first) - sent,
+        ))
+
+    forged = {t.message for t in timing if not t.correct}
+    deps = dependencies(run)
+
+    def placed_after(i: int, j: int) -> bool:
+        a, b = positions[i], positions[j]
+        return a is not None and b is not None and a > b
+
+    pairs = [(i, j) for j in range(len(positions)) for i in range(j)]
+    return OrderScore(
+        positions=tuple(positions),
+        inversions=sum(
+            1 for i, j in pairs
+            if i in deps[j] and i not in forged and j not in forged and placed_after(i, j)
+        ),
+        reordered=sum(1 for i, j in pairs if placed_after(i, j)),
+        forged=len(forged),
+        timing=tuple(timing),
+    )
+
+
 # ── A measurement ───────────────────────────────────────────────────────
 
 
@@ -1193,6 +1430,7 @@ class Measurement:
         conversion: Its conversion.
         bytes: The byte score, by direction.
         accounting: The file's account of itself.
+        order: The messages' order and timing.
 
     """
 
@@ -1200,6 +1438,7 @@ class Measurement:
     conversion: Conversion
     bytes: dict[Direction, ByteScore]
     accounting: Accounting
+    order: OrderScore
 
     @property
     def total(self) -> ByteScore:
@@ -1233,4 +1472,5 @@ def measure(
         conversion=conversion,
         bytes={d: score_bytes(run, conversion.output, d) for d in DIRECTIONS},
         accounting=account(run, conversion),
+        order=score_order(run, conversion.output),
     )

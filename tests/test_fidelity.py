@@ -28,10 +28,13 @@ from fidelity import (
     Truth,
     account,
     convert,
+    dependencies,
     kinds_of,
     measure,
+    read,
     run,
     score_bytes,
+    score_order,
     self_check,
 )
 from packeteer.generate.tcp import TCP_RST
@@ -427,3 +430,101 @@ def test_a_reset_the_file_does_not_show_is_reported():
     assert accounting.expected_end == "rst"
     assert accounting.end_reason != "rst"
     assert f"the session ends {accounting.end_reason!r}, not 'rst'" in accounting.failures()
+
+
+# ── order and timing ────────────────────────────────────────────────────
+
+PUSHED = 1.0
+"""PSH on every message, as a real stack sets it at the end of each write."""
+
+ORDERED = {
+    **ALONE,
+    "duplication-and-retransmission": PERFECT["duplication-and-retransmission"],
+}
+
+
+@pytest.mark.parametrize("sequenced", [False, True], ids=["merge", "sequenced"])
+@pytest.mark.parametrize("name", ORDERED)
+def test_pushed_messages_keep_their_causal_order(name: str, sequenced: bool):
+    """No message is placed before one it depends on, on either path.
+
+    A stray can still put a message's first byte early — the byte is the
+    forgery's, and is counted as forged — and a recovered loss can still put
+    a reply before the request it was sent without acknowledging.
+    """
+    for seed in SEEDS:
+        r = run(Scenario(seed=seed, impairments=ORDERED[name], psh_probability=PUSHED))
+        order = measure(r, sequenced=sequenced).order
+        assert order.inversions == 0, (seed, order.positions)
+
+
+@pytest.mark.xfail(strict=True, reason="Phase 5: a coalesced run spans an unpushed message")
+@pytest.mark.parametrize("sequenced", [False, True], ids=["merge", "sequenced"])
+def test_an_unpushed_message_keeps_its_causal_order(sequenced: bool):
+    """Seed 3's first request ends without PSH, and its run takes in the second.
+
+    The record holds bytes sent before the response and bytes sent after
+    it, so no position for it is valid: the response lands before the
+    request it answers.
+    """
+    order = measure(prototype(), sequenced=sequenced).order
+    assert order.inversions == 0, order.positions
+
+
+def test_a_reply_sent_into_a_loss_does_not_depend_on_the_request():
+    """Seed 1: the request's first segment is lost, and the reply goes out anyway.
+
+    The reply acknowledges nothing of the request, so placing it first is
+    reordering, not a failure.
+    """
+    r = run(Scenario(seed=1, impairments=ALONE["loss-recovered"], psh_probability=PUSHED))
+    order = measure(r).order
+
+    assert 0 not in dependencies(r)[1]
+    assert order.positions[1] < order.positions[0]
+    assert order.reordered == 1 and order.inversions == 0
+
+
+def test_a_message_that_starts_its_record_is_dated_exactly_by_ts_first():
+    """``timestamp`` is when a record completed; ``ts_first`` when it began."""
+    order = measure(run(Scenario(seed=3, psh_probability=PUSHED))).order
+
+    assert all(t.starts_record and t.correct for t in order.timing)
+    assert [t.ts_first_error for t in order.timing] == [0, 0, None, 0]
+    assert [t.timestamp_error for t in order.timing] == [4000, 12000, 0, 6000]
+
+
+def test_a_recovered_loss_is_late_by_the_retransmission_timeout():
+    rto = 200_000
+    recovered = [
+        t for seed in SEEDS
+        for t in measure(run(Scenario(seed=seed, impairments=ALONE["loss-recovered"],
+                                      psh_probability=PUSHED))).order.timing
+        if t.recovered
+    ]
+
+    assert recovered
+    assert all(rto <= t.timestamp_error <= rto + 20_000 for t in recovered)
+
+
+def test_a_hand_reordered_file_reports_its_inversion():
+    """The reader trusts a sequenced session's stored order: only the scorer can object.
+
+    Swapping the first response's record with the second request's moves the
+    request ahead of the response it acknowledges.  Each participant's own
+    records stay in order, so the file still reads clean.
+    """
+    r = run(Scenario(seed=3, psh_probability=PUSHED))
+    conversion = convert(r.stream, ReassemblyOptions(pure_acks=False), sequenced=True,
+                         face="jsonl")
+    lines = conversion.data.decode().splitlines(keepends=True)
+    records = [i for i, line in enumerate(lines) if line.startswith('{"type":"record"')]
+    # SYN, SYN-ACK, then one record per message: swap messages 1 and 2.
+    a, b = records[3], records[4]
+    lines[a], lines[b] = lines[b], lines[a]
+    reordered = read("".join(lines).encode())
+
+    assert score_order(r, conversion.output).inversions == 0
+    order = score_order(r, reordered)
+    assert order.positions == (0, 2, 1, 3)
+    assert order.inversions == 1
