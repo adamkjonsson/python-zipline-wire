@@ -59,7 +59,7 @@ include = ["zpfwire*"]
 "zpfwire" = ["py.typed"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "tools"]
 testpaths = ["tests"]
 
 [project.scripts]
