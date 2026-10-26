@@ -410,6 +410,15 @@ class _Stream:
     # it disagrees (#54).  A digest per segment rather than its bytes, so a
     # resend a whole RTO behind is still within reach; see _RELEASED_KEPT.
     released: dict[tuple[int, int], int] = field(default_factory=dict)
+    # The furthest the peer has acknowledged this direction: bytes below it
+    # the receiver has accepted, and a later copy of them it discards as old
+    # data, so favor-acked does not contest one (#62).
+    peer_acked: int | None = None
+    # One past the furthest sequence number seen from this direction, SYN and
+    # FIN included: what the peer can be seen to have acknowledged.  An ack
+    # beyond it acknowledges data not yet sent, which a receiver ignores
+    # (RFC 793, RFC 5961 §5); `peer_acked` does too (#62).
+    sent_end: int | None = None
     # Where the FIN sits: one past the last byte of the segment carrying it.
     # The FIN occupies that sequence number, so once every byte before it is
     # in, the next one the sender can use is one further on.
@@ -449,15 +458,30 @@ class TcpFlow(FlowTracker):
             self._stats.ts_missing_bytes += len(pkt.payload)
             self.undecoded(pkt.payload_offset, len(pkt.payload), reason=REASON_TS_MISSING)
             return
+        end = _advance(pkt.seq, len(pkt.payload) + bool(pkt.tcp_flags & TCP_SYN)
+                       + bool(pkt.tcp_flags & TCP_FIN))
+        if stream.sent_end is None or _delta(end, stream.sent_end) > 0:
+            stream.sent_end = end
         for other in self._streams.values():
             if other is not stream:
                 other.peer_count += 1
-                if pkt.tcp_flags & TCP_ACK:
-                    self._answered(other, pkt)
+                if not pkt.tcp_flags & TCP_ACK:
+                    continue
+                self._answered(other, pkt)
+                # An ack beyond anything seen sent is no proof the receiver
+                # took the bytes: a forgery copies a later segment's ack.
+                # Ignoring it here only means a later copy is contested, as
+                # before #62 — whereas a capture whose order is not the
+                # wire's acks bytes it shows afterwards, which _settle must
+                # still read.
+                if other.sent_end is not None and _delta(pkt.ack, other.sent_end) <= 0 and (
+                    other.peer_acked is None or _delta(pkt.ack, other.peer_acked) > 0
+                ):
+                    other.peer_acked = pkt.ack
                 # This packet's ack settles the peer's held runs — before its
                 # own bytes are taken, since what it acknowledges arrived
                 # before it was sent.
-                if self._acked and pkt.tcp_flags & TCP_ACK:
+                if self._acked:
                     self._settle(other, pkt.ack, _tsecr(pkt))
         if self._acked:
             for held_stream in self._streams.values():
@@ -1539,7 +1563,9 @@ class TcpFlow(FlowTracker):
         known — and ``False`` when the caller should discard it as usual:
         the policy is ``favor-old``, the repeat is a duplicate or carries no
         option (neither has a second clock to match an echo against — a
-        stale repeat does, and is contested like a resend), or the copies
+        stale repeat does, and is contested like a resend), the peer had
+        already acknowledged the range when the copy came, so the receiver
+        had chosen with only the first copy to hand (#62), or the copies
         agree byte-for-byte, where the choice is moot.  A part of the range
         that no open or held run covers has already been settled by the
         peer's ack, and is discarded too — or was released by a bound before
@@ -1547,6 +1573,12 @@ class TcpFlow(FlowTracker):
         counted as a fallback (#54).
         """
         if not self._acked or verdict not in _CONTESTABLE:
+            return False
+        if stream.peer_acked is not None and _delta(stream.peer_acked, end) >= 0:
+            # The receiver acknowledged these bytes before this copy came, with
+            # only the first copy to hand: its choice is made, and it drops
+            # this one below RCV.NXT.  Contested, a later ack's echo could
+            # name it by a coincidence of clock ticks, and swap it in (#62).
             return False
         digest = stream.released.get((seq, end))
         if digest is not None and digest != zlib.crc32(data):

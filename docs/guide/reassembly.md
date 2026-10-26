@@ -121,6 +121,13 @@ in it at all, falls back on every contested byte and says so.  Only
 *disagreeing* copies are held against a run, so memory is bounded by real
 disagreements, not by repeats.
 
+A copy of bytes the receiver had already acknowledged is not contested: it
+chose with only the first copy to hand, and a later one is old data to it.
+Its acknowledgement counts only if it covers bytes the capture has seen
+sent, since a forged segment carries another segment's ack.  What the policy
+cannot tell is a forged acknowledgement of bytes already seen; see
+{doc}`../reference/limits`.
+
 A swapped-in copy is **a record of its own**, carrying `retransmit` — the
 flag is the sender's act — and the resend's own `timestamp` and `ack`.  The
 resend went out after the peer had answered the bytes around it, so in one

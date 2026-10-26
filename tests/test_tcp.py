@@ -1656,3 +1656,61 @@ def test_an_echo_naming_both_copies_is_counted_as_a_fallback(tmp_path: pathlib.P
     assert out.stats.duplicates == 0
     assert out.stats.acked_swaps == 0
     assert out.stats.acked_fallback_bytes == 4
+
+
+# ── #62: favor-acked does not contest what the receiver already took ───
+
+
+def _forged_after_the_ack() -> list[Seg]:
+    """Build a held run, its first bytes acknowledged, then a forgery of them a tick later."""
+    return [
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(5, b"bbbb", timestamps=(101, 0)),
+        _ack(5, 100),                                                    # aaaa accepted
+        Seg(1, b"XXXX", timestamps=(102, 0)),                            # forged, later
+        Seg(9, b"cccc", flags=TCP_PSH | TCP_ACK, timestamps=(102, 0)),  # real, the same tick
+        _ack(13, 102),                                                   # echoes that tick
+    ]
+
+
+def test_favor_acked_does_not_contest_a_copy_of_acknowledged_bytes(tmp_path: pathlib.Path):
+    """The receiver chose with only the first copy to hand, and drops a later one (#62).
+
+    Contested, the copy was decided by the next covering ack, whose echo
+    names ``cccc``'s tick — which the forgery shares — so it was swapped in.
+    """
+    out = to_zpf(tcp_segments(_forged_after_the_ack()), tmp_path, options=ACKED)
+
+    assert out.only.stream(0) == b"aaaabbbbcccc"
+    assert out.stats.acked_swaps == 0
+    assert out.stats.acked_fallback_bytes == 0
+    assert _reasons(out) == ["overlap-discarded"]
+    assert _flagged(out) == [True]          # the held run holds the repeated range (#59)
+
+
+def test_a_copy_before_the_ack_is_still_contested(tmp_path: pathlib.Path):
+    """The guard is the ack, not the order: a corrupted copy resent before it is still judged."""
+    out = to_zpf(tcp_segments(_corrupt_then_resent(echo=140)), tmp_path, options=ACKED)
+
+    assert out.only.stream(0) == b"aaaabbbb"
+    assert out.stats.acked_swaps == 1
+
+
+def test_an_ack_of_bytes_never_sent_does_not_stop_a_contest(tmp_path: pathlib.Path):
+    """A forged segment's ack covers what the sender has not sent yet (#62).
+
+    A receiver ignores such an ack, and so does the rule that stops
+    favor-acked contesting what was already acknowledged: taken as proof,
+    it would leave the forgery in place and the real copy uncontested.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"XXXX", timestamps=(100, 0)),                    # forged, first
+        Seg(500, b"", from_client=False, ack=999,                 # a forged ack of byte 998,
+            timestamps=(600, 100)),                               # and only 5 were ever sent
+        Seg(1, b"aaaa", timestamps=(140, 0)),                     # the real segment
+        Seg(5, b"bbbb", flags=TCP_PSH | TCP_ACK, timestamps=(141, 0)),
+        _ack(9, 140),                                             # the receiver kept aaaa
+    ]), tmp_path, options=ACKED)
+
+    assert out.only.stream(0) == b"aaaabbbb"
+    assert out.stats.acked_swaps == 1

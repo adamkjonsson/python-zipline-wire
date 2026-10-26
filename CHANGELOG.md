@@ -135,6 +135,19 @@ which change moves which.
   policy, `coalesce=False` included, where every record is written at
   once. Reassembly is 2–6% slower per packet on the benchmark's synthetic
   shapes, for the CRC, and unchanged on `http_stream_1.pcap`.
+- **Breaking:** under `favor-acked`, a copy of bytes the peer has already
+  acknowledged is not contested: the receiver chose with only the first
+  copy to hand, and discards a later one as old data
+  ([#62](https://github.com/adamkjonsson/python-zipline-wire/issues/62)).
+  It is discarded and cited `overlap-discarded`, as before `favor-acked`.
+  Contested, it was decided by the next covering ack, whose echo can name
+  a later segment sent in the copy's clock tick, so a forgery could be
+  swapped in for the bytes the receiver kept. An ack only counts here if
+  it acknowledges bytes seen sent, since a forgery copies a later
+  segment's ack. In the fidelity sweep's stamped-stray cells, `favor-acked`
+  runs keeping forged bytes that nothing counts go from 49 to 8 of 224,
+  and no run is worse. No fixture moves. The 8 are a forged
+  acknowledgement, which `docs/reference/limits.md` now documents.
 - **Breaking:** under `favor-acked`, a repeat whose original has aged out
   of the reassembler's memory (`ts_fallback["stale"]`) is contested like a
   resend, since it carries its own clock for the receiver's echo to match.

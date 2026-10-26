@@ -134,6 +134,23 @@ And it needs both directions in the capture and the option negotiated;
 without either, every contested byte is decided as `favor-old` and counted
 as such — see {doc}`../guide/reassembly`.
 
+**`favor-acked` trusts the peer's acks, and a forger can forge those too.**
+The policy is a defence against copies that disagree, and holds up well
+against a third party who forges *data*: since `0.7.0`, a copy of bytes
+the receiver had already acknowledged is not contested (#62), an
+acknowledgement of bytes never seen sent is not taken as proof the receiver
+had them, and a forgery stamped with the right clock is not a copy (#61).
+What it cannot tell is a forged *acknowledgement* that only covers bytes
+already seen.  One such ack, from a forgery impersonating the other side,
+releases a run still holding a forgery before the real segment arrives, and
+the real copy then has nothing to be contested against.  The forged bytes
+stay, and nothing counts them.  In the fidelity tool's stamped-stray cells
+(three forgeries, each stamped with the impersonated side's clock and
+carrying its ack), 8 of 224 `favor-acked` runs end this way; 162 are exact,
+and in the other 54 every wrong byte is counted as a fallback.  A capture
+alone cannot authenticate an acknowledgement; an RFC 5961 receiver with
+its challenge ACKs does better, because it is in the conversation.
+
 **Byte ranges for discarded fragments.** A datagram reassembled from several
 IP fragments occupies several discontiguous ranges of the capture, and an
 `Undecoded` block names one range.  Rather than name the wrong bytes, a
