@@ -33,14 +33,58 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
-Every change below that moves output was found by `tools/fidelity.py`
-(#52), which scores a conversion against the traffic packeteer generated it
-from. The plan quotes each fix's cells before and after. For anyone
-reproducing a `.zpf`, eleven of the sixteen pinned fixtures decode
-differently: `delay`, `fragmentation`, `http`, `http_example`, `http_gzip`,
-`http_stream_1`, `no_errors`, `packet_loss`, `payload_corruption`,
-`retransmission` and `stray_1`. So does `tcp_wrap_ts`. The entries below say
-which change moves which.
+---
+
+## [0.7.0] - 2026-10-26
+
+**The fidelity release.**  Writes spec **v0.23**
+(`zpf.SPEC_VERSION == (0, 23)`), unchanged from `0.6.0`, against packeteer
+**0.21.0** and python-zipline **0.7.0**.
+
+**Breaking, in what a conversion writes, with no way back by option.**  Every
+change below that moves output was found by `tools/fidelity.py`
+([#52](https://github.com/adamkjonsson/python-zipline-wire/issues/52)), which
+generates TCP traffic under chosen impairments and scores the conversion
+against what each side sent.  Each one corrects a statement the file made
+that was false:
+- a record that straddled a peer message, which put a response before the
+  request it answers ([#53](https://github.com/adamkjonsson/python-zipline-wire/issues/53),
+  [#55](https://github.com/adamkjonsson/python-zipline-wire/issues/55));
+- a `retransmit` flag on bytes nobody resent
+  ([#59](https://github.com/adamkjonsson/python-zipline-wire/issues/59));
+- a close that no record carried
+  ([#60](https://github.com/adamkjonsson/python-zipline-wire/issues/60));
+- a copy that was not one, or a forgery that passed as one
+  ([#56](https://github.com/adamkjonsson/python-zipline-wire/issues/56),
+  [#61](https://github.com/adamkjonsson/python-zipline-wire/issues/61));
+- under `favor-acked`, corrupted or forged bytes kept, and not counted
+  ([#54](https://github.com/adamkjonsson/python-zipline-wire/issues/54),
+  [#62](https://github.com/adamkjonsson/python-zipline-wire/issues/62)).
+
+For anyone reproducing a `.zpf`, eleven of the sixteen pinned fixtures
+decode differently — `delay`, `fragmentation`, `http`, `http_example`,
+`http_gzip`, `http_stream_1`, `no_errors`, `packet_loss`,
+`payload_corruption`, `retransmission` and `stray_1` — and so does
+`tcp_wrap_ts`.  The entries below say which change moves which; seven of the
+eleven only gain the FIN records they lacked.
+
+**Two options, both off by default and out of the digest until set.**
+`acked_hold` lets `favor-acked` wait for a resend past `flush_timeout`
+([#32](https://github.com/adamkjonsson/python-zipline-wire/issues/32)), and
+`require_timestamps` applies RFC 7323 §3.2 to keep forged segments out
+([#57](https://github.com/adamkjonsson/python-zipline-wire/issues/57)).
+
+**What the tool measured.**  Over the cells its first baseline and its last
+sweep share, runs that put a message before one it depends on fell from
+5,412 of 19,978 to 220 of 20,328, every one of those a forged segment's ack
+(more runs score now that none is void); copies and resends misjudged fell
+from 9,681 to none; and no conversion of the 32,256 reads back unclean.  The tool is in `tools/`, not the wheel; a public
+`zpfwire.fidelity` is [#63](https://github.com/adamkjonsson/python-zipline-wire/issues/63),
+and UDP fidelity [#64](https://github.com/adamkjonsson/python-zipline-wire/issues/64).
+
+**packeteer 0.21.0 is the floor**, for the suite: every corrupted segment
+now fails its checksum with data both ways
+([packeteer#227](https://github.com/adamkjonsson/packeteer/issues/227)).
 
 ### Added
 
@@ -1254,7 +1298,8 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.3.0...v0.4.0
