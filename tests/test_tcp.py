@@ -1560,3 +1560,99 @@ def test_a_fin_the_stream_has_run_past_writes_no_record_below_it(tmp_path: pathl
     starts = [r.seq_start for r in out.only.by(0)]
     assert starts == sorted(starts)
     assert out.diagnostics == [] and out.unplaceable == []
+
+
+# ── #61: a copy is the same bytes ───────────────────────────────────────
+
+
+def test_a_same_clock_repeat_with_other_bytes_is_not_a_copy(tmp_path: pathlib.Path):
+    """A mirror's copy is byte-identical; one that differs is a forgery or a resend (#61).
+
+    Judged on the clock alone it was discarded as ``duplicate-discarded``,
+    which says the capture point saw one transmission twice.
+    """
+    forged = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"XXXX", timestamps=(100, 0)),       # the same tick, other bytes
+        Seg(5, b"bbbb", flags=TCP_PSH | TCP_ACK, timestamps=(101, 0)),
+    ]), tmp_path / "forged")
+    copied = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(1, b"aaaa", timestamps=(100, 0)),       # a true copy
+        Seg(5, b"bbbb", flags=TCP_PSH | TCP_ACK, timestamps=(101, 0)),
+    ]), tmp_path / "copied")
+
+    assert forged.only.stream(0) == copied.only.stream(0) == b"aaaabbbb"
+    assert _reasons(forged) == ["overlap-discarded"] and forged.stats.duplicates == 0
+    assert _reasons(copied) == ["duplicate-discarded"] and copied.stats.duplicates == 1
+
+
+def test_a_same_clock_repeat_of_a_held_segment_with_other_bytes_is_not_a_copy(
+    tmp_path: pathlib.Path,
+):
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", timestamps=(100, 0)),
+        Seg(9, b"cccc", timestamps=(102, 0)),       # held
+        Seg(9, b"XXXX", timestamps=(102, 0)),       # the same tick, other bytes
+        Seg(5, b"bbbb", flags=TCP_PSH | TCP_ACK, timestamps=(101, 0)),
+    ]), tmp_path)
+
+    assert _reasons(out) == ["overlap-discarded"]
+    assert out.stats.duplicates == 0
+
+
+def test_a_same_clock_copy_of_a_resend_with_other_bytes_is_not_a_copy(tmp_path: pathlib.Path):
+    """#56's memory of a discarded resend keeps its bytes, so #61 holds there too."""
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH | TCP_ACK, timestamps=(100, 0)),
+        Seg(1, b"", from_client=False),
+        Seg(1, b"aaaa", timestamps=(140, 0)),        # the resend, discarded
+        Seg(1, b"XXXX", timestamps=(140, 0)),        # the resend's tick, other bytes
+    ]), tmp_path)
+
+    assert _reasons(out) == ["overlap-discarded", "overlap-discarded"]
+    assert out.stats.duplicates == 0
+
+
+@pytest.mark.parametrize("coalesce", [True, False], ids=["coalesce", "no-coalesce"])
+def test_once_its_bytes_are_written_a_copy_is_the_same_packet(
+    tmp_path: pathlib.Path, coalesce: bool,
+):
+    """No run holds them to compare, so a copy must match one transmission's range and CRC.
+
+    Without coalescing every segment is written at once, and on the clock
+    alone every same-tick forgery passed as a copy (#61).
+    """
+    options = ReassemblyOptions(coalesce=coalesce)
+    forged = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH | TCP_ACK, timestamps=(100, 0)),   # written at once
+        Seg(1, b"XXXX", timestamps=(100, 0)),                            # same range, other bytes
+        Seg(1, b"aa", timestamps=(100, 0)),                              # same bytes, other range
+    ]), tmp_path / "forged", options=options)
+    copied = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH | TCP_ACK, timestamps=(100, 0)),
+        Seg(1, b"aaaa", flags=TCP_PSH | TCP_ACK, timestamps=(100, 0)),   # the same packet
+    ]), tmp_path / "copied", options=options)
+
+    assert _reasons(forged) == ["overlap-discarded", "overlap-discarded"]
+    assert _reasons(copied) == ["duplicate-discarded"]
+
+
+def test_an_echo_naming_both_copies_is_counted_as_a_fallback(tmp_path: pathlib.Path):
+    """A forgery first, on the real segment's clock: the receiver's echo cannot choose (#61).
+
+    It names the clock both copies carry.  The first copy is kept, as
+    favor-old keeps it, and every contested byte is counted: before, the
+    forgery was a "duplicate", never contested at all.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"XXXX", timestamps=(100, 0)),                    # forged, first
+        Seg(1, b"aaaa", timestamps=(100, 0)),                    # real, the same tick
+        Seg(5, b"bbbb", flags=TCP_PSH | TCP_ACK, timestamps=(101, 0)),
+        _ack(9, 100),
+    ]), tmp_path, options=ACKED)
+
+    assert out.only.stream(0) == b"XXXXbbbb"
+    assert out.stats.duplicates == 0
+    assert out.stats.acked_swaps == 0
+    assert out.stats.acked_fallback_bytes == 4

@@ -111,7 +111,7 @@ per direction, `flush_timeout` seconds since a run closed — or, when
 that the session ends on, is written as `favor-old` would have written it.
 So is a range whose copies both lacked the option, whose covering ack did, or
 whose ack echoed neither copy, as a cumulative ack that jumps over several
-resends does.  Every such byte is counted in `stats.acked_fallback_bytes`,
+resends does — or both, as when a forgery carries the real segment's clock.  Every such byte is counted in `stats.acked_fallback_bytes`,
 including a resend that arrives *after* its run was released (since `0.7.0`;
 before, those were written as `favor-old` and counted nowhere), so a file's
 digest never names a rule the file silently did not follow;
@@ -363,8 +363,13 @@ that **every transmission of a byte range gets its own value, and a copy of
 one transmission does not**.
 
 **A repeated segment is a copy, not a resend**, when it carries the same
-TSval as the transmission it repeats and nothing from the peer arrived
-between the two.  That is what a mirror port, a two-interface capture or a
+TSval as the transmission it repeats, nothing from the peer arrived between
+the two, and its bytes are the same.  The last clause is since `0.7.0`: a
+copy is byte-identical by definition, and a segment forged with the right
+clock is not one.  While a run still holds the accepted bytes they are
+compared directly; once they are written, a copy has to be the same packet
+as one remembered transmission, the same range with a CRC32 of the same
+bytes.  That is what a mirror port, a two-interface capture or a
 veth pair produces: every packet twice, a microsecond apart, the sender
 having sent once.  Such a copy is discarded and cited as
 `duplicate-discarded`, counted in `stats.duplicates`, and — the part that

@@ -117,6 +117,24 @@ which change moves which.
   ([#56](https://github.com/adamkjonsson/python-zipline-wire/issues/56)).
   Every such copy in the fidelity sweep was misjudged, 9,681 of them; none
   is now. No stream byte moves; citations and stats do.
+- **Breaking:** a repeat is a capture-point copy only if its bytes equal
+  those already accepted, as well as its clock
+  ([#61](https://github.com/adamkjonsson/python-zipline-wire/issues/61)).
+  A mirror's copy is byte-identical by definition. A segment forged with
+  the real segment's TSval used to pass as one: as `duplicate-discarded`
+  when it lost, and, arriving first, by making the real segment its "copy",
+  which `favor-acked` never contests. The bytes are compared directly while
+  a run still holds them. Once they are written, a copy has to be the same
+  packet: the range of one remembered transmission, and a CRC32 of its
+  bytes, kept for each accepted segment. Under `favor-acked`, a receiver's
+  echo that names *both* copies, which such a forgery makes it do, is
+  counted in `acked_fallback_bytes` like one that names neither. No fixture
+  moves: 198 of 198 outputs are byte-identical to the commit before. In
+  the fidelity sweep's stamped-stray cells, segments taken for a copy of a
+  forgery, or forgeries taken for a copy, go from 18 to 0 under every
+  policy, `coalesce=False` included, where every record is written at
+  once. Reassembly is 2–6% slower per packet on the benchmark's synthetic
+  shapes, for the CRC, and unchanged on `http_stream_1.pcap`.
 - **Breaking:** under `favor-acked`, a repeat whose original has aged out
   of the reassembler's memory (`ts_fallback["stale"]`) is contested like a
   resend, since it carries its own clock for the receiver's echo to match.

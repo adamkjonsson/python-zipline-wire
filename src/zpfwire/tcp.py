@@ -273,6 +273,9 @@ class _Sent:
     tsval: int | None
     peer_count: int
     pos: int
+    # A CRC32 of the bytes accepted, so a repeat can be judged a copy after
+    # they are written: a mirror's copy is the same packet (#61).
+    crc: int = 0
 
 
 @dataclass(frozen=True)
@@ -384,7 +387,9 @@ class _Stream:
     # only what was accepted, so without these a copy of a discarded resend
     # is judged against the original's clock, and taken for another resend.
     # The copy follows at once, so a short memory serves.
-    resends: deque[_Sent] = field(default_factory=lambda: deque(maxlen=_RESENDS_KEPT))
+    resends: deque[tuple[_Sent, bytes]] = field(
+        default_factory=lambda: deque(maxlen=_RESENDS_KEPT),
+    )
     # Packets seen from the other direction, whatever they carried.
     peer_count: int = 0
     # RFC 7323 §4.3's TS.Recent: the TSval of the last segment accepted *in
@@ -847,7 +852,7 @@ class TcpFlow(FlowTracker):
             stream.fin_deferred = None
             stream.fin_placed = True
             self._attach_flags(stream, fin_flags, origin=origin)
-        self._remember(stream, seq, end, tsval, peer_count)
+        self._remember(stream, seq, end, tsval, peer_count, zlib.crc32(data))
         self._attach_flags(stream, flags)
         stream.next_seq = end
         if stream.held_acks:
@@ -866,8 +871,10 @@ class TcpFlow(FlowTracker):
             elif (
                 tsval == held.tsval
                 and stream.peer_count == held.peer_count
-                and len(data) == len(held.data)
+                and data == held.data
             ):
+                # A copy is the same transmission, so the same bytes: one
+                # that differs is not a copy, whatever its clock says (#61).
                 verdict = _DUPLICATE
             else:
                 verdict = _RETRANSMIT
@@ -944,7 +951,7 @@ class TcpFlow(FlowTracker):
                 # the hole, so its range starts inside the run.
                 assert stream.run is not None, "a superseded held segment lies in the open run"
                 self._release(stream, seq)
-                verdict = self._judge(stream, seq, end, held.tsval, held.peer_count)
+                verdict = self._judge(stream, seq, end, held.tsval, held.peer_count, held.data)
                 if not self._contested(stream, verdict, seq, end, held.data, held):
                     self._discard(stream, verdict, held.payload_offset, 0, len(held.data),
                                   resent=(seq, end))
@@ -954,7 +961,8 @@ class TcpFlow(FlowTracker):
             trim = _delta(stream.next_seq, seq)
             self._release(stream, seq)
             if trim:
-                verdict = self._judge(stream, seq, stream.next_seq, held.tsval, held.peer_count)
+                verdict = self._judge(stream, seq, stream.next_seq, held.tsval, held.peer_count,
+                                      held.data[:trim])
                 if not self._contested(stream, verdict, seq, stream.next_seq,
                                        held.data[:trim], held):
                     self._discard(stream, verdict, held.payload_offset, 0, trim,
@@ -1268,10 +1276,10 @@ class TcpFlow(FlowTracker):
                            late, late_reason)
         for start, stop in self._unclaimed(gaps, seq, end):
             lo, hi = _advance(seq, start), _advance(seq, stop)
-            verdict = self._judge(stream, lo, hi, tsval, peer_count)
+            verdict = self._judge(stream, lo, hi, tsval, peer_count, data[start:stop])
             if verdict in _CONTESTABLE:
                 assert tsval is not None  # either verdict needed it
-                stream.resends.append(_Sent(lo, hi, tsval, peer_count, 0))
+                stream.resends.append((_Sent(lo, hi, tsval, peer_count, 0), data[start:stop]))
             if self._contested(stream, verdict, lo, hi, data[start:stop], pkt,
                                skip=start):
                 continue
@@ -1332,7 +1340,13 @@ class TcpFlow(FlowTracker):
     # ── repeats ─────────────────────────────────────────────────────────
 
     def _remember(
-        self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
+        self,
+        stream: _Stream,
+        seq: int,
+        end: int,
+        tsval: int | None,
+        peer_count: int,
+        crc: int,
     ) -> None:
         """Record an accepted transmission so a later repeat of it can be judged."""
         # Every distance here runs forward — accepted transmissions only move
@@ -1344,7 +1358,7 @@ class TcpFlow(FlowTracker):
             pos = last.pos + (seq - last.seq) % _SEQ_MOD
         else:
             pos = 0
-        recent.append(_Sent(seq, end, tsval, peer_count, pos))
+        recent.append(_Sent(seq, end, tsval, peer_count, pos, crc))
         stream.recent_bytes += (end - seq) % _SEQ_MOD
         window = self._options.reorder_window
         if stream.recent_bytes <= window:
@@ -1360,19 +1374,27 @@ class TcpFlow(FlowTracker):
         stream.recent_head = head
 
     def _judge(
-        self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
+        self,
+        stream: _Stream,
+        seq: int,
+        end: int,
+        tsval: int | None,
+        peer_count: int,
+        data: bytes,
     ) -> str:
-        """Say whether a repeat of ``[seq, end)`` is a copy or a resend.
+        """Say whether a repeat of ``[seq, end)``, carrying *data*, is a copy or a resend.
 
         A **duplicate** is the same transmission seen twice — a mirror port, a
-        two-interface capture, a veth pair — and takes all three of: both it
-        and the transmission it repeats carried the option; the TSvals are
-        equal; and no packet from the peer arrived between the two.  The
-        third clause is what separates a copy from a fast retransmit on a
-        stack whose timestamp tick is coarser than its round trip: the
-        resend is triggered by the peer's duplicate ACKs, and they sit in the
-        capture between original and resend, while a copy follows its
-        original with nothing between.
+        two-interface capture, a veth pair — and takes all of: both it and
+        the transmission it repeats carried the option; the TSvals are equal;
+        no packet from the peer arrived between the two; and the bytes are
+        the same.  The third clause is what separates a copy from a fast
+        retransmit on a stack whose timestamp tick is coarser than its round
+        trip: the resend is triggered by the peer's duplicate ACKs, and they
+        sit in the capture between original and resend, while a copy follows
+        its original with nothing between.  The fourth is what separates it
+        from a forgery stamped with the right clock (#61): a copy is
+        byte-identical by definition.  See :meth:`_same_bytes`.
 
         Anything else is a **retransmission** — the reading RFC 7323 supports
         and the one the specification asks a producer to fall back to.  The
@@ -1386,6 +1408,31 @@ class TcpFlow(FlowTracker):
         a copy.  The rule then calls it a duplicate, which is the wrong way
         round for the specification's SHOULD, and is recorded as a limit.
 
+        The clock's clauses are :meth:`_judge_clock`'s.
+        """
+        if tsval is not None:
+            # A copy of a resend that was itself discarded: the same clauses,
+            # against the resend rather than the copy that was kept.
+            for sent, resent in stream.resends:
+                if (
+                    sent.tsval == tsval
+                    and sent.peer_count == peer_count
+                    and _delta(seq, sent.seq) >= 0
+                    and _delta(sent.end, end) >= 0
+                ):
+                    offset = _delta(seq, sent.seq)
+                    if resent[offset:offset + len(data)] == data:
+                        return _DUPLICATE
+        verdict = self._judge_clock(stream, seq, end, tsval, peer_count)
+        if verdict == _DUPLICATE and not self._same_bytes(stream, seq, end, data):
+            return _RETRANSMIT
+        return verdict
+
+    def _judge_clock(
+        self, stream: _Stream, seq: int, end: int, tsval: int | None, peer_count: int,
+    ) -> str:
+        """Judge a repeat against ``recent`` by the clock alone: the first three clauses.
+
         ``recent`` is ascending, so the transmissions overlapping the range
         are a contiguous run of it, found by bisection rather than a scan
         (#43).  That needs ``_delta`` from *seq* to be monotone along it,
@@ -1398,16 +1445,6 @@ class TcpFlow(FlowTracker):
         """
         if tsval is None:
             return TS_ABSENT
-        # A copy of a resend that was itself discarded: the same three
-        # clauses, against the resend rather than the copy that was kept.
-        for sent in stream.resends:
-            if (
-                sent.tsval == tsval
-                and sent.peer_count == peer_count
-                and _delta(seq, sent.seq) >= 0
-                and _delta(sent.end, end) >= 0
-            ):
-                return _DUPLICATE
         covered = 0
         length = _delta(end, seq)
         recent, head = stream.recent, stream.recent_head
@@ -1435,6 +1472,54 @@ class TcpFlow(FlowTracker):
                 return _RETRANSMIT
             covered += hi - lo
         return _DUPLICATE if covered >= length else TS_STALE
+
+    def _same_bytes(self, stream: _Stream, seq: int, end: int, data: bytes) -> bool:
+        """Say whether *data* is what was accepted over ``[seq, end)`` (#61).
+
+        Compared byte for byte while a run still holds them.  Once they are
+        written, a copy is the same packet as one transmission ``recent``
+        remembers — the same range and a CRC32 of the same bytes — and
+        anything else the clock alone would call a copy is not one.
+        """
+        kept = self._kept_bytes(stream, seq, end)
+        if kept is not None:
+            return kept == data
+        # Accepted ranges are ascending and disjoint, so the only one that can
+        # match exactly is the first ending at or past *end* — found as
+        # _judge_clock finds its run, by bisection while recent spans no more
+        # than _MAX_WINDOW, and by a scan when it does.
+        recent, head = stream.recent, stream.recent_head
+        first, last = recent[head], recent[-1]
+        if last.pos + _delta(last.end, last.seq) - first.pos <= _MAX_WINDOW:
+            at = bisect.bisect_left(recent, 0, head, len(recent),
+                                    key=lambda sent: _delta(sent.end, end))
+            candidates = recent[at:at + 1]
+        else:
+            candidates = recent[head:]
+        crc = zlib.crc32(data)
+        return any(sent.seq == seq and sent.end == end and sent.crc == crc
+                   for sent in candidates)
+
+    def _kept_bytes(self, stream: _Stream, seq: int, end: int) -> bytes | None:
+        """Return the accepted bytes of ``[seq, end)`` while a run still holds them all.
+
+        ``None`` once any of them is written: a record is not kept in memory
+        after it is out.
+        """
+        out = bytearray()
+        cursor = seq
+        runs = sorted(self._covering_runs(stream, seq, end),
+                      key=lambda run: _delta(run.seq_start, seq))
+        for run in runs:
+            if _delta(run.seq_start, cursor) > 0:
+                return None
+            offset = _delta(cursor, run.seq_start)
+            take = min(_delta(end, cursor), len(run.data) - offset)
+            out += run.data[offset:offset + take]
+            cursor = _advance(cursor, take)
+            if cursor == end:
+                return bytes(out)
+        return None
 
     def _contested(
         self,
@@ -1655,12 +1740,9 @@ class TcpFlow(FlowTracker):
         for alt in run.alternates:
             kept = _within(run.contributors, alt.seq, alt.end)
             evidence = alt.evidence
-            swap = (
-                alt.decided
-                and evidence is not None
-                and alt.tsval == evidence
-                and all(c.tsval != evidence for c in kept)
-            )
+            names_alt = alt.tsval == evidence
+            names_kept = any(c.tsval == evidence for c in kept)
+            swap = alt.decided and evidence is not None and names_alt and not names_kept
             if swap:
                 offset = _delta(alt.seq, run.seq_start)
                 run.data[offset:offset + len(alt.data)] = alt.data
@@ -1679,12 +1761,9 @@ class TcpFlow(FlowTracker):
             else:
                 # No verdict, or one naming neither copy — a cumulative ack
                 # that jumped over several resends echoes only the last
-                # filler's clock — leaves the choice to favor-old (#54).
-                if (
-                    not alt.decided
-                    or evidence is None
-                    or (alt.tsval != evidence and all(c.tsval != evidence for c in kept))
-                ):
+                # filler's clock (#54) — or both, when a forgery carries the
+                # real segment's clock (#61), leaves the choice to favor-old.
+                if not alt.decided or evidence is None or names_alt == names_kept:
                     self._stats.acked_fallback_bytes += len(alt.data)
                 self._stats.overlap_bytes += len(alt.data)
                 self._cite(alt.payload_offset, 0, len(alt.data), REASON_OVERLAP)
