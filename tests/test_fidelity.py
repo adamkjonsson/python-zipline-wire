@@ -528,3 +528,19 @@ def test_a_hand_reordered_file_reports_its_inversion():
     order = score_order(r, reordered)
     assert order.positions == (0, 2, 1, 3)
     assert order.inversions == 1
+
+
+def test_a_resend_s_ack_is_not_its_message_s():
+    """Message 124's original is lost; its resend acknowledges a reply sent after it.
+
+    Taken from the resend, the ack would make 124 — and every later client
+    message — depend on reply 121, and a file that rightly places them
+    before it would score an inversion.
+    """
+    shape = (("c2s", 64), ("s2c", 256)) * 100
+    r = run(Scenario(shape=shape, seed=2, psh_probability=PUSHED,
+                     impairments=ALONE["loss-recovered"]))
+
+    deps = dependencies(r)
+    assert 121 not in deps[124] and 121 not in deps[126]
+    assert 120 in deps[124]  # its own direction

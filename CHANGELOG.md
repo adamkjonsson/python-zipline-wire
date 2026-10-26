@@ -33,6 +33,14 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+### Documentation
+
+- The contributing guide describes `tools/fidelity.py`, which measures how
+  well a conversion represents the traffic that was actually sent. packeteer
+  generates a TCP conversation under chosen impairments, and the tool scores
+  the converted `.zpf` against what each side sent: byte by byte, in causal
+  order and in time ([#52](https://github.com/adamkjonsson/python-zipline-wire/issues/52)).
+
 ---
 
 ## [0.6.0] - 2026-10-25

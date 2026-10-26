@@ -83,6 +83,51 @@ reassembler on the synthetic shapes the performance issues were found on,
 and a real capture end to end. It is not a test; record its figures where
 the change is argued, before and after, from `.venv` (see *Setup*).
 
+## A change meant to make output more right
+
+Byte identity says a change moved nothing, and the benchmark says how fast
+it is. Neither says whether the output is *right*. `tools/fidelity.py`
+answers that. packeteer generates a TCP conversation under impairments,
+and knows exactly what each application sent and what happened to every
+packet. zpfwire converts the impaired capture, and the tool scores the
+`.zpf` against what was sent:
+
+```bash
+.venv/bin/python tools/fidelity.py --out fidelity/          # the full matrix, ~2.5 min
+.venv/bin/python tools/fidelity.py --shape prototype --seeds 10
+```
+
+It runs scenario families × impairments × seeds × reassembly policies, and
+writes `runs.jsonl` with one line per conversion, plus `summary.md`. For
+each cell the summary gives:
+
+- **fidelity** (correct bytes ÷ bytes sent) and **recovery** (correct ÷
+  bytes some captured copy carried), as median and worst;
+- the wrong bytes by cause: lost, dropped, a stray or corrupted copy kept;
+- runs whose file misstates itself: an uncited byte, a wrong gap count, a
+  wrong end reason;
+- duplicates and resends judged the wrong way round;
+- runs placing a message before one it depends on;
+- timing errors.
+
+Three rules keep it honest:
+
+- **A run is void** when packeteer's own output is not what the truth
+  claims, such as a corrupted segment whose checksum verifies
+  (packeteer#227). A void run is reported and never scored.
+- **A cell is scored on what happened, not on what was configured.** A cell
+  that exercised its impairment fewer than ten times is *not exercised*.
+- **A file that does not read back clean is never scored.** It is a bug,
+  and the tool exits 1.
+
+The same matrix gives the same report, byte for byte, whatever the worker
+count, so a fix can quote its cells before and after. The header names each
+sibling's version and the file it was imported from, as the pytest header
+does. A baseline claimed for a release runs in `.venv`. Scores are reported,
+not asserted. The cases that must be perfect are asserted in
+`tests/test_fidelity.py`: no impairment, duplication with retransmission,
+and recovered loss.
+
 ## Code style
 
 The rules in `CLAUDE.md` and `ruff.toml` are enforced, not aspirational:
