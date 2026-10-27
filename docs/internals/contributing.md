@@ -128,7 +128,15 @@ Three rules keep it honest:
 The same matrix gives the same report, byte for byte, whatever the worker
 count, so a fix can quote its cells before and after. The header names each
 sibling's version and the file it was imported from, as the pytest header
-does. A baseline claimed for a release runs in `.venv`. Scores are reported,
+does, and zpfwire's own version too. So a comparison across a version bump
+starts below the header, at line 6 (`tail -n +6 summary.md`). A baseline
+claimed for a release runs in `.venv`.
+
+The tool is three modules. `tools/fidelity.py` is the matrix, the sweep and
+the report. `tools/fidelity_tcp.py` is TCP's truth, ledger and scorer.
+`tools/fidelity_common.py` holds what every transport shares: the
+position-unique payloads, packeteer's label grammar, and where a frame sits
+in the capture a citation points into. Scores are reported,
 not asserted. The cases that must be perfect are asserted in
 `tests/test_fidelity.py`: no impairment, duplication with retransmission,
 and recovered loss.

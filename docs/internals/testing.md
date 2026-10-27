@@ -127,7 +127,7 @@ be added to one list or the other, and a test says so.
 | `test_pins.py` | The sixteen pre-Timestamps fixtures' decodes, pinned |
 | `test_pure_acks.py` | Pure ACKs stored as zero-length records: where each sits, and what the opt-out writes |
 | `test_tcp_order.py` | The reassembler's bookkeeping decides exactly what the `0.5.0` reference did, call for call, on randomised streams |
-| `test_fidelity.py` | `tools/fidelity.py`: the truth and ledger, the scorer, order and timing, and the cases that must convert exactly |
+| `test_fidelity.py` | `tools/fidelity_tcp.py`: the truth and ledger, the scorer, order and timing, and the cases that must convert exactly |
 | `test_timestamps.py` | What the six real Timestamps captures say, rule by rule |
 | `test_packets.py` | A `.zpf` of packets as input: the differential against each fixture's capture conversion, the tunnel vector, selection, coverage |
 | `test_pcap_export.py` | The packets of a `.zpf` exported to a pcap |

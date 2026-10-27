@@ -17,9 +17,8 @@ import dataclasses
 
 import pytest
 import zpf
-from fidelity import (
-    BLOCK,
-    DIRECTIONS,
+from fidelity_common import BLOCK, DIRECTIONS, kinds_of
+from fidelity_tcp import (
     PROTOTYPE,
     Impairments,
     Ledger,
@@ -29,7 +28,6 @@ from fidelity import (
     account,
     convert,
     dependencies,
-    kinds_of,
     measure,
     read,
     run,
