@@ -5,13 +5,14 @@ After installation the `zpfwire` command is available on your PATH.  Running
 entry-point script is not on the PATH, or when you need to target a specific
 Python interpreter.
 
-zpfwire provides three subcommands:
+zpfwire provides four subcommands:
 
 | Subcommand | Input | Output | Purpose |
 |------------|-------|--------|---------|
 | `info` | pcap / pcapng | text report | Report the conversations a capture holds, without writing anything |
 | `convert` | pcap / pcapng, or a `.zpf` of packets | `.zpf` or JSON-Lines | Reassemble the input into a transport-layer file |
 | `pcap` | a `.zpf` of packets | pcap | Export the packets, for Wireshark |
+| `fidelity` | a scenario, as flags | Markdown report | Measure a reassembly policy against TCP traffic packeteer generates |
 
 The first two are meant to be used in that order.  `info` applies the same filters and
 the same flow grouping as `convert` does, so it answers "what would I get?"
@@ -24,14 +25,16 @@ pcap  --info--→  what is in here  --convert--→  .zpf
 The CLI is a thin wrapper.  Every option below maps onto an argument of
 {func}`~zpfwire.convert.capture_to_zpf`,
 {func}`~zpfwire.packets.packets_to_zpf` or
-{func}`~zpfwire.packets.packets_to_pcap`, or a field of
+{func}`~zpfwire.packets.packets_to_pcap` or
+{func}`~zpfwire.fidelity.evaluate`, or a field of
 {class}`~zpfwire.options.ReassemblyOptions`, and anything the CLI can do is
 available from Python — see {doc}`../guide/index`.
 
 ## Options shared by the subcommands
 
-All three take the input as their positional argument and accept the
-filtering options below; `--link-type` too, and `--tick-hz` for a capture.
+`info`, `convert` and `pcap` take the input as their positional argument and
+accept the filtering options below; `--link-type` too, and `--tick-hz` for a
+capture.  `fidelity` reads no input: it generates its own.
 
 ### Reading
 
@@ -76,4 +79,5 @@ the same fact and continues.
 info
 convert
 pcap
+fidelity
 ```

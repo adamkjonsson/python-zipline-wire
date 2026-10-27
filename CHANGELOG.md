@@ -35,6 +35,155 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 
 ---
 
+## [0.8.0] - 2026-10-27
+
+**The UDP release.**  Writes spec **v0.23** (`zpf.SPEC_VERSION == (0, 23)`),
+unchanged from `0.7.0`, against packeteer **0.21.0** and python-zipline
+**0.7.0**, the same releases as `0.7.0`.
+
+**Breaking, in how the siblings are installed.**  Each is now declared by its
+release tag, not by a version range, which closes a dependency confusion:
+both names are taken on PyPI by unrelated projects
+([#67](https://github.com/adamkjonsson/python-zipline-wire/issues/67)).  The
+development recipe is unchanged.  In `.venv-dev`, reinstall zpfwire with
+`--no-deps`.
+
+**Breaking, in what a `favor-acked` conversion writes, narrowly.**  A repeat
+straddling written and held bytes now cites its written part, which reached
+no record and no citation before
+([#68](https://github.com/adamkjonsson/python-zipline-wire/issues/68)).  The
+`0.7.0` sweep had shown it, unremarked.  No fixture moves, and no stream
+byte.
+
+**`zpfwire fidelity`, and a public `zpfwire.fidelity`**
+([#63](https://github.com/adamkjonsson/python-zipline-wire/issues/63)):
+`0.7.0`'s TCP fidelity metrics, which survived that release unchanged,
+promoted from `tools/` so that a user can choose a reassembly policy for
+their own link from evidence.
+
+**What UDP measured**
+([#64](https://github.com/adamkjonsson/python-zipline-wire/issues/64)).  The
+project's fidelity tool now generates UDP flows under loss, duplication,
+reordering, corruption and fragmentation.  It converts each one twice, from a
+pcap and from a `.zpf` of the same packets, and scores every datagram:
+10,320 UDP conversions beside 32,256 TCP ones, in four and a half minutes.
+**It found no zpfwire defect.**  On the capture path every captured datagram
+reaches exactly one record, in capture order, stamped with its capture time,
+under every impairment.  What it found is the format's:
+- on the packets path, a fragmented datagram is withheld and cited
+  ([zipline#166](https://github.com/adamkjonsson/zipline/issues/166), with
+  its measured cost);
+- a duplicated datagram must be written twice, and cannot be marked as a
+  copy ([zipline#169](https://github.com/adamkjonsson/zipline/issues/169)).
+
+UDP fidelity stays in `tools/` for this release
+([#69](https://github.com/adamkjonsson/python-zipline-wire/issues/69)), as
+do TCP's order and timing
+([#70](https://github.com/adamkjonsson/python-zipline-wire/issues/70)).
+Building it found
+[packeteer#232](https://github.com/adamkjonsson/packeteer/issues/232): a
+fragmented generated stream does not reproduce from its seed.
+
+### Added
+
+- **`zpfwire fidelity`, and the public `zpfwire.fidelity`**, so a
+  reassembly policy can be chosen from evidence rather than defaults
+  ([#63](https://github.com/adamkjonsson/python-zipline-wire/issues/63)).
+  packeteer generates a TCP conversation under the impairments the flags
+  ask for: loss, resends, corruption, duplication, forged segments, a
+  reset. zpfwire converts it under the reassembly options given, and the
+  `.zpf` is scored against what each side sent, over many seeds.
+  - **`--messages c2s:3000,s2c:9000`** describes the conversation.
+    **`--seeds N`** and `--first-seed` choose the runs, and `--jsonl PATH`
+    also writes one line per seed.
+  - The network's flags are packeteer's own: `--packet-loss`,
+    `--retransmit-lost`, `--payload-corruption`, `--duplicate`,
+    `--stray-packets`, and the rest.
+  - The reassembly flags are `convert`'s.
+  - The report is Markdown on stdout, byte-identical for the same flags.
+    It gives **fidelity** (correct bytes ÷ sent) and **recovery** (correct
+    ÷ captured), median and worst; every wrong byte by cause; and whether
+    each file accounts for itself. The command exits 1 if a file does not
+    read back clean.
+  - From Python, **`zpfwire.fidelity.evaluate(scenario, options, seeds=…)`**
+    returns an **`Evaluation`**, with `report()` and `jsonl()`. Underneath
+    are **`Scenario`**, **`Impairments`**, **`run`**, **`measure`**,
+    **`ByteScore`**, **`Accounting`**, and the truth and ledger they score
+    against.
+  - TCP only. The order and timing of messages, and UDP, stay in this
+    project's `tools/fidelity.py`, without a promise, until they have
+    survived a release unchanged. `zpfwire.fidelity` is not imported by
+    `import zpfwire`, since it loads packeteer's generators.
+  - These are `0.7.0`'s fidelity tool's metrics, which did survive a release
+    unchanged: the project's sweep gives identical results through the
+    public module.
+
+### Changed
+
+- **Breaking: each sibling is declared by its release tag, not by a range**
+  ([#67](https://github.com/adamkjonsson/python-zipline-wire/issues/67)):
+  `packeteer @ git+https://github.com/adamkjonsson/packeteer.git@v0.21.0`
+  and `zpf @ git+https://github.com/adamkjonsson/python-zipline.git@v0.7.0`,
+  where `0.7.0` declared `packeteer>=0.21.0,<0.22` and `zpf>=0.7.0,<0.8`.
+  Installing zpfwire fetches both from GitHub and never asks a package
+  index for either name.  An environment that paired zpfwire with any other
+  release inside the old ranges no longer resolves: install the tagged
+  releases, which are the ones this tree is tested against.  A sibling's
+  patch release now reaches zpfwire users through a zpfwire release.
+  `requirements.txt` no longer names the siblings, since `pip install -e .`
+  installs them; the development recipe, `pip install -e . -r
+  requirements.txt`, is unchanged.  In `.venv-dev`, reinstall zpfwire with
+  `pip install --no-deps -e .`, or pip puts the tags back over the
+  checkouts.
+- **Breaking:** under `favor-acked`, a repeat that overlaps both bytes
+  already written and bytes still held cites its written part
+  `overlap-discarded`
+  ([#68](https://github.com/adamkjonsson/python-zipline-wire/issues/68)).
+  The held part was contested, and the written part, which no run was left
+  to contest it against, reached no record and no citation: bytes lost
+  quietly, against the README's promise. Files with such an overlap gain
+  that citation, and `overlap_bytes` counts it; no stream byte moves. No
+  fixture moves. The fidelity sweep had shown it since `0.7.0`'s Phase 6,
+  as eight stamped-stray runs failing accounting, unremarked; none fails
+  now, and no other result in the sweep changes.
+
+### Security
+
+- **Dependency confusion closed**
+  ([#67](https://github.com/adamkjonsson/python-zipline-wire/issues/67)).
+  Neither sibling is on PyPI, and both names are taken there by unrelated
+  projects: a 2019 packet serializer called `packeteer`, and an unrelated
+  `zpf`.  A wheel declaring them by name and range is resolved against
+  PyPI, so whoever uploaded a `packeteer 0.21.x` or a `zpf 0.7.x` there
+  would have been installed by a plain `pip install zpfwire`.  The `0.7.0`
+  wheel, installed beside a local index holding `packeteer 0.21.9` and
+  `zpf 0.7.9`, took both.  The declaration by tag cannot be satisfied by an
+  index at all.  Upstream, packeteer#231 and python-zipline#102 ask each
+  sibling for a distribution name of its own.
+
+### Documentation
+
+- The contributing guide describes the fidelity tool's UDP half
+  ([#64](https://github.com/adamkjonsson/python-zipline-wire/issues/64)).
+  packeteer generates a UDP flow under chosen loss, duplication,
+  reordering, corruption and fragmentation, and the tool scores what
+  became of each datagram sent and each copy captured. It converts each
+  flow two ways: from a pcap, and from a `.zpf` of the same packets, as a
+  tunnel decryptor writes one. On the capture path every captured datagram
+  reaches exactly one record, in capture order, stamped with its capture
+  time, under every impairment. On the packets path, a fragmented datagram
+  is withheld and cited, which is
+  [zipline#166](https://github.com/adamkjonsson/zipline/issues/166). The
+  tool is now four modules, and the testing page lists
+  `test_fidelity_udp.py`.
+- The limits page says that a UDP datagram the capture saw twice is written
+  twice, unmarked, as the specification requires of a transport-layer
+  stage. A corrupt or reordered one is kept the same way. Whether the
+  format should let a copy be marked is
+  [zipline#169](https://github.com/adamkjonsson/zipline/issues/169).
+
+---
+
 ## [0.7.0] - 2026-10-26
 
 **The fidelity release.**  Writes spec **v0.23**
@@ -1298,7 +1447,8 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.4.0...v0.5.0

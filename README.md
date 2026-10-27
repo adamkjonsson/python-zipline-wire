@@ -24,8 +24,8 @@ This README is the short version.
 
 ## Install
 
-The two dependencies are not on PyPI; `requirements.txt` installs them from
-their release tags on GitHub:
+The two dependencies are not on PyPI, and zpfwire declares each by its
+release tag on GitHub, so installing zpfwire installs them from there:
 
 ```bash
 git clone https://github.com/adamkjonsson/python-zipline-wire.git
@@ -61,6 +61,10 @@ zpfwire convert packets.zpf -o inner.zpf
 
 # The same packets as a pcap, to open in Wireshark
 zpfwire pcap packets.zpf -o inner.pcap
+
+# Which overlap policy recovers more of a corrupting link? Measure it.
+zpfwire fidelity --payload-corruption 0.2 --seeds 40
+zpfwire fidelity --payload-corruption 0.2 --seeds 40 --overlap favor-acked
 ```
 
 ```python

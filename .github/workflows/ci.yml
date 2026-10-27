@@ -5,9 +5,9 @@ on:
     branches: ["**"]
   pull_request:
 
-# The two siblings are not published to PyPI.  requirements.txt installs them
-# from the release tags this tree is built against, so CI tests the releases
-# the wheel declares, not whatever the siblings' default branches hold (#42).
+# The two siblings are not published to PyPI.  `-e .` installs them from the
+# release tags pyproject.toml declares (#67), so CI tests the releases the
+# wheel declares, not whatever the siblings' default branches hold (#42).
 jobs:
   lint:
     name: ruff

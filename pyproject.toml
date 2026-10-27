@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zpfwire"
-version = "0.7.0"
+version = "0.8.0"
 requires-python = ">=3.10"
 description = "Turn network captures into Zipline Payload Format (.zpf) files"
 authors = [ { name = "Adam Jonsson", email = "akj426@gmail.com" } ]
@@ -23,30 +23,25 @@ classifiers = [
     "Topic :: System :: Networking :: Monitoring",
     "Typing :: Typed",
 ]
-# Ranges, each closed above (#41).  Both siblings are in 0.x and say in their
-# own changelogs that a minor may break with no upgrade path promised, so a
-# range spanning a minor this tree was never run against is a promise neither
-# project can keep.  The ceiling moves deliberately, at each sibling release,
-# once the suite has passed against it; it is not to be widened in tidying.
+# Each sibling by its release tag, never by name alone (#67).  Neither is on
+# PyPI, and both names are taken there by unrelated projects, so a declaration
+# by name and range is resolved against PyPI: anyone who uploads a version
+# inside the range is installed by a plain `pip install zpfwire`.  A direct
+# reference is never looked up on an index.
 #
-# zpf is one minor wide.  0.7.0 writes the same spec as 0.6.0 (0.23), so the
-# floor moving to it costs no reader anything; 0.6.0 was the first release
-# implementing 0.23, and refuses a 0.21 file outright, which is what an
-# unbounded pin would have done to this tree's users at the next spec port.
+# What it costs: a range.  Each release names the one tag it was built and
+# tested against, so a sibling's patch release is taken in by a zpfwire
+# release, as its minor releases already were (#41).  PyPI refuses to host a
+# package declaring direct references, which none of the three is.
 #
-# packeteer's floor names what the suite needs, not only the code: 0.21.0
-# fails every corrupted segment's checksum with data both ways (packeteer#227),
-# which the fidelity tests of the two-way corruption cells depend on, as 0.16.0
-# was needed before it for the generated favor-acked test (packeteer#163, #30).
-# The code itself needs nothing newer.  Its ceiling is the next minor above
-# 0.21.0, the release this tree is built and tested against.
-#
-# Neither sibling is on PyPI: requirements.txt installs the exact releases
-# from their tags, and tests/test_package.py holds those tags inside these
-# ranges.
+# This is where the tags are named, and the only place: `pip install -e .`
+# installs them, requirements.txt does not repeat them, and
+# tests/test_package.py holds the form.  If the siblings take PyPI-safe
+# distribution names of their own (packeteer#231, python-zipline#102), these
+# become ranges again under those names.
 dependencies = [
-    "packeteer>=0.21.0,<0.22",
-    "zpf>=0.7.0,<0.8",
+    "packeteer @ git+https://github.com/adamkjonsson/packeteer.git@v0.21.0",
+    "zpf @ git+https://github.com/adamkjonsson/python-zipline.git@v0.7.0",
 ]
 
 [tool.setuptools]

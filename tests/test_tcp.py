@@ -1714,3 +1714,27 @@ def test_an_ack_of_bytes_never_sent_does_not_stop_a_contest(tmp_path: pathlib.Pa
 
     assert out.only.stream(0) == b"aaaabbbb"
     assert out.stats.acked_swaps == 1
+
+
+# ── #68: a contest's written prefix is cited ────────────────────────────
+
+
+def test_the_written_part_of_a_contested_repeat_is_cited(tmp_path: pathlib.Path):
+    """A repeat straddling written and held bytes contests the held part only (#68).
+
+    The written part had no run left to contest it against, and was
+    neither written nor cited: two bytes lost quietly.
+    """
+    out = to_zpf(tcp_segments([
+        Seg(1, b"aaaa", flags=TCP_PSH | TCP_ACK, timestamps=(100, 0)),
+        _ack(5, 100),                                                    # aaaa written
+        Seg(5, b"bbbb", timestamps=(101, 0)),                            # open
+        Seg(3, b"XXYYYY", timestamps=(102, 0)),                          # over both
+        Seg(9, b"cccc", flags=TCP_PSH | TCP_ACK, timestamps=(103, 0)),
+        _ack(13, 103),
+    ]), tmp_path, options=ACKED)
+
+    assert out.only.stream(0) == b"aaaabbbbcccc"
+    assert _reasons(out) == ["overlap-discarded", "overlap-discarded"]
+    assert sorted(u.off_end - u.off_start for u in out.undecoded) == [2, 4]
+    assert out.stats.overlap_bytes == 6

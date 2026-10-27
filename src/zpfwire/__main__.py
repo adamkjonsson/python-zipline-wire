@@ -5,6 +5,8 @@ Commands:
             from a .zpf of packets such as a decrypted tunnel's
   info      list the conversations a capture holds, without writing anything
   pcap      write the packets of a .zpf to a pcap, for Wireshark
+  fidelity  measure a reassembly policy against TCP traffic packeteer
+            generates, so a policy can be chosen from evidence
 
 Examples:
   # Convert a capture, TCP reassembly included
@@ -33,6 +35,9 @@ Examples:
 
   # Those decrypted packets as a pcap, to open in Wireshark
   zpfwire pcap packets.zpf -o inner.pcap
+
+  # How well favor-acked recovers a 10% lossy link with resends, over 40 seeds
+  zpfwire fidelity --packet-loss 0.1 --retransmit-lost --overlap favor-acked --seeds 40
 
 """
 
@@ -74,6 +79,13 @@ def _positive_float(value: str) -> float:
     number = float(value)
     if number < 0:
         raise argparse.ArgumentTypeError(f"{value} must not be negative")
+    return number
+
+
+def _probability(value: str) -> float:
+    number = float(value)
+    if not 0.0 <= number <= 1.0:
+        raise argparse.ArgumentTypeError(f"{value} is not a probability between 0 and 1")
     return number
 
 
@@ -242,6 +254,42 @@ def _cmd_info(args: argparse.Namespace) -> None:
         print(f"\nskipped {count} ({reason})")
 
 
+# ── fidelity subcommand ─────────────────────────────────────────────────
+
+
+def _cmd_fidelity(args: argparse.Namespace) -> None:
+    # Imported here: it loads packeteer's generators, which no other
+    # command needs.
+    from zpfwire.fidelity import Impairments, Scenario, evaluate, parse_shape
+
+    scenario = Scenario(
+        shape=parse_shape(args.messages),
+        psh_probability=args.psh_probability,
+        impairments=Impairments(
+            packet_loss_probability=args.packet_loss,
+            retransmit_lost=args.retransmit_lost,
+            retransmission_probability=args.retransmission_probability,
+            retransmission_timeout=args.retransmission_timeout,
+            payload_corruption_probability=args.payload_corruption,
+            server_rst_probability=args.server_rst,
+            rst_propagation_delay=args.rst_propagation_delay,
+            stray_packet_count=args.stray_packets,
+            stray_timing_window=args.stray_timing_window,
+            stray_timestamps=args.stray_timestamps,
+            duplicate_probability=args.duplicate,
+        ),
+    )
+    evaluation = evaluate(scenario, _options(args), seeds=range(args.first_seed,
+                                                                 args.first_seed + args.seeds),
+                          sequenced=args.sequenced)
+    if args.jsonl is not None:
+        with open(args.jsonl, "w", encoding="utf-8") as stream:
+            stream.writelines(line + "\n" for line in evaluation.jsonl())
+    sys.stdout.write(evaluation.report())
+    if evaluation.unclean:
+        sys.exit(1)
+
+
 # ── entry point ─────────────────────────────────────────────────────────
 
 
@@ -308,8 +356,112 @@ def main() -> None:
     )
     convert_parser.add_argument("-q", "--quiet", action="store_true",
                                 help="do not print the summary")
+    _add_reassembly(convert_parser)
+    convert_parser.set_defaults(func=_cmd_convert)
 
-    reassembly = convert_parser.add_argument_group(
+    pcap_parser = subparsers.add_parser(
+        "pcap", help="write the packets of a .zpf to a pcap",
+        description="Export the packet records of a .zpf, such as a decrypted tunnel's, to a "
+                    "pcap for Wireshark. An export for analysis: the pcap cites nothing, so "
+                    "'convert' is what keeps the provenance chain.",
+    )
+    _add_common(
+        pcap_parser,
+        inputs="a .zpf of packets (binary or JSON-Lines)",
+        link_type="the link type of records selected by a --content-type outside net: "
+                  "(default: raw IP)",
+        tick_hz=False,
+    )
+    pcap_parser.add_argument("-o", "--output", required=True, help="pcap file to write")
+    pcap_parser.add_argument(
+        "--content-type", default=None, metavar="LABEL",
+        help="the content_type that makes a record a packet (default: net:ip and net:ethernet)",
+    )
+    pcap_parser.add_argument("-q", "--quiet", action="store_true",
+                             help="do not print the summary")
+    pcap_parser.set_defaults(func=_cmd_pcap)
+
+    info_parser = subparsers.add_parser(
+        "info", help="list the conversations a capture holds",
+        description="Report what a conversion would produce, without writing anything.",
+    )
+    _add_common(info_parser, inputs="pcap or pcapng file to read",
+                link_type="override the capture's link type")
+    info_parser.set_defaults(func=_cmd_info)
+
+    _add_fidelity(subparsers)
+
+    args = parser.parse_args()
+    try:
+        args.func(args)
+    except _ERRORS as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _add_fidelity(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    fidelity_parser = subparsers.add_parser(
+        "fidelity", help="measure a reassembly policy against generated TCP traffic",
+        description="Generate a TCP conversation under chosen impairments with packeteer, "
+                    "convert it under a reassembly policy, and score the .zpf against what "
+                    "each side sent, over many seeds. Prints a Markdown report. TCP only.",
+    )
+    fidelity_parser.add_argument(
+        "--messages", default="c2s:3000,s2c:9000,c2s:800,s2c:5000", metavar="SPEC",
+        help="the conversation, as comma-separated DIRECTION:LENGTH pairs in the order "
+             "sent (default: %(default)s)",
+    )
+    fidelity_parser.add_argument("--seeds", type=_positive_int, default=10, metavar="N",
+                                 help="how many seeds to run (default: %(default)s)")
+    fidelity_parser.add_argument("--first-seed", type=_positive_int, default=0, metavar="N",
+                                 help="the first seed (default: %(default)s)")
+    fidelity_parser.add_argument("--jsonl", default=None, metavar="PATH",
+                                 help="also write one JSON line per seed here")
+    fidelity_parser.add_argument(
+        "--sequenced", action="store_true",
+        help="write each session in causal order, as convert --sequenced does",
+    )
+
+    # Named as packeteer's own command line names them, so a scenario moves
+    # between the two unchanged.
+    network = fidelity_parser.add_argument_group(
+        "the network",
+        "What packeteer does to the conversation; each is packeteer's option of the same name.",
+    )
+    network.add_argument("--psh-probability", type=_probability, default=0.5, metavar="PROB",
+                         help="chance a message's last segment carries PSH "
+                              "(default: %(default)s, packeteer's)")
+    network.add_argument("--packet-loss", type=_probability, default=0.0, metavar="PROB",
+                         help="chance a packet after the handshake is lost")
+    network.add_argument("--retransmit-lost", action="store_true",
+                         help="resend each lost segment, so the stream recovers")
+    network.add_argument("--retransmission-probability", type=_probability, default=0.0,
+                         metavar="PROB", help="chance a delivered segment is resent anyway")
+    network.add_argument("--retransmission-timeout", type=_positive_float, default=0.2,
+                         metavar="SECONDS", help="delay before any resend "
+                                                 "(default: %(default)s)")
+    network.add_argument("--payload-corruption", type=_probability, default=0.0,
+                         metavar="PROB", help="chance a segment's last byte is flipped in "
+                                              "flight, and the segment resent clean")
+    network.add_argument("--duplicate", type=_probability, default=0.0, metavar="PROB",
+                         help="chance the capture point sees a packet twice")
+    network.add_argument("--server-rst", type=_probability, default=0.0, metavar="PROB",
+                         help="chance the server resets the connection mid-stream")
+    network.add_argument("--rst-propagation-delay", type=_positive_float, default=0.0,
+                         metavar="SECONDS", help="delay before the client learns of a reset")
+    network.add_argument("--stray-packets", type=_positive_int, default=0, metavar="N",
+                         help="forged segments injected at real sequence numbers")
+    network.add_argument("--stray-timing-window", type=_positive_int, default=None,
+                         metavar="N", help="how near its victim a stray is placed, in packets")
+    network.add_argument("--stray-timestamps", action="store_true",
+                         help="stamp each stray with a Timestamps option, as the side it "
+                              "impersonates would")
+    _add_reassembly(fidelity_parser)
+    fidelity_parser.set_defaults(func=_cmd_fidelity)
+
+
+def _add_reassembly(parser: argparse.ArgumentParser) -> None:
+    reassembly = parser.add_argument_group(
         "reassembly",
         "These decide which bytes reach the output: once a record is written past "
         "missing bytes, those bytes may never be written. The settings are hashed "
@@ -346,44 +498,6 @@ def main() -> None:
                             help="what to do with a TCP segment whose checksum does "
                                  "not verify (default: ignore); a UDP datagram is "
                                  "always kept, and counted")
-    convert_parser.set_defaults(func=_cmd_convert)
-
-    pcap_parser = subparsers.add_parser(
-        "pcap", help="write the packets of a .zpf to a pcap",
-        description="Export the packet records of a .zpf, such as a decrypted tunnel's, to a "
-                    "pcap for Wireshark. An export for analysis: the pcap cites nothing, so "
-                    "'convert' is what keeps the provenance chain.",
-    )
-    _add_common(
-        pcap_parser,
-        inputs="a .zpf of packets (binary or JSON-Lines)",
-        link_type="the link type of records selected by a --content-type outside net: "
-                  "(default: raw IP)",
-        tick_hz=False,
-    )
-    pcap_parser.add_argument("-o", "--output", required=True, help="pcap file to write")
-    pcap_parser.add_argument(
-        "--content-type", default=None, metavar="LABEL",
-        help="the content_type that makes a record a packet (default: net:ip and net:ethernet)",
-    )
-    pcap_parser.add_argument("-q", "--quiet", action="store_true",
-                             help="do not print the summary")
-    pcap_parser.set_defaults(func=_cmd_pcap)
-
-    info_parser = subparsers.add_parser(
-        "info", help="list the conversations a capture holds",
-        description="Report what a conversion would produce, without writing anything.",
-    )
-    _add_common(info_parser, inputs="pcap or pcapng file to read",
-                link_type="override the capture's link type")
-    info_parser.set_defaults(func=_cmd_info)
-
-    args = parser.parse_args()
-    try:
-        args.func(args)
-    except _ERRORS as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
 
 
 if __name__ == "__main__":

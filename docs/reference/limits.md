@@ -20,6 +20,18 @@ run has no media type.
 the one thing spans would otherwise have carried.  A conversion of a `.zpf`
 of packets is zpf-sourced, and its records do carry them.
 
+**A UDP datagram the capture saw twice is written twice, unmarked.**  A
+transport-layer stage may not withhold content from a stream without
+sequence numbers (spec §Discontinuity). So a copy from a mirror port, a
+two-interface capture or a veth pair is a second `message` record, where TCP
+discards such a copy and cites it `duplicate-discarded`.  A corrupt
+datagram is kept the same way, under `--checksum drop` too, and so is a
+reordered one, in the order it arrived.  The format has no way to mark a
+record as a capture-point copy:
+[zipline#169](https://github.com/adamkjonsson/zipline/issues/169), filed
+from this project.  Often a copy could not be told from an application
+resending the same bytes anyway, as a DNS client retrying a query does.
+
 **No `Discontinuity` blocks.** A transport stream expresses its gaps in its
 offsets.  See {doc}`zpf-mapping`.
 
@@ -208,12 +220,12 @@ hard-coded number.  The format guarantees no upgrade path across a minor
 version while it is below 1.0, so a file written against one minor may be
 refused by a library implementing another.
 
-**Neither sibling is on PyPI yet.**  `pyproject.toml` declares each as a
-range closed above, since each is in `0.x` and any minor may break: the
-floor names the oldest release the code runs on, the ceiling the newest
-minor it was tested against.  `requirements.txt` installs the exact release
-tags from GitHub, and a test holds those tags inside the ranges.  The
-numbers live in `pyproject.toml`, `requirements.txt` and the changelog, not
-here, because a copy in prose is one no test can see.  The sibling
-checkouts are for co-development, in a second venv; see
-{doc}`../introduction/installation`.
+**Neither sibling is on PyPI yet**, and both names are taken there by
+unrelated projects.  `pyproject.toml` declares each as a direct reference to
+one release tag on GitHub, so no package index is ever asked for either
+name.  The cost is a range: a sibling's patch release reaches zpfwire users
+only through a zpfwire release, and zpfwire cannot be uploaded to PyPI, which
+refuses packages that declare direct references.  The numbers live in
+`pyproject.toml` and the changelog, not here, because a copy in prose is one
+no test can see.  The sibling checkouts are for co-development, in a second
+venv; see {doc}`../introduction/installation`.

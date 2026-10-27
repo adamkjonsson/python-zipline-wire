@@ -1,4 +1,7 @@
-"""The fidelity tool (``0.7.0``): truth and ledger, then the byte scorer.
+"""TCP fidelity (``0.7.0``, public since ``0.8.0``): truth and ledger, then the scorer.
+
+The truth, ledger, byte score and accounting are ``zpfwire.fidelity``'s; the
+order and timing are ``tools/fidelity_tcp.py``'s, and not yet public.
 
 The ledger is the reference every later score is measured against, so the
 first half pins it against what packeteer documents it generates: each
@@ -17,7 +20,12 @@ import dataclasses
 
 import pytest
 import zpf
-from fidelity import (
+from fidelity_tcp import dependencies, measure, score_order
+from packeteer.generate.tcp import TCP_RST
+from packeteer.generate.tcp_stream import TCPStream
+
+from zpfwire import ReassemblyOptions
+from zpfwire.fidelity import (
     BLOCK,
     DIRECTIONS,
     PROTOTYPE,
@@ -28,19 +36,12 @@ from fidelity import (
     Truth,
     account,
     convert,
-    dependencies,
-    kinds_of,
-    measure,
     read,
     run,
     score_bytes,
-    score_order,
     self_check,
 )
-from packeteer.generate.tcp import TCP_RST
-from packeteer.generate.tcp_stream import TCPStream
-
-from zpfwire import ReassemblyOptions
+from zpfwire.fidelity._common import kinds_of
 
 SEEDS = range(40)
 ONE_WAY = (("c2s", 3000), ("c2s", 9000))

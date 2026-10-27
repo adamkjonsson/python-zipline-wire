@@ -1,6 +1,7 @@
 # API Reference
 
-Everything public is importable from the top-level `zpfwire` package.  The
+Everything public is importable from the top-level `zpfwire` package, except
+`zpfwire.fidelity`, which is imported by name (see {doc}`fidelity`).  The
 pages below group it by the stage of a conversion it belongs to.
 
 **Conversion** is {func}`~zpfwire.convert.capture_to_zpf` — capture in, `.zpf`
@@ -27,6 +28,11 @@ file's decoder descriptor.
 records, written through a {class}`~zpfwire.flow.RecordSink`.  It is public so that a caller can extend the conversion, not because
 an ordinary conversion needs it.
 
+**Measuring a conversion** is {doc}`fidelity`: `zpfwire.fidelity`, which
+generates TCP traffic under chosen impairments, converts it, and scores the
+file against what was sent.  It is the one module not imported by
+`import zpfwire`, since it loads packeteer's generators.
+
 **Looking without writing** is {func}`~zpfwire.survey.survey`, returning
 {class}`~zpfwire.survey.FlowSummary` objects, and
 {func}`~zpfwire.filter.matcher` for the predicate a conversion takes.
@@ -41,4 +47,5 @@ options
 stats
 flow
 survey
+fidelity
 ```
