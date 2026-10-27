@@ -4,7 +4,8 @@ This part covers the zpfwire Python API through a series of focused,
 task-oriented chapters.  Each chapter shows how to accomplish a common goal
 without exhaustive parameter lists — those live in {doc}`../api/index`.
 
-Everything public is importable from the top-level `zpfwire` package:
+Everything public is importable from the top-level `zpfwire` package,
+except `zpfwire.fidelity` (the last row), which is imported by name:
 
 | Name | What it is |
 |------|------------|
@@ -24,6 +25,7 @@ Everything public is importable from the top-level `zpfwire` package:
 | `REASON_OVERLAP`, `REASON_LATE`, `REASON_CHECKSUM` | The `reason` strings on `Undecoded` blocks |
 | `END_FIN`, `END_RST`, `END_TIMEOUT`, `END_CAPTURE_END` | The Session End reasons |
 | `format_endpoint`, `TICK_HZ_US`, `TICK_HZ_NS`, `tool_version` | Small helpers |
+| `zpfwire.fidelity`: `evaluate`, `Scenario`, `measure` … | Measuring a policy against traffic packeteer generates; see {doc}`choosing-a-policy` |
 
 The shortest useful program is one line of work:
 

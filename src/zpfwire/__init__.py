@@ -9,6 +9,10 @@ The output of a conversion is a **transport-layer** file, sourced from a
 capture or from a ``.zpf`` of packets — the inner traffic of a tunnel a
 Zipline stage decrypted, say.
 
+:mod:`zpfwire.fidelity`, which measures how well a conversion represents
+the traffic that was sent, is imported by name: it loads packeteer's
+generators, which a conversion never needs.
+
 Example:
     >>> import zpfwire
     >>> stats = zpfwire.capture_to_zpf("capture.pcap", "capture.zpf")

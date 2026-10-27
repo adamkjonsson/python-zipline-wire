@@ -21,10 +21,19 @@ every *other* consumer of that library.  Filing it fixes it once.
 
 ## What it produced
 
-Forty-four issues so far, and three are open: zipline#166, a fragmented UDP
-datagram over a unit-sequence input, which this tree marks `undecodable`
-until the format answers; zipline#168, whether a stream's extent counts a
-FIN's sequence number; and python-zipline#101, the writer's cost per record.
+Forty-eight issues so far, and seven are open:
+- zipline#166, a fragmented UDP datagram over a unit-sequence input, which
+  this tree marks `undecodable` until the format answers;
+- zipline#168, whether a stream's extent counts a FIN's sequence number;
+- zipline#169, a captured copy of a datagram that must be written and
+  cannot be marked as one;
+- python-zipline#101, the writer's cost per record;
+- packeteer#231 and python-zipline#102, both siblings' names being taken on
+  PyPI, which this tree meets meanwhile by declaring each by its release
+  tag;
+- packeteer#232, a fragmented generated stream that does not reproduce from
+  its seed.
+
 Every other one has been answered upstream and released, most of them
 within days.
 
@@ -65,6 +74,8 @@ within days.
 | #213 | Checksum verification looped in Python once per 16-bit word, the largest single cost of reading a capture, found by profiling this tree | The internet checksum computed in C (0.20.0): `iter_packets` 39% faster on `http_stream_1.pcap`, every output byte-identical, confirmed here on `.dev1` |
 | #227 | With data both ways, a corrupted segment was rebuilt with a fresh checksum over its damaged payload, so it verified: half the fidelity tool's two-way corruption runs had to be voided | The byte flipped after the rebuild (0.21.0); reviewed here on `.dev1`: only those segments' bytes move, over 20 seeds per case, and no run is void |
 | #228 | A stray never carried the Timestamps option, so an RFC 7323 §3.2 receiver — this tree's `require_timestamps` — dropped every one and was never tested by them | `stray_timestamps`, stamping each stray as the side it impersonates (0.21.0); reviewed here on `.dev1`, and it found #61 here |
+| #231 | The distribution name `packeteer` is taken on PyPI by an unrelated project, so a dependency declared by name and range can be satisfied by anyone who uploads a version inside it | **Open** — this tree declares packeteer by its release tag meanwhile (0.8.0) |
+| #232 | A fragmented generated stream does not reproduce from its seed: `fragment_ipv4` draws the IP ID from the unseeded global `random`, so a duplicated fragmented datagram also gets a fresh ID | **Open** — found building the UDP fidelity ledger, which groups fragments by label and does not depend on IDs; the reproduction test's fragmented case is a strict `xfail` |
 
 **python-zipline**:
 
@@ -83,6 +94,7 @@ within days.
 | #90 | `check_splice` reports a transport record with `seq_start` crossing an input Discontinuity, which spec `0.22` permits | A transport record carrying `seq_start` is not checked (0.6.0); the strict `xfail` here became a test, and the differential checks both input shapes |
 | #91 | `FlowSession.end` re-reads the whole input to measure `input_extents`, once per output session — quadratic under fan-out | Each input stream's extent and gaps are measured once per stage and kept (0.6.0): `http_stream_1.pcap`'s 20 flows convert in 1.4 s, down from 5.2 s |
 | #101 | Writing a record costs about 10 µs whatever its size — option encoding, block validation, `Flag`-enum arithmetic and the checker — and storing pure ACKs (0.6.0) doubled the records a conversion writes | **Open** |
+| #102 | The distribution name `zpf` is taken on PyPI by an unrelated project, as packeteer#231 | **Open** — this tree declares zpf by its release tag meanwhile (0.8.0) |
 
 **zipline** (the specification):
 
@@ -94,8 +106,9 @@ within days.
 | #151 | The causal edge rule compares a record's end against a peer record's `ack` with serial arithmetic, and the two can be a whole stream apart when the peer only sends pure ACKs; #146's shape on the ack axis | Spec `0.22`: an ack's position is the previous ack's plus the signed serial delta, the first measured from the peer's origin, and the edge compares plain integers.  Found by deleting the #146 shim; `--sequenced` converts the shape again (0.5.0) |
 | #152 | The no-splice duty offered two recourses, a Discontinuity or a `units` output, and a transport output may use neither — so a reassembler over a unit sequence could never coalesce two packets | Spec `0.22`: a transport output whose records carry `seq_start` meets both duties through its offsets, and MAY cite across input units or an input Discontinuity |
 | #153 | No format-level type for one network packet: a packet-preserving stage had only a decoder-private `dec:` token, which a generic sessionizer could match only by convention | Spec `0.22`: the `net:` scheme, `net:ip` and `net:ethernet`, meaning what `LINKTYPE_RAW` and `LINKTYPE_ETHERNET` mean |
-| #166 | A fragmented UDP datagram over a unit-sequence input has no conformant record: `0.22`'s permission is keyed on `seq_start`, and fragment offsets prove the join as sequence numbers do | **Open** — such a datagram's fragments are marked `undecodable` here |
+| #166 | A fragmented UDP datagram over a unit-sequence input has no conformant record: `0.22`'s permission is keyed on `seq_start`, and fragment offsets prove the join as sequence numbers do | **Open** — such a datagram's fragments are marked `undecodable` here.  Measured in 0.8.0: the only difference between a capture and a `.zpf` of the same packets, over 10,320 UDP conversions |
 | #168 | A pure ACK stored after a FIN sits one past the FIN's number, so the stream's extent counts that number, which no record covers; stored on the FIN's own number instead, it stalls the causal merge | **Open** — the ACK sits at its wire number here, and the extent is one past the last byte |
+| #169 | A transport stage may not withhold content from a stream without sequence numbers, so a datagram the capture point saw twice must be written twice, and no flag or block can say the second is a copy | **Open** — written twice, unmarked, here; `docs/reference/limits.md` says so |
 
 Two of packeteer's fixes went further than asked — #73 added `iter_packets`
 in response to the composition problem, and #76 put the tick rate on the

@@ -1,6 +1,7 @@
 # API Reference
 
-Everything public is importable from the top-level `zpfwire` package.  The
+Everything public is importable from the top-level `zpfwire` package, except
+`zpfwire.fidelity`, which is imported by name (see {doc}`fidelity`).  The
 pages below group it by the stage of a conversion it belongs to.
 
 **Conversion** is {func}`~zpfwire.convert.capture_to_zpf` — capture in, `.zpf`
