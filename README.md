@@ -61,6 +61,10 @@ zpfwire convert packets.zpf -o inner.zpf
 
 # The same packets as a pcap, to open in Wireshark
 zpfwire pcap packets.zpf -o inner.pcap
+
+# Which overlap policy recovers more of a corrupting link? Measure it.
+zpfwire fidelity --payload-corruption 0.2 --seeds 40
+zpfwire fidelity --payload-corruption 0.2 --seeds 40 --overlap favor-acked
 ```
 
 ```python

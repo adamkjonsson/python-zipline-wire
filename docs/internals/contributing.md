@@ -153,14 +153,17 @@ does, and zpfwire's own version too. So a comparison across a version bump
 starts below the header, at line 6 (`tail -n +6 summary.md`). A baseline
 claimed for a release runs in `.venv`.
 
-The tool is four modules. `tools/fidelity.py` is the matrix, the sweep and
-the report. `tools/fidelity_tcp.py` is TCP's truth, ledger and scorer, and
-`tools/fidelity_udp.py` UDP's, where each datagram copy is reassembled from
-its fragments and checksummed by the ledger itself.
-`tools/fidelity_common.py` holds what every transport shares: the
-position-unique payloads, packeteer's label grammar, and where a frame sits
-in the capture a citation points into. Scores are reported,
-not asserted. The cases that must be perfect are asserted:
+The TCP truth, ledger, byte score and accounting are public, as
+`zpfwire.fidelity`, which `zpfwire fidelity` runs for a user's own scenario.
+See {doc}`../guide/choosing-a-policy`. The tool builds on them.
+`tools/fidelity.py` is the project's matrix, the sweep and the report.
+`tools/fidelity_tcp.py` adds TCP's order and timing, which are not public
+yet. `tools/fidelity_udp.py` is UDP's truth, ledger and scorer, where each
+datagram copy is reassembled from its fragments and checksummed by the
+ledger itself. **A change to anything public under `zpfwire.fidelity` is a
+change to a promise**, and it goes in the changelog like any other API
+change. The tool's own modules carry no promise. Scores are reported, not
+asserted. The cases that must be perfect are asserted:
 `tests/test_fidelity.py` covers no impairment, duplication with
 retransmission, and recovered loss. `tests/test_fidelity_udp.py` covers
 every captured datagram written as captured, on both paths, under each

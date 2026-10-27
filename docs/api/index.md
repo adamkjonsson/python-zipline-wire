@@ -27,6 +27,11 @@ file's decoder descriptor.
 records, written through a {class}`~zpfwire.flow.RecordSink`.  It is public so that a caller can extend the conversion, not because
 an ordinary conversion needs it.
 
+**Measuring a conversion** is {doc}`fidelity`: `zpfwire.fidelity`, which
+generates TCP traffic under chosen impairments, converts it, and scores the
+file against what was sent.  It is the one module not imported by
+`import zpfwire`, since it loads packeteer's generators.
+
 **Looking without writing** is {func}`~zpfwire.survey.survey`, returning
 {class}`~zpfwire.survey.FlowSummary` objects, and
 {func}`~zpfwire.filter.matcher` for the predicate a conversion takes.
@@ -41,4 +46,5 @@ options
 stats
 flow
 survey
+fidelity
 ```

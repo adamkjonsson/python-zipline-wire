@@ -12,7 +12,6 @@ import dataclasses
 from collections.abc import Callable
 
 import pytest
-from fidelity_common import BASE_TIME, BLOCK
 from fidelity_udp import (
     GAP_USEC,
     PATHS,
@@ -35,6 +34,7 @@ from fidelity_udp import (
 from packeteer.parse import parse_packet
 
 from zpfwire import ReassemblyOptions
+from zpfwire.fidelity import BASE_TIME, BLOCK
 
 SEEDS = range(40)
 

@@ -33,6 +33,40 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+### Added
+
+- **`zpfwire fidelity`, and the public `zpfwire.fidelity`**, so a
+  reassembly policy can be chosen from evidence rather than defaults
+  ([#63](https://github.com/adamkjonsson/python-zipline-wire/issues/63)).
+  packeteer generates a TCP conversation under the impairments the flags
+  ask for: loss, resends, corruption, duplication, forged segments, a
+  reset. zpfwire converts it under the reassembly options given, and the
+  `.zpf` is scored against what each side sent, over many seeds.
+  - **`--messages c2s:3000,s2c:9000`** describes the conversation.
+    **`--seeds N`** and `--first-seed` choose the runs, and `--jsonl PATH`
+    also writes one line per seed.
+  - The network's flags are packeteer's own: `--packet-loss`,
+    `--retransmit-lost`, `--payload-corruption`, `--duplicate`,
+    `--stray-packets`, and the rest.
+  - The reassembly flags are `convert`'s.
+  - The report is Markdown on stdout, byte-identical for the same flags.
+    It gives **fidelity** (correct bytes ÷ sent) and **recovery** (correct
+    ÷ captured), median and worst; every wrong byte by cause; and whether
+    each file accounts for itself. The command exits 1 if a file does not
+    read back clean.
+  - From Python, **`zpfwire.fidelity.evaluate(scenario, options, seeds=…)`**
+    returns an **`Evaluation`**, with `report()` and `jsonl()`. Underneath
+    are **`Scenario`**, **`Impairments`**, **`run`**, **`measure`**,
+    **`ByteScore`**, **`Accounting`**, and the truth and ledger they score
+    against.
+  - TCP only. The order and timing of messages, and UDP, stay in this
+    project's `tools/fidelity.py`, without a promise, until they have
+    survived a release unchanged. `zpfwire.fidelity` is not imported by
+    `import zpfwire`, since it loads packeteer's generators.
+  - These are `0.7.0`'s fidelity tool's metrics, which did survive a release
+    unchanged: the project's sweep gives identical results through the
+    public module.
+
 ### Changed
 
 - **Breaking: each sibling is declared by its release tag, not by a range**

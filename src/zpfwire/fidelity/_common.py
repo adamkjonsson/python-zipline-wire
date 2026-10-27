@@ -1,17 +1,8 @@
-"""What the fidelity tool's transports share: the payloads, the labels, the capture.
+"""What every transport's fidelity measurement shares.
 
-``tools/fidelity.py`` measures how well a conversion represents the traffic
-that was actually sent; ``plans/V0.7.0-RELEASE-PLAN.md`` is the design, and
-``plans/V0.8.0-RELEASE-PLAN.md`` adds UDP.  Each transport's truth, ledger and
-scorer is a module of its own (:mod:`fidelity_tcp`); this one holds what
-they have in common, and depends on neither.
-
-- :func:`payload` — position-unique bytes, so a run written at the wrong
-  offset cannot match the truth there.
-- :func:`kinds_of` — a packeteer label split into its kinds.
-- :data:`PCAP_HEADER` and :data:`PCAP_RECORD` — where a frame sits in the
-  capture written for a conversion, which is where a citation points.
-- :class:`Unclean` — a conversion that does not read back clean.
+The payloads, the scenario's fixed constants, packeteer's label grammar, and
+where a frame sits in the capture a conversion is given, which is where a
+citation points.  Depends on no transport.
 """
 
 from __future__ import annotations

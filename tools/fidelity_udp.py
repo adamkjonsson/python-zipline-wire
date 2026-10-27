@@ -48,17 +48,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 import zpf
-from fidelity_common import (
-    BASE_TIME,
-    CLIENT,
-    DIRECTIONS,
-    PCAP_HEADER,
-    PCAP_RECORD,
-    Direction,
-    Unclean,
-    kinds_of,
-    payload,
-)
 from packeteer.generate.impairments import ImpairmentConfig
 from packeteer.generate.payloads.base import AppMessage
 from packeteer.generate.udp_stream import (
@@ -71,6 +60,22 @@ from packeteer.parse import parse_packet
 from packeteer.pcap import LINKTYPE_ETHERNET, write_pcap
 
 from zpfwire import ConversionStats, ReassemblyOptions, capture_to_zpf, packets_to_zpf
+
+# The private module, not the public package: UDP fidelity is not public yet
+# (0.8.0 Decision 3), and the label grammar and pcap layout it shares with
+# TCP's are not part of the promise.  This tool ships with the tree, so the
+# two move together.
+from zpfwire.fidelity._common import (
+    BASE_TIME,
+    CLIENT,
+    DIRECTIONS,
+    PCAP_HEADER,
+    PCAP_RECORD,
+    Direction,
+    Unclean,
+    kinds_of,
+    payload,
+)
 
 SERVER = ("10.0.0.2", 5000)
 """The server's address and port: a participant there sends ``s2c``."""

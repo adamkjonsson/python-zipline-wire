@@ -128,7 +128,8 @@ be added to one list or the other, and a test says so.
 | `test_pure_acks.py` | Pure ACKs stored as zero-length records: where each sits, and what the opt-out writes |
 | `test_tcp_order.py` | The reassembler's bookkeeping decides exactly what the `0.5.0` reference did, call for call, on randomised streams |
 | `test_fidelity_udp.py` | `tools/fidelity_udp.py`: the UDP truth and ledger, the self-checks that void a run, and the scorer: every captured datagram written as captured on both paths, a fragmented one cited on the packets path, and a mutation that each check must catch |
-| `test_fidelity.py` | `tools/fidelity_tcp.py`: the truth and ledger, the scorer, order and timing, and the cases that must convert exactly |
+| `test_fidelity_api.py` | The public `zpfwire.fidelity` and `zpfwire fidelity`: evaluating a policy over seeds, the report and its JSON lines, the command line, and that `import zpfwire` does not load it |
+| `test_fidelity.py` | `zpfwire.fidelity` and `tools/fidelity_tcp.py`: the truth and ledger, the scorer, order and timing, and the cases that must convert exactly |
 | `test_timestamps.py` | What the six real Timestamps captures say, rule by rule |
 | `test_packets.py` | A `.zpf` of packets as input: the differential against each fixture's capture conversion, the tunnel vector, selection, coverage |
 | `test_pcap_export.py` | The packets of a `.zpf` exported to a pcap |

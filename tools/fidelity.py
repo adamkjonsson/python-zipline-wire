@@ -2,13 +2,15 @@
 
 The fidelity tool, ``0.7.0``'s instrument.  packeteer generates a
 conversation under impairments of our choosing and knows exactly what was
-sent; zpfwire converts the impaired capture; each transport's module scores
-the ``.zpf`` against what was sent — :mod:`fidelity_tcp` — and this one runs
-the matrix: scenario families × impairments × seeds × reassembly policies,
-reported as one JSON line per conversion and a Markdown summary per cell.
+sent; zpfwire converts the impaired capture; each transport's scorer judges
+the ``.zpf`` against what was sent — TCP's in the public
+:mod:`zpfwire.fidelity` with :mod:`fidelity_tcp` for order and timing, UDP's
+in :mod:`fidelity_udp` — and this one runs the project's matrix: scenario
+families × impairments × seeds × reassembly policies, reported as one JSON
+line per conversion and a Markdown summary per cell.
 
-``plans/V0.7.0-RELEASE-PLAN.md`` is the design; run it as
-``.venv/bin/python tools/fidelity.py --out DIR``.
+``plans/V0.7.0-RELEASE-PLAN.md`` and ``plans/V0.8.0-RELEASE-PLAN.md`` are
+the design; run it as ``.venv/bin/python tools/fidelity.py --out DIR``.
 """
 
 from __future__ import annotations
@@ -27,10 +29,19 @@ from typing import Any
 
 import fidelity_udp as udp
 import zpf
-from fidelity_common import DIRECTIONS, Direction, Unclean
-from fidelity_tcp import PROTOTYPE, Impairments, Ledger, Scenario, measure, run
+from fidelity_tcp import measure
 
 from zpfwire import ReassemblyOptions
+from zpfwire.fidelity import (
+    DIRECTIONS,
+    PROTOTYPE,
+    Direction,
+    Impairments,
+    Ledger,
+    Scenario,
+    Unclean,
+    run,
+)
 
 # ── The sweep ───────────────────────────────────────────────────────────
 
