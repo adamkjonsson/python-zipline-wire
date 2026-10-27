@@ -1595,7 +1595,7 @@ class TcpFlow(FlowTracker):
         payload_offset = source.payload_offset
         if payload_offset is not None:
             payload_offset += skip
-        taken = False
+        taken: list[tuple[int, int]] = []
         for run in self._covering_runs(stream, seq, end):
             offset = _delta(run.seq_start, seq)
             a, b = max(offset, 0), min(offset + len(run.data), len(data))
@@ -1615,8 +1615,16 @@ class TcpFlow(FlowTracker):
                     ts=ts, ack=source.ack,
                     payload_offset=None if payload_offset is None else payload_offset + a,
                 ))
-            taken = True
-        return taken
+            taken.append((a, b))
+        if not taken:
+            return False
+        # The caller discards nothing once any of the range is taken, so what
+        # no run covered, written before this copy came, is discarded here:
+        # otherwise it reaches no record and no citation (#68).
+        for a, b in _complement(taken, len(data)):
+            self._discard(stream, verdict, source.payload_offset, skip + a, b - a,
+                          resent=None)
+        return True
 
     def _covering_runs(self, stream: _Stream, seq: int, end: int) -> list[_Run]:
         """Return the open and held runs of *stream* that overlap ``[seq, end)``."""
@@ -1951,6 +1959,19 @@ def _without(contributors: list[_Contribution], seq: int, end: int) -> list[_Con
                 None if c.payload_offset is None else c.payload_offset + offset,
             ))
     return kept
+
+
+def _complement(ranges: list[tuple[int, int]], length: int) -> list[tuple[int, int]]:
+    """Return the parts of ``[0, length)`` that *ranges* do not cover."""
+    out: list[tuple[int, int]] = []
+    edge = 0
+    for start, stop in sorted(ranges):
+        if start > edge:
+            out.append((edge, start))
+        edge = max(edge, stop)
+    if edge < length:
+        out.append((edge, length))
+    return out
 
 
 def _clip(alternates: list[_Alternate], seq: int, end: int) -> list[_Alternate]:

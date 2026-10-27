@@ -50,6 +50,17 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   requirements.txt`, is unchanged.  In `.venv-dev`, reinstall zpfwire with
   `pip install --no-deps -e .`, or pip puts the tags back over the
   checkouts.
+- **Breaking:** under `favor-acked`, a repeat that overlaps both bytes
+  already written and bytes still held cites its written part
+  `overlap-discarded`
+  ([#68](https://github.com/adamkjonsson/python-zipline-wire/issues/68)).
+  The held part was contested, and the written part, which no run was left
+  to contest it against, reached no record and no citation: bytes lost
+  quietly, against the README's promise. Files with such an overlap gain
+  that citation, and `overlap_bytes` counts it; no stream byte moves. No
+  fixture moves. The fidelity sweep had shown it since `0.7.0`'s Phase 6,
+  as eight stamped-stray runs failing accounting, unremarked; none fails
+  now, and no other result in the sweep changes.
 
 ### Security
 
