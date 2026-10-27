@@ -76,6 +76,22 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   index at all.  Upstream, packeteer#231 and python-zipline#102 ask each
   sibling for a distribution name of its own.
 
+### Documentation
+
+- The contributing guide describes the fidelity tool's UDP half
+  ([#64](https://github.com/adamkjonsson/python-zipline-wire/issues/64)).
+  packeteer generates a UDP flow under chosen loss, duplication,
+  reordering, corruption and fragmentation, and the tool scores what
+  became of each datagram sent and each copy captured. It converts each
+  flow two ways: from a pcap, and from a `.zpf` of the same packets, as a
+  tunnel decryptor writes one. On the capture path every captured datagram
+  reaches exactly one record, in capture order, stamped with its capture
+  time, under every impairment. On the packets path, a fragmented datagram
+  is withheld and cited, which is
+  [zipline#166](https://github.com/adamkjonsson/zipline/issues/166). The
+  tool is now four modules, and the testing page lists
+  `test_fidelity_udp.py`.
+
 ---
 
 ## [0.7.0] - 2026-10-26

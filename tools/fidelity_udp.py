@@ -38,6 +38,7 @@ file back through zpf's public reader only.
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
 import io
 import ipaddress
@@ -848,7 +849,10 @@ class Accounting:
             their copy's last frame.
         misattributed: Records whose spans do not name exactly their copy's
             frames; on the packets path, where records carry spans.
-        sessions: How many sessions the file holds; one flow is one.
+        sessions: How many sessions the file holds.
+        expected_sessions: How many it should: one flow is one session, and
+            none when nothing was written, as when the packets path withholds
+            every datagram of a flow (zipline#166).
         end_reasons: Each session's end reason; ``capture-end`` expected.
 
     """
@@ -865,6 +869,7 @@ class Accounting:
     mistimed: int
     misattributed: int
     sessions: int
+    expected_sessions: int
     end_reasons: tuple[str | None, ...]
 
     def failures(self) -> list[str]:
@@ -891,8 +896,8 @@ class Accounting:
         out += list(self.stats)
         if not self.timeline:
             out.append("the timeline does not follow stored and capture order")
-        if self.sessions != 1:
-            out.append(f"{self.sessions} sessions, not one")
+        if self.sessions != self.expected_sessions:
+            out.append(f"{self.sessions} sessions, not {self.expected_sessions}")
         if any(reason != "capture-end" for reason in self.end_reasons):
             out.append(f"end reasons {list(self.end_reasons)}, not capture-end")
         return out
@@ -905,6 +910,8 @@ class Timing:
     Attributes:
         datagram: The datagram.
         kind: Its copy's outermost kind.
+        held: Whether the network held it back: ``REORDER`` among its
+            copy's kinds, a duplicate of a reordered datagram included.
         error_usec: ``timestamp`` less the true send time: what reordering
             or fragmentation delayed it by, as the capture point saw.
 
@@ -912,6 +919,7 @@ class Timing:
 
     datagram: int
     kind: str
+    held: bool
     error_usec: int
 
 
@@ -999,6 +1007,7 @@ def score(run: Run, conversion: Conversion) -> tuple[Delivery, Accounting, Order
     paired = match(ledger, output)
     written = {id(c) for d in DIRECTIONS for c in paired[d] if c is not None}
     cited = _cited(conversion, run)
+    position = {id(c): i for i, c in enumerate(ledger.copies)}
 
     records_of: dict[int, list[bytes]] = {}
     for direction in DIRECTIONS:
@@ -1041,7 +1050,7 @@ def score(run: Run, conversion: Conversion) -> tuple[Delivery, Accounting, Order
             1 for d in DIRECTIONS for r in output.records[d]
             if not r.flags & zpf.RecordFlags.MESSAGE or r.flags & zpf.RecordFlags.RETRANSMIT
         ),
-        misordered=sum(_inversions([ledger.copies.index(c) for c in paired[d] if c is not None])
+        misordered=sum(sum(_overtakers([position[id(c)] for c in paired[d] if c is not None]))
                        for d in DIRECTIONS),
         timeline=_timeline_ok(output),
         mistimed=sum(
@@ -1056,6 +1065,7 @@ def score(run: Run, conversion: Conversion) -> tuple[Delivery, Accounting, Order
             and set(r.spans) != _spans(conversion, run, c)
         ),
         sessions=len(output.end_reasons),
+        expected_sessions=1 if any(output.records[d] for d in DIRECTIONS) else 0,
         end_reasons=output.end_reasons,
     )
 
@@ -1063,15 +1073,14 @@ def score(run: Run, conversion: Conversion) -> tuple[Delivery, Accounting, Order
     timing = []
     for direction in DIRECTIONS:
         copies = [c for c in paired[direction] if c is not None]
-        for later, copy in enumerate(copies):
-            for before in copies[:later]:
-                if before.datagram > copy.datagram:
-                    inversions += 1
-                    if "REORDER" not in copy.kinds:
-                        unexplained += 1
+        for copy, overtakers in zip(copies, _overtakers([c.datagram for c in copies]),
+                                    strict=True):
+            inversions += overtakers
+            if "REORDER" not in copy.kinds:
+                unexplained += overtakers
         for record, copy in zip(output.records[direction], paired[direction], strict=True):
             if copy is not None:
-                timing.append(Timing(copy.datagram, copy.kind,
+                timing.append(Timing(copy.datagram, copy.kind, "REORDER" in copy.kinds,
                                      record.usec - run.truth.datagrams[copy.datagram].sent_usec))
     return delivery, accounting, OrderScore(inversions, unexplained, tuple(timing))
 
@@ -1129,9 +1138,19 @@ def _spans(conversion: Conversion, run: Run, copy: Copy) -> set[tuple[int, int, 
     return out
 
 
-def _inversions(order: list[int]) -> int:
-    """Count the pairs of *order* out of ascending order."""
-    return sum(1 for j, b in enumerate(order) for a in order[:j] if a > b)
+def _overtakers(order: list[int]) -> list[int]:
+    """Count, for each element of *order*, the earlier elements greater than it.
+
+    Their sum is the number of pairs out of ascending order.  A sorted
+    prefix keeps it near-linear for an order that is nearly sorted, as
+    a stream's is, where a pair-by-pair count is quadratic in a bulk flow.
+    """
+    seen: list[int] = []
+    out = []
+    for value in order:
+        out.append(len(seen) - bisect.bisect_right(seen, value))
+        bisect.insort(seen, value)
+    return out
 
 
 def _timeline_ok(output: Output) -> bool:

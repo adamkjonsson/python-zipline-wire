@@ -20,10 +20,12 @@ import math
 import pathlib
 import statistics
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import metadata
 from typing import Any
 
+import fidelity_udp as udp
 import zpf
 from fidelity_common import DIRECTIONS, Direction, Unclean
 from fidelity_tcp import PROTOTYPE, Impairments, Ledger, Scenario, measure, run
@@ -266,15 +268,205 @@ def sweep(
         for harm in harms
         for seed in range(seeds if seeds is not None else shape.seeds)
     ]
+    return _pooled(sweep_one, work, jobs)
+
+
+def _pooled(
+    worker: Callable[[tuple[str, str, int]], list[dict[str, Any]]],
+    work: list[tuple[str, str, int]],
+    jobs: int | None,
+) -> list[dict[str, Any]]:
+    """Run *worker* over *work*, in order whatever the worker count."""
     if jobs == 1:
-        batches = map(sweep_one, work)
+        batches = map(worker, work)
         return [result for batch in batches for result in batch]
     # Imported here: only the sweep needs a pool, and only a pool needs it.
     from concurrent.futures import ProcessPoolExecutor
 
     with ProcessPoolExecutor(max_workers=jobs) as pool:
-        batches = pool.map(sweep_one, work, chunksize=4)
+        batches = pool.map(worker, work, chunksize=4)
         return [result for batch in batches for result in batch]
+
+
+# ── The UDP sweep ───────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class UdpShape:
+    """A UDP scenario family: what is sent, and the path's MTU.
+
+    Attributes:
+        name: The report's name for it.
+        shape: The datagrams, as :attr:`fidelity_udp.Scenario.shape`.
+        seeds: Seeds per cell.
+        mtu: As :attr:`fidelity_udp.Scenario.mtu`.
+        note: What the family is for.
+
+    """
+
+    name: str
+    shape: tuple[tuple[Direction, int], ...]
+    seeds: int
+    mtu: int | None = None
+    note: str = ""
+
+
+def _alternating(sizes: list[int]) -> tuple[tuple[Direction, int], ...]:
+    return tuple(("c2s" if i % 2 == 0 else "s2c", size) for i, size in enumerate(sizes))
+
+
+UDP_SHAPES: tuple[UdpShape, ...] = (
+    UdpShape("udp-prototype", udp.PROTOTYPE, 40,
+             note="the 0.8.0 prototype's 40 datagrams of 100–1,399 bytes, alternating ways"),
+    UdpShape("udp-bulk", (("c2s", 1400),) * 2000, 12,
+             note="2,000 datagrams of 1,400 bytes one way, just under the MTU"),
+    UdpShape("udp-small", _alternating([16 + (i * 7) % 49 for i in range(200)]), 40,
+             note="200 datagrams of 16–64 bytes, alternating ways"),
+    UdpShape("udp-fragmented", _alternating([1000 + (i * 337) % 3001 for i in range(40)]), 40,
+             mtu=576, note="40 datagrams of 1,000–4,000 bytes through a 576-byte MTU"),
+    UdpShape("udp-tiny", _alternating([(i // 2) % 2 for i in range(100)]), 40,
+             note="100 datagrams of 0 and 1 bytes, which only their order tells apart"),
+)
+
+
+@dataclass(frozen=True)
+class UdpHarm:
+    """One UDP impairment cell: what is configured, and how to tell it happened.
+
+    Attributes:
+        name: The report's name for it.
+        impairments: The configuration.
+        realised: The copy kind whose presence shows the run exercised it,
+            ``"lost"`` for a datagram lost on the wire, or ``""`` for always.
+
+    """
+
+    name: str
+    impairments: udp.Impairments
+    realised: str
+
+
+UDP_HARMS: tuple[UdpHarm, ...] = (
+    UdpHarm("none", udp.Impairments(), ""),
+    UdpHarm("loss 0.02", udp.Impairments(packet_loss_probability=0.02), "lost"),
+    UdpHarm("loss 0.1", udp.Impairments(packet_loss_probability=0.1), "lost"),
+    UdpHarm("duplication 0.05", udp.Impairments(duplicate_probability=0.05), "DUP"),
+    UdpHarm("duplication 0.2", udp.Impairments(duplicate_probability=0.2), "DUP"),
+    UdpHarm("reorder 0.05", udp.Impairments(reorder_probability=0.05), "REORDER"),
+    UdpHarm("reorder 0.2", udp.Impairments(reorder_probability=0.2), "REORDER"),
+    UdpHarm("reorder 0.2, depth 10",
+            udp.Impairments(reorder_probability=0.2, reorder_depth=10), "REORDER"),
+    UdpHarm("corruption 0.2", udp.Impairments(payload_corruption_probability=0.2), "CORRUPT"),
+    UdpHarm("all at once", udp.Impairments(
+        packet_loss_probability=0.1, payload_corruption_probability=0.2,
+        reorder_probability=0.2, duplicate_probability=0.2,
+    ), ""),
+)
+
+UDP_POLICIES: tuple[Policy, ...] = (
+    Policy("default", ReassemblyOptions()),
+    # TCP-only in zpfwire: a UDP datagram is kept and counted (0.5.0).
+    Policy("checksum=drop", ReassemblyOptions(checksum="drop")),
+    # TCP-only too: a UDP session's order would rest on the clock alone.
+    Policy("sequenced", ReassemblyOptions(), sequenced=True),
+)
+"""Each is run along both paths, as ``"<policy>, <path>"``.  Every other
+option is TCP's, and would only repeat the default."""
+
+
+def realised_udp(ledger: udp.Ledger, harm: UdpHarm) -> bool:
+    """Return whether a UDP run exercised its cell's impairment (Decision 5).
+
+    Args:
+        ledger: The run's ledger.
+        harm: The cell.
+
+    Returns:
+        Whether the ledger shows the impairment happened.
+
+    """
+    if harm.realised == "":
+        return True
+    if harm.realised == "lost":
+        return bool(ledger.lost)
+    return any(harm.realised in c.kinds for c in ledger.copies)
+
+
+def sweep_udp_one(job: tuple[str, str, int]) -> list[dict[str, Any]]:
+    """Generate one UDP run and measure it under every policy, along both paths.
+
+    Module-level so that a process pool can run it.
+
+    Args:
+        job: ``(shape name, harm name, seed)``.
+
+    Returns:
+        One result per policy and path, as JSON-ready dicts.
+
+    """
+    shape_name, harm_name, seed = job
+    shape = next(s for s in UDP_SHAPES if s.name == shape_name)
+    harm = next(h for h in UDP_HARMS if h.name == harm_name)
+    r = udp.run(udp.Scenario(shape=shape.shape, seed=seed, impairments=harm.impairments,
+                             mtu=shape.mtu))
+    base = {
+        "transport": "udp", "shape": shape.name, "harm": harm.name, "seed": seed,
+        "void": list(r.void), "realised": realised_udp(r.ledger, harm),
+    }
+    results = []
+    for policy in UDP_POLICIES:
+        for path in udp.PATHS:
+            name = f"{policy.name}, {path}"
+            try:
+                m = udp.measure(r, policy.options, path=path, sequenced=policy.sequenced)
+            except (Unclean, zpf.ZpfError) as error:
+                results.append({**base, "policy": name,
+                                "unclean": f"{type(error).__name__}: {error}"})
+                continue
+            held = sorted(t.error_usec for t in m.order.timing if t.held)
+            kept = max((t.error_usec for t in m.order.timing if not t.held), default=0)
+            results.append({
+                **base,
+                "policy": name,
+                "unclean": None,
+                "delivery": dataclasses.asdict(m.delivery),
+                "delivered": m.delivery.delivery,
+                "conservation": m.delivery.conservation,
+                "failures": m.accounting.failures(),
+                "order": {"inversions": m.order.inversions,
+                          "unexplained": m.order.unexplained},
+                "timing": {"held": held, "kept_worst": kept},
+            })
+    return results
+
+
+def sweep_udp(
+    shapes: tuple[UdpShape, ...] = UDP_SHAPES,
+    harms: tuple[UdpHarm, ...] = UDP_HARMS,
+    *,
+    seeds: int | None = None,
+    jobs: int | None = None,
+) -> list[dict[str, Any]]:
+    """Run the UDP matrix.
+
+    Args:
+        shapes: The scenario families.
+        harms: The impairment cells.
+        seeds: Seeds per cell, overriding each shape's own; for a quick look.
+        jobs: Worker processes; one per CPU when ``None``, none when 1.
+
+    Returns:
+        One result per (shape, harm, seed, policy, path), in that order
+        whatever the worker count.
+
+    """
+    work = [
+        (shape.name, harm.name, seed)
+        for shape in shapes
+        for harm in harms
+        for seed in range(seeds if seeds is not None else shape.seeds)
+    ]
+    return _pooled(sweep_udp_one, work, jobs)
 
 
 # ── The report ──────────────────────────────────────────────────────────
@@ -358,12 +550,122 @@ def summarise(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def report(rows: list[dict[str, Any]], header: list[str]) -> str:
+def summarise_udp(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold per-run UDP results into one row per (shape, harm, policy and path) cell.
+
+    Scored as :func:`summarise` scores a TCP cell: not void, read back
+    clean, and exercised.
+
+    Args:
+        results: What :func:`sweep_udp` returned.
+
+    Returns:
+        One dict per cell, in the matrix's order.
+
+    """
+    cells: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for result in results:
+        key = (str(result["shape"]), str(result["harm"]), str(result["policy"]))
+        cells.setdefault(key, []).append(result)
+
+    rows = []
+    for (shape, harm, policy), runs in cells.items():
+        void = [r for r in runs if r["void"]]
+        unclean = [r for r in runs if not r["void"] and r["unclean"]]
+        scored = [r for r in runs if not r["void"] and not r["unclean"] and r["realised"]]
+        row: dict[str, Any] = {
+            "shape": shape, "harm": harm, "policy": policy,
+            "runs": len(runs), "void": len(void), "unclean": len(unclean),
+            "scored": len(scored), "exercised": len(scored) >= EXERCISED,
+        }
+        if scored:
+            delivered = [float(r["delivered"]) for r in scored]
+            conserved = [float(r["conservation"]) for r in scored]
+            totals = {
+                key: sum(int(r["delivery"][key]) for r in scored)
+                for key in ("lost", "withheld", "cited", "repeated", "altered")
+            }
+            row.update({
+                "delivered": (statistics.median(delivered), min(delivered)),
+                "conservation": (statistics.median(conserved), min(conserved)),
+                **totals,
+                "failing": sum(1 for r in scored if r["failures"]),
+                "failures": sorted({f for r in scored for f in r["failures"]}),
+                "inversions": sum(int(r["order"]["inversions"]) for r in scored),
+                "unexplained": sum(int(r["order"]["unexplained"]) for r in scored),
+                "held": _ms([t for r in scored for t in r["timing"]["held"]]),
+                "kept_worst": max(int(r["timing"]["kept_worst"]) for r in scored),
+            })
+        rows.append(row)
+    return rows
+
+
+def _report_udp(rows: list[dict[str, Any]]) -> list[str]:
+    """Render the UDP cells, one table per scenario family."""
+    lines = [
+        "## UDP",
+        "",
+        "Each policy runs along both paths: a pcap, and a `.zpf` of its packets as a",
+        "tunnel decryptor writes one.  *Delivered* is datagrams in exactly one record with",
+        "their true bytes ÷ sent, *conserved* copies written ÷ copies captured; each is",
+        "median / worst.  Then totals over the scored runs: datagrams *lost* on the wire,",
+        "*withheld* (with how many of their copies are *cited*), *repeated* in more than one",
+        "record, and *altered*.  *Inversions* are pairs of records stored against send",
+        "order, with how many no reordered datagram explains.  *Held* is median / worst",
+        "milliseconds a reordered datagram's record trails its send time; *kept* the worst",
+        "microseconds any other does.",
+        "",
+    ]
+    for shape in UDP_SHAPES:
+        own = [row for row in rows if row["shape"] == shape.name]
+        if not own:
+            continue
+        lines += [f"## {shape.name}", "", f"{shape.note}.", ""]
+        lines += [
+            "| impairment | policy | scored | void | delivered | conserved | lost "
+            "| withheld (cited) | repeated | altered | failing | inversions (unexplained) "
+            "| held | kept |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- "
+            "| --- | --- |",
+        ]
+        for row in own:
+            scored = f"{row['scored']}/{row['runs']}"
+            if row["unclean"]:
+                scored += f", **{row['unclean']} unclean**"
+            if not row["exercised"]:
+                lines.append(
+                    f"| {row['harm']} | {row['policy']} | {scored} | {row['void']} "
+                    "| *not exercised* | | | | | | | | | |"
+                )
+                continue
+            delivered, worst_delivered = row["delivered"]
+            conserved, worst_conserved = row["conservation"]
+            withheld = f"{row['withheld']} ({row['cited']})" if row["withheld"] else "–"
+            inversions = (f"{row['inversions']} ({row['unexplained']})"
+                          if row["inversions"] else "–")
+            lines.append(
+                f"| {row['harm']} | {row['policy']} | {scored} | {row['void']} "
+                f"| {_rate(delivered)} / {_rate(worst_delivered)} "
+                f"| {_rate(conserved)} / {_rate(worst_conserved)} "
+                f"| {row['lost'] or '–'} | {withheld} | {row['repeated'] or '–'} "
+                f"| {row['altered'] or '–'} | {row['failing'] or '–'} | {inversions} "
+                f"| {row['held']} | {row['kept_worst']} |"
+            )
+        lines.append("")
+    return lines
+
+
+def report(
+    rows: list[dict[str, Any]], header: list[str],
+    udp_rows: list[dict[str, Any]] | None = None,
+) -> str:
     """Render the summary as Markdown, one table per scenario family.
 
     Args:
         rows: What :func:`summarise` returned.
         header: Lines naming what the sweep ran against.
+        udp_rows: What :func:`summarise_udp` returned, rendered after the
+            TCP families; a report without them is the TCP report alone.
 
     Returns:
         The report.  It holds nothing that varies between two runs of the
@@ -418,7 +720,10 @@ def report(rows: list[dict[str, Any]], header: list[str]) -> str:
                 f"| {row['timestamp']} | {row['ts_first']} | {row['recovered']} |"
             )
         lines.append("")
-    failures = sorted({f for row in rows for f in row.get("failures", [])})
+    udp_rows = udp_rows or []
+    if udp_rows:
+        lines += _report_udp(udp_rows)
+    failures = sorted({f for row in [*rows, *udp_rows] for f in row.get("failures", [])})
     if failures:
         lines += ["## Accounting failures", "", *(f"- {f}" for f in failures), ""]
     return "\n".join(lines)
@@ -454,15 +759,20 @@ def main() -> int:
     parser.add_argument("--out", type=pathlib.Path,
                         help="directory for runs.jsonl and summary.md; stdout gets the summary")
     parser.add_argument("--seeds", type=int, help="seeds per cell, overriding each shape's own")
-    parser.add_argument("--shape", action="append", choices=[s.name for s in SHAPES],
+    parser.add_argument("--shape", action="append",
+                        choices=[s.name for s in (*SHAPES, *UDP_SHAPES)],
                         help="only this scenario family; repeatable")
     parser.add_argument("--jobs", type=int, help="worker processes (default: one per CPU)")
     args = parser.parse_args()
 
     shapes = tuple(s for s in SHAPES if not args.shape or s.name in args.shape)
+    udp_shapes = tuple(s for s in UDP_SHAPES if not args.shape or s.name in args.shape)
     results = sweep(shapes, seeds=args.seeds, jobs=args.jobs)
+    udp_results = sweep_udp(udp_shapes, seeds=args.seeds, jobs=args.jobs)
     rows = summarise(results)
-    summary = report(rows, ran_against())
+    udp_rows = summarise_udp(udp_results)
+    summary = report(rows, ran_against(), udp_rows)
+    results += udp_results
     if args.out is not None:
         args.out.mkdir(parents=True, exist_ok=True)
         with (args.out / "runs.jsonl").open("w", encoding="utf-8") as stream:
@@ -470,7 +780,7 @@ def main() -> int:
                 stream.write(json.dumps(result, sort_keys=True) + "\n")
         (args.out / "summary.md").write_text(summary + "\n", encoding="utf-8")
     sys.stdout.write(summary + "\n")
-    return 1 if any(row["unclean"] for row in rows) else 0
+    return 1 if any(row["unclean"] for row in [*rows, *udp_rows]) else 0
 
 
 if __name__ == "__main__":

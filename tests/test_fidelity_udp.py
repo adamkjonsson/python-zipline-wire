@@ -476,3 +476,15 @@ def test_the_prototype_table_reproduces(
         for key in totals:
             totals[key] += getattr(m.delivery, key)
     assert totals == expected
+
+
+def test_a_flow_the_packets_path_withholds_whole_opens_no_session():
+    """Every datagram fragmented, every one cited: nothing to write, so no session (zipline#166)."""
+    shape = (("c2s", 2000), ("s2c", 3000)) * 5
+    r = run(Scenario(shape=shape, mtu=FRAGMENTING))
+    m = measure(r, path="packets")
+
+    assert m.accounting.sessions == m.accounting.expected_sessions == 0
+    assert m.accounting.failures() == []
+    assert m.delivery.cited == len(shape)
+    assert measure(r).accounting.sessions == 1

@@ -92,14 +92,15 @@ the change is argued, before and after, from `.venv` (see *Setup*).
 
 Byte identity says a change moved nothing, and the benchmark says how fast
 it is. Neither says whether the output is *right*. `tools/fidelity.py`
-answers that. packeteer generates a TCP conversation under impairments,
-and knows exactly what each application sent and what happened to every
-packet. zpfwire converts the impaired capture, and the tool scores the
-`.zpf` against what was sent:
+answers that. packeteer generates a TCP conversation or a UDP flow under
+impairments, and knows exactly what each application sent and what
+happened to every packet. zpfwire converts the impaired capture, and the
+tool scores the `.zpf` against what was sent:
 
 ```bash
-.venv/bin/python tools/fidelity.py --out fidelity/          # the full matrix, ~3.5 min
+.venv/bin/python tools/fidelity.py --out fidelity/          # the full matrix, ~4.5 min
 .venv/bin/python tools/fidelity.py --shape prototype --seeds 10
+.venv/bin/python tools/fidelity.py --shape udp-prototype    # one UDP family
 ```
 
 It runs scenario families × impairments × seeds × reassembly policies, and
@@ -114,6 +115,26 @@ each cell the summary gives:
 - duplicates and resends judged the wrong way round;
 - runs placing a message before one it depends on;
 - timing errors.
+
+A UDP flow has no sequence numbers, so nothing is placed by offset. What
+can go wrong is which datagrams arrived, how many times, and in what
+order. Each UDP policy runs along two paths: a pcap, and a `.zpf` of the
+same packets, as a tunnel decryptor writes one. For each UDP cell the
+summary gives:
+
+- **delivered** (datagrams in exactly one record with their true bytes ÷
+  datagrams sent) and **conserved** (copies written ÷ copies captured);
+- the datagrams lost on the wire, withheld (and how many of their copies
+  are cited), repeated in more than one record, or altered;
+- runs whose file misstates itself: a copy in no record and not cited, a
+  record matching no copy, capture order or capture time not kept, wrong
+  provenance on the packets path, wrong stats;
+- pairs of records stored against send order, each of which has to be
+  explained by a datagram the network held back.
+
+A captured duplicate is *repeated* by design. The specification forbids a
+transport-layer stage to withhold content from a stream without sequence
+numbers, so a copy the capture point saw twice is written twice.
 
 Three rules keep it honest:
 
@@ -139,9 +160,11 @@ its fragments and checksummed by the ledger itself.
 `tools/fidelity_common.py` holds what every transport shares: the
 position-unique payloads, packeteer's label grammar, and where a frame sits
 in the capture a citation points into. Scores are reported,
-not asserted. The cases that must be perfect are asserted in
-`tests/test_fidelity.py`: no impairment, duplication with retransmission,
-and recovered loss.
+not asserted. The cases that must be perfect are asserted:
+`tests/test_fidelity.py` covers no impairment, duplication with
+retransmission, and recovered loss. `tests/test_fidelity_udp.py` covers
+every captured datagram written as captured, on both paths, under each
+impairment.
 
 ## Code style
 
