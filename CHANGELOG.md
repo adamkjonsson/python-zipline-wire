@@ -91,6 +91,11 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   [zipline#166](https://github.com/adamkjonsson/zipline/issues/166). The
   tool is now four modules, and the testing page lists
   `test_fidelity_udp.py`.
+- The limits page says that a UDP datagram the capture saw twice is written
+  twice, unmarked, as the specification requires of a transport-layer
+  stage. A corrupt or reordered one is kept the same way. Whether the
+  format should let a copy be marked is
+  [zipline#169](https://github.com/adamkjonsson/zipline/issues/169).
 
 ---
 

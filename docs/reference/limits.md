@@ -20,6 +20,18 @@ run has no media type.
 the one thing spans would otherwise have carried.  A conversion of a `.zpf`
 of packets is zpf-sourced, and its records do carry them.
 
+**A UDP datagram the capture saw twice is written twice, unmarked.**  A
+transport-layer stage may not withhold content from a stream without
+sequence numbers (spec §Discontinuity). So a copy from a mirror port, a
+two-interface capture or a veth pair is a second `message` record, where TCP
+discards such a copy and cites it `duplicate-discarded`.  A corrupt
+datagram is kept the same way, under `--checksum drop` too, and so is a
+reordered one, in the order it arrived.  The format has no way to mark a
+record as a capture-point copy:
+[zipline#169](https://github.com/adamkjonsson/zipline/issues/169), filed
+from this project.  Often a copy could not be told from an application
+resending the same bytes anyway, as a DNS client retrying a query does.
+
 **No `Discontinuity` blocks.** A transport stream expresses its gaps in its
 offsets.  See {doc}`zpf-mapping`.
 
