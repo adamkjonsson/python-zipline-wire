@@ -9,21 +9,32 @@ whose input is not what the truth claims.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 
 import pytest
 from fidelity_common import BASE_TIME, BLOCK
 from fidelity_udp import (
     GAP_USEC,
+    PATHS,
     PROTOTYPE,
+    Accounting,
+    Conversion,
+    Delivery,
     Impairments,
     Ledger,
+    OrderScore,
     Run,
     Scenario,
     Truth,
+    Written,
+    measure,
     run,
+    score,
     self_check,
 )
 from packeteer.parse import parse_packet
+
+from zpfwire import ReassemblyOptions
 
 SEEDS = range(40)
 
@@ -270,3 +281,198 @@ def test_a_datagram_captured_off_its_send_time_voids_the_run():
 
     failures = self_check(r.truth, _damaged(r, first.label, first_usec=first.first_usec + 1))
     assert len(failures) == 1 and "not its send time" in failures[0]
+
+
+# ── the scorer ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.parametrize("impairment", sorted(ALONE))
+@pytest.mark.parametrize("path", PATHS)
+def test_every_captured_datagram_is_written_as_captured(seed: int, impairment: str, path: str):
+    """The one place a UDP score is asserted (``0.7.0`` Decision 4).
+
+    zpfwire makes no choice about a whole datagram, and the specification
+    forbids it to withhold one: every captured copy, a duplicate's and a
+    corrupt one's included, reaches exactly one record, in capture order,
+    stamped with its capture time.
+    """
+    r = prototype(seed, **dataclasses.asdict(ALONE[impairment]))
+    m = measure(r, path=path)  # type: ignore[arg-type]
+
+    assert m.accounting.failures() == []
+    assert m.delivery.conservation == 1
+    assert m.delivery.withheld == m.delivery.cited == 0
+    assert m.order.unexplained == 0
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_checksum_drop_keeps_a_corrupt_datagram(seed: int):
+    """``checksum="drop"`` is TCP's only: a UDP datagram left out would leave no trace (0.5.0)."""
+    r = prototype(seed, **dataclasses.asdict(ALONE["corruption"]))
+    m = measure(r, ReassemblyOptions(checksum="drop"))
+
+    assert m.accounting.failures() == []
+    assert m.delivery.conservation == 1
+    assert m.delivery.altered == sum(1 for c in r.ledger.copies if c.corrupt)
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_the_packets_path_withholds_a_fragmented_datagram_and_cites_it(seed: int):
+    """zipline#166: no record without ``seq_start`` may cite several input records."""
+    r = prototype(seed, FRAGMENTING, **dataclasses.asdict(ALL))
+    m = measure(r, path="packets")
+
+    fragmented = sum(1 for c in r.ledger.copies if c.fragmented)
+    assert fragmented
+    assert m.accounting.failures() == []
+    assert m.delivery.cited == fragmented
+    assert m.delivery.written == len(r.ledger.copies) - fragmented
+    # The capture path writes them all.
+    assert measure(r).delivery.conservation == 1
+
+
+def test_a_fragmented_datagram_is_stamped_with_its_last_fragment():
+    """Pinned: the record is complete when its last fragment is, so its time is that one's."""
+    r = prototype(mtu=FRAGMENTING)
+    m = measure(r)
+
+    fragmented = [t for t in m.order.timing if r.ledger.of_datagram(t.datagram)[0].fragmented]
+    assert fragmented
+    assert all(t.error_usec >= 1 for t in fragmented)
+    assert m.accounting.mistimed == 0
+
+
+def test_a_reordered_datagram_is_stored_where_it_arrived():
+    """A stream with no sequence numbers is stored in capture order (the spec's rule).
+
+    Every inversion of send order is the network's, and the ledger explains
+    each by the datagram it shows held back.
+    """
+    r = prototype(**dataclasses.asdict(ALONE["reorder"]))
+    m = measure(r)
+
+    assert m.order.inversions > 0
+    assert m.order.unexplained == 0
+    assert m.accounting.misordered == 0
+
+
+# ── shown to fail ───────────────────────────────────────────────────────
+
+
+def _rescored(
+    r: Run, conversion: Conversion, **output: object,
+) -> tuple[Delivery, Accounting, OrderScore]:
+    """Score *conversion* with parts of its output replaced, as a broken converter would."""
+    broken = dataclasses.replace(conversion.output, **output)  # type: ignore[arg-type]
+    return score(r, dataclasses.replace(conversion, output=broken))
+
+
+def _records(
+    conversion: Conversion, direction: str, change: Callable[[list[Written]], list[Written]],
+) -> dict[str, object]:
+    records = dict(conversion.output.records)
+    records[direction] = tuple(change(list(records[direction])))
+    timeline = tuple((d, w) for d in ("c2s", "s2c") for w in records[d])
+    return {"records": records, "timeline": tuple(sorted(timeline, key=lambda t: t[1].usec))}
+
+
+@pytest.fixture
+def lossless() -> tuple[Run, Conversion]:
+    r = prototype(**dataclasses.asdict(ALONE["duplication"]))
+    return r, measure(r).conversion
+
+
+def test_a_record_removed_is_a_datagram_lost_quietly(lossless: tuple[Run, Conversion]):
+    r, conversion = lossless
+    delivery, accounting, _ = _rescored(r, conversion, **_records(
+        conversion, "c2s", lambda rs: rs[:3] + rs[4:]))
+
+    assert delivery.conservation < 1
+    assert accounting.quiet == 1
+    assert "1 captured copies reached no record and no citation" in accounting.failures()
+
+
+def test_a_record_written_twice_is_invented(lossless: tuple[Run, Conversion]):
+    r, conversion = lossless
+    _, accounting, _ = _rescored(r, conversion, **_records(
+        conversion, "s2c", lambda rs: rs[:3] + [rs[2]] + rs[3:]))
+
+    assert accounting.invented == 1
+
+
+def test_a_record_with_other_bytes_matches_no_copy(lossless: tuple[Run, Conversion]):
+    r, conversion = lossless
+
+    def alter(rs: list[Written]) -> list[Written]:
+        rs[5] = dataclasses.replace(rs[5], payload=rs[5].payload[::-1])
+        return rs
+
+    _, accounting, _ = _rescored(r, conversion, **_records(conversion, "c2s", alter))
+    assert accounting.unknown == 1 and accounting.quiet == 1
+
+
+def test_two_records_swapped_are_an_unexplained_inversion(lossless: tuple[Run, Conversion]):
+    r, conversion = lossless
+
+    def swap(rs: list[Written]) -> list[Written]:
+        rs[6], rs[7] = rs[7], rs[6]
+        return rs
+
+    _, accounting, order = _rescored(r, conversion, **_records(conversion, "s2c", swap))
+    assert accounting.misordered == 1
+    assert order.unexplained == 1
+
+
+def test_a_timestamp_moved_by_a_microsecond_is_caught(lossless: tuple[Run, Conversion]):
+    r, conversion = lossless
+
+    def shift(rs: list[Written]) -> list[Written]:
+        rs[0] = dataclasses.replace(rs[0], usec=rs[0].usec + 1)
+        return rs
+
+    _, accounting, _ = _rescored(r, conversion, **_records(conversion, "c2s", shift))
+    assert accounting.mistimed == 1
+
+
+def test_a_citation_removed_is_a_datagram_lost_quietly():
+    r = prototype(mtu=FRAGMENTING)
+    conversion = measure(r, path="packets").conversion
+    _, accounting, _ = _rescored(r, conversion, undecoded=conversion.output.undecoded[1:])
+
+    # The first fragmented datagram's first fragment is now uncited.
+    assert accounting.partial == 1
+
+
+def test_a_span_naming_the_wrong_frame_is_misattributed():
+    r = prototype()
+    conversion = measure(r, path="packets").conversion
+
+    def misname(rs: list[Written]) -> list[Written]:
+        (space, start, end), = rs[1].spans
+        rs[1] = dataclasses.replace(rs[1], spans=((space, start + 1, end + 1),))
+        return rs
+
+    _, accounting, _ = _rescored(r, conversion, **_records(conversion, "c2s", misname))
+    assert accounting.misattributed == 1
+
+
+@pytest.mark.parametrize(("impairment", "mtu", "path", "expected"), [
+    ("loss", None, "capture", {"lost": 41, "written": 359}),
+    ("duplication", None, "capture", {"repeated": 77, "written": 477}),
+    ("corruption", None, "capture", {"altered": 77, "written": 400}),
+    ("reorder", None, "capture", {"written": 400}),
+    ("clean", FRAGMENTING, "capture", {"written": 400}),
+    ("clean", FRAGMENTING, "packets", {"withheld": 240, "cited": 240, "written": 160}),
+])
+def test_the_prototype_table_reproduces(
+    impairment: str, mtu: int | None, path: str, expected: dict[str, int],
+):
+    """The plan's prototype, seeds 0–9, 400 datagrams a row: the same counts through the scorer."""
+    totals = dict.fromkeys(expected, 0)
+    for seed in range(10):
+        m = measure(prototype(seed, mtu, **dataclasses.asdict(ALONE[impairment])),
+                    path=path)  # type: ignore[arg-type]
+        for key in totals:
+            totals[key] += getattr(m.delivery, key)
+    assert totals == expected

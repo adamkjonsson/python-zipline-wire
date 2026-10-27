@@ -18,17 +18,46 @@ measured against, so they must not be derived from the thing measured.
   reassembled from its fragments, and the datagrams it does not hold.
 - :func:`self_check` — the conditions under which the run is not evidence
   about zpfwire at all, and is voided rather than scored.
+
+**The scorer** (Phase 4) converts the run along either path — a pcap, or a
+``.zpf`` of its packets as a tunnel decryptor writes one — and reads the
+file back through zpf's public reader only.
+
+- :func:`measure` — convert, read back, score.  A file that fails this
+  project's load-bearing assertion raises :class:`Unclean`.
+- :func:`match` — each record paired with the captured copy it carries, by
+  its bytes, in order.
+- :class:`Delivery` — what became of each datagram sent (delivered,
+  lost, withheld, repeated, altered) and of each copy captured.
+- :class:`Accounting` — whether the file and its stats tell the truth about
+  themselves: every copy in one record or wholly cited, capture order, the
+  capture time, provenance, the stats.
+- :class:`OrderScore` — inversions of send order, each explained by a
+  datagram the ledger shows held back, and timing.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import io
 import ipaddress
 import re
 import struct
 from dataclasses import dataclass
+from typing import Literal
 
-from fidelity_common import BASE_TIME, CLIENT, DIRECTIONS, Direction, kinds_of, payload
+import zpf
+from fidelity_common import (
+    BASE_TIME,
+    CLIENT,
+    DIRECTIONS,
+    PCAP_HEADER,
+    PCAP_RECORD,
+    Direction,
+    Unclean,
+    kinds_of,
+    payload,
+)
 from packeteer.generate.impairments import ImpairmentConfig
 from packeteer.generate.payloads.base import AppMessage
 from packeteer.generate.udp_stream import (
@@ -38,6 +67,9 @@ from packeteer.generate.udp_stream import (
     generate_udp_stream,
 )
 from packeteer.parse import parse_packet
+from packeteer.pcap import LINKTYPE_ETHERNET, write_pcap
+
+from zpfwire import ConversionStats, ReassemblyOptions, capture_to_zpf, packets_to_zpf
 
 SERVER = ("10.0.0.2", 5000)
 """The server's address and port: a participant there sends ``s2c``."""
@@ -504,3 +536,659 @@ def run(scenario: Scenario) -> Run:
     truth = Truth.of(scenario)
     ledger = Ledger.of(stream, truth)
     return Run(scenario, stream, truth, ledger, tuple(self_check(truth, ledger)))
+
+
+# ── Converting and reading back ─────────────────────────────────────────
+
+
+Path = Literal["capture", "packets"]
+"""How a run reaches zpfwire: as a pcap, or as a ``.zpf`` of its packets."""
+
+PATHS: tuple[Path, Path] = ("capture", "packets")
+
+_ETHERNET = 14
+"""Bytes before every frame's IP header: the generator adds Ethernet and no encapsulation."""
+
+
+@dataclass(frozen=True)
+class Written:
+    """One record, as a reader of the converted file gets it.
+
+    Attributes:
+        payload: Its bytes.
+        usec: Its ``timestamp``, in microseconds since the epoch.
+        flags: Its record flags.
+        spans: Its provenance, as ``(participant, start, end)`` in the input
+            ``.zpf``'s offset space; empty for a capture-sourced record.
+
+    """
+
+    payload: bytes
+    usec: int
+    flags: zpf.RecordFlags
+    spans: tuple[tuple[int, int, int], ...]
+
+
+@dataclass(frozen=True)
+class Output:
+    """What a reader of the converted file gets.
+
+    Attributes:
+        records: Each direction's records, in stored order.
+        timeline: Every record, as ``(direction, record)``, in
+            :meth:`zpf.SessionReader.timeline` order, session by session.
+        undecoded: Every Undecoded block, as ``(participant, start, end,
+            reason)``: ``participant`` is the input ``.zpf``'s, or ``None``
+            where the block cites capture-file bytes.
+        end_reasons: Each session's end reason.
+
+    """
+
+    records: dict[Direction, tuple[Written, ...]]
+    timeline: tuple[tuple[Direction, Written], ...]
+    undecoded: tuple[tuple[int | None, int, int, str], ...]
+    end_reasons: tuple[str | None, ...]
+
+
+@dataclass(frozen=True)
+class Conversion:
+    """One run converted along one path, under one policy.
+
+    Attributes:
+        path: How the run reached zpfwire.
+        options: The reassembly policy.
+        sequenced: Whether causal order was asked for, which zpfwire
+            applies to TCP sessions only.
+        stats: What the conversion reported.
+        output: What the file holds.
+        frames: Where each frame of ``stream.packets`` sits in the space a
+            citation names: ``(None, start)`` in the capture file, or
+            ``(participant, start)`` in the input ``.zpf``, where the
+            record is the frame from its IP header on.
+        data: The file itself.
+
+    """
+
+    path: Path
+    options: ReassemblyOptions
+    sequenced: bool
+    stats: ConversionStats
+    output: Output
+    frames: tuple[tuple[int | None, int], ...]
+    data: bytes = dataclasses.field(default=b"", repr=False)
+
+    def locate(self, frame: int, at: int) -> tuple[int | None, int]:
+        """Return where byte *at* of a frame sits in the space a citation names.
+
+        Args:
+            frame: The frame's position in ``stream.packets``.
+            at: A byte offset in the frame.
+
+        Returns:
+            ``(participant, offset)``; the participant is ``None`` in the
+            capture file.
+
+        """
+        space, start = self.frames[frame]
+        return space, start + (at if space is None else at - _ETHERNET)
+
+
+def packets_of(stream: UDPStream) -> tuple[bytes, tuple[tuple[int | None, int], ...]]:
+    """Write a stream's frames as a ``.zpf`` of packets: what a tunnel decryptor writes.
+
+    One session, one participant per direction, each frame a ``net:ip``
+    record from its IP header on, padding included, in capture order.  A
+    capture-sourced decoded file, as ``tests/helpers.py``'s ``packets_zpf``
+    writes by default, built from the stream so that where each frame lands
+    is known.
+
+    Args:
+        stream: packeteer's stream.
+
+    Returns:
+        The file, and each frame's ``(participant, start)`` in its
+        participant's offset space.
+
+    """
+    sink = io.BytesIO()
+    frames: list[tuple[int | None, int]] = []
+    with zpf.create(sink, tick_hz=1_000_000, produced_by="zpfwire fidelity",
+                    produced_at=BASE_TIME) as writer:
+        writer.add_source("capture", link_type=LINKTYPE_ETHERNET)
+        decoder = writer.add_decoder("tunnel", output_layer=zpf.OutputLayer.DECODED, version="0")
+        session = writer.begin_session(proto="ip", key="tunnel")
+        handles = {d: session.participant(f"tunnel-{d}", adjacency=zpf.Adjacency.UNITS)
+                   for d in DIRECTIONS}
+        ends = dict.fromkeys(DIRECTIONS, 0)
+        for packet in stream.packets:
+            direction = _direction(packet)
+            record = packet.raw[_ETHERNET:]
+            frames.append((DIRECTIONS.index(direction), ends[direction]))
+            ends[direction] += len(record)
+            session.record(
+                handles[direction], ts=packet.ts_sec * 1_000_000 + packet.ts_usec,
+                payload=record,
+                decoded=zpf.Decoded(decoder=decoder, content_type=zpf.NET_IP),
+            )
+        session.end()
+    return sink.getvalue(), tuple(frames)
+
+
+def convert(
+    stream: UDPStream,
+    options: ReassemblyOptions | None = None,
+    *,
+    path: Path = "capture",
+    sequenced: bool = False,
+) -> Conversion:
+    """Convert a generated stream in memory, along one path, and read the file back.
+
+    Args:
+        stream: The stream, usually a :attr:`Run.stream`.
+        options: The reassembly policy; zpfwire's defaults when ``None``.
+        path: ``"capture"`` converts a pcap of the stream;
+            ``"packets"`` converts a ``.zpf`` of its packets.
+        sequenced: Whether to ask for causal order.
+
+    Returns:
+        The conversion.
+
+    Raises:
+        Unclean: If the file does not read back clean.
+
+    """
+    options = options or ReassemblyOptions()
+    sink = io.BytesIO()
+    if path == "capture":
+        capture = io.BytesIO()
+        write_pcap(stream.to_pcap_tuples(), file_object=capture)
+        capture.seek(0)
+        stats = capture_to_zpf(capture, sink, options=options, sequenced=sequenced,
+                               produced_at=None)
+        frames: list[tuple[int | None, int]] = []
+        at = PCAP_HEADER
+        for packet in stream.packets:
+            frames.append((None, at + PCAP_RECORD))
+            at += PCAP_RECORD + len(packet.raw)
+        located = tuple(frames)
+    else:
+        packets, located = packets_of(stream)
+        stats = packets_to_zpf(io.BytesIO(packets), sink, options=options,
+                               sequenced=sequenced, produced_at=BASE_TIME)
+    data = sink.getvalue()
+    return Conversion(path, options, sequenced, stats, read(data), located, data)
+
+
+def read(data: bytes) -> Output:
+    """Read a converted file through zpf's public reader.
+
+    Args:
+        data: The ``.zpf`` file's bytes.
+
+    Returns:
+        What it holds.
+
+    Raises:
+        Unclean: If it does not read back clean.
+
+    """
+    endpoints = {"{}:{}".format(*CLIENT): "c2s", "{}:{}".format(*SERVER): "s2c"}
+    records: dict[Direction, list[Written]] = {d: [] for d in DIRECTIONS}
+    timeline: list[tuple[Direction, Written]] = []
+    ends: list[str | None] = []
+    with zpf.open(io.BytesIO(data)) as reader:
+        tick_hz = 0
+        epoch = 0
+        for session in reader.sessions():
+            header = reader.header
+            assert header is not None, "a file with a session has a header"
+            tick_hz, epoch = header.tick_hz, header.time_epoch or 0
+            ends.append(session.end.reason if session.end else None)
+            direction_of: dict[int, Direction] = {}
+            for participant in session.participants:
+                direction: Direction = endpoints[participant.endpoint]  # type: ignore[assignment]
+                direction_of[participant.participant_id] = direction
+                records[direction] += [
+                    _written(r, tick_hz, epoch)
+                    for r in session.stream(participant.participant_id)
+                ]
+            timeline += [
+                (direction_of[r.sender_pid], _written(r, tick_hz, epoch))
+                for r in session.timeline()
+            ]
+        if reader.diagnostics or reader.unplaceable:
+            raise Unclean(f"diagnostics {reader.diagnostics}, unplaceable {reader.unplaceable}")
+        # A capture-sourced file cites capture-file bytes; a derived one cites
+        # its input's participants.
+        derived = bool(reader.header and reader.header.produced_by)
+        undecoded = tuple(
+            (u.participant_id if derived else None, u.off_start, u.off_end, u.reason or "")
+            for u in reader.undecoded
+        )
+    return Output({d: tuple(r) for d, r in records.items()}, tuple(timeline), undecoded,
+                  tuple(ends))
+
+
+def _written(record: zpf.Record, tick_hz: int, epoch: int) -> Written:
+    return Written(
+        payload=bytes(record.payload or b""),
+        usec=(epoch + record.timestamp) * 1_000_000 // tick_hz,
+        flags=zpf.RecordFlags(record.flags),
+        spans=tuple((s.participant_id, s.off_start, s.off_end) for s in record.spans),
+    )
+
+
+# ── The scorer ──────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Delivery:
+    """What became of every datagram sent, and of every copy captured.
+
+    Each sent datagram is one of: **delivered** once with its true bytes;
+    **lost** on the wire, so no copy was captured; **withheld**, captured
+    and in no record; **repeated**, in more than one record, which is what
+    a captured copy must become (the specification forbids withholding it);
+    or **altered**, in one record but not with its true bytes, as a kept
+    corrupt copy is.
+
+    Attributes:
+        sent: Datagrams sent.
+        delivered: Sent datagrams in exactly one record, with their true bytes.
+        lost: Sent datagrams no copy carries.
+        withheld: Captured datagrams in no record.
+        repeated: Datagrams in more than one record.
+        altered: Datagrams in one record, with bytes other than the truth.
+        captured: Copies the capture holds.
+        written: Copies that reached a record.
+        cited: Copies in no record whose payload every byte of is cited.
+
+    """
+
+    sent: int
+    delivered: int
+    lost: int
+    withheld: int
+    repeated: int
+    altered: int
+    captured: int
+    written: int
+    cited: int
+
+    @property
+    def delivery(self) -> float:
+        """Delivered ÷ sent: what a reader of the file gets."""
+        return self.delivered / self.sent if self.sent else 1.0
+
+    @property
+    def conservation(self) -> float:
+        """Written ÷ captured: what zpfwire made of what it was given."""
+        return self.written / self.captured if self.captured else 1.0
+
+
+@dataclass(frozen=True)
+class Accounting:
+    """Whether the file and its stats tell the truth about themselves.
+
+    Every count is a failure when nonzero, except where it says otherwise.
+
+    Attributes:
+        quiet: Copies in no record and not wholly cited: lost quietly.
+        doubled: Copies both written and cited.
+        partial: Copies in no record whose citation covers some bytes only.
+        invented: Records repeating a copy more often than it was captured.
+        unknown: Records whose bytes match no captured copy.
+        stats: Where the conversion's stats disagree with the ledger.
+        flags: Records not flagged ``message``, or flagged ``retransmit``,
+            which names a sender's resend that no UDP sender makes here.
+        misordered: Records stored out of their copies' capture order.
+        timeline: Whether :meth:`zpf.SessionReader.timeline` keeps each
+            direction's stored order and runs in time order.
+        mistimed: Records whose ``timestamp`` is not the capture time of
+            their copy's last frame.
+        misattributed: Records whose spans do not name exactly their copy's
+            frames; on the packets path, where records carry spans.
+        sessions: How many sessions the file holds; one flow is one.
+        end_reasons: Each session's end reason; ``capture-end`` expected.
+
+    """
+
+    quiet: int
+    doubled: int
+    partial: int
+    invented: int
+    unknown: int
+    stats: tuple[str, ...]
+    flags: int
+    misordered: int
+    timeline: bool
+    mistimed: int
+    misattributed: int
+    sessions: int
+    end_reasons: tuple[str | None, ...]
+
+    def failures(self) -> list[str]:
+        """Return each way the file or its stats misstate the conversion.
+
+        Returns:
+            One line per failure; empty when the file accounts for itself.
+
+        """
+        out = []
+        for count, what in (
+            (self.quiet, "captured copies reached no record and no citation"),
+            (self.doubled, "copies were both written and cited"),
+            (self.partial, "copies in no record were cited in part"),
+            (self.invented, "records repeat a copy beyond the times it was captured"),
+            (self.unknown, "records match no captured copy"),
+            (self.flags, "records are flagged wrongly for a datagram"),
+            (self.misordered, "records are stored out of capture order"),
+            (self.mistimed, "records are not stamped with their copy's capture time"),
+            (self.misattributed, "records' spans do not name their copy's frames"),
+        ):
+            if count:
+                out.append(f"{count} {what}")
+        out += list(self.stats)
+        if not self.timeline:
+            out.append("the timeline does not follow stored and capture order")
+        if self.sessions != 1:
+            out.append(f"{self.sessions} sessions, not one")
+        if any(reason != "capture-end" for reason in self.end_reasons):
+            out.append(f"end reasons {list(self.end_reasons)}, not capture-end")
+        return out
+
+
+@dataclass(frozen=True)
+class Timing:
+    """One record's timestamp against its datagram's true send time.
+
+    Attributes:
+        datagram: The datagram.
+        kind: Its copy's outermost kind.
+        error_usec: ``timestamp`` less the true send time: what reordering
+            or fragmentation delayed it by, as the capture point saw.
+
+    """
+
+    datagram: int
+    kind: str
+    error_usec: int
+
+
+@dataclass(frozen=True)
+class OrderScore:
+    """The order datagrams are stored in, against the order they were sent.
+
+    Attributes:
+        inversions: Pairs of records, one direction's, stored in the
+            opposite order to their datagrams' sending.  The network's: a
+            stream without sequence numbers is stored in arrival order.
+        unexplained: Inversions whose later-stored copy the ledger does
+            not show reordered.  Each is a failure of the run's evidence.
+        timing: One sample per record matched to a copy.
+
+    """
+
+    inversions: int
+    unexplained: int
+    timing: tuple[Timing, ...]
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """One run, converted along one path under one policy, and scored.
+
+    Attributes:
+        run: The run.
+        conversion: Its conversion.
+        delivery: What became of each datagram.
+        accounting: The file's account of itself.
+        order: The order and timing of what was written.
+
+    """
+
+    run: Run
+    conversion: Conversion
+    delivery: Delivery
+    accounting: Accounting
+    order: OrderScore
+
+
+def match(ledger: Ledger, output: Output) -> dict[Direction, list[Copy | None]]:
+    """Pair each record with the captured copy it carries.
+
+    Per direction, records in stored order take the earliest unclaimed copy,
+    in capture order, with exactly their bytes.  Two copies of one datagram
+    are the same bytes, so which record takes which is decided by order,
+    which is also what the order checks then judge.
+
+    Args:
+        ledger: The run's ledger.
+        output: The converted file.
+
+    Returns:
+        Each direction's copy for each of its records, ``None`` where the
+        bytes match no unclaimed copy.
+
+    """
+    out: dict[Direction, list[Copy | None]] = {}
+    for direction in DIRECTIONS:
+        free = [c for c in ledger.copies if c.direction == direction]
+        paired: list[Copy | None] = []
+        for record in output.records[direction]:
+            copy = next((c for c in free if c.payload == record.payload), None)
+            if copy is not None:
+                free.remove(copy)
+            paired.append(copy)
+        out[direction] = paired
+    return out
+
+
+def score(run: Run, conversion: Conversion) -> tuple[Delivery, Accounting, OrderScore]:
+    """Score a conversion against its run.
+
+    Args:
+        run: The run converted.
+        conversion: Its conversion.
+
+    Returns:
+        The delivery, the accounting and the order.
+
+    """
+    ledger, output = run.ledger, conversion.output
+    paired = match(ledger, output)
+    written = {id(c) for d in DIRECTIONS for c in paired[d] if c is not None}
+    cited = _cited(conversion, run)
+
+    records_of: dict[int, list[bytes]] = {}
+    for direction in DIRECTIONS:
+        for record, copy in zip(output.records[direction], paired[direction], strict=True):
+            if copy is not None:
+                records_of.setdefault(copy.datagram, []).append(record.payload)
+    captured = {c.datagram for c in ledger.copies}
+    delivered = repeated = altered = 0
+    for datagram in run.truth.datagrams:
+        held = records_of.get(datagram.index, [])
+        if len(held) > 1:
+            repeated += 1
+        elif held and held[0] == datagram.data:
+            delivered += 1
+        elif held:
+            altered += 1
+    delivery = Delivery(
+        sent=len(run.truth.datagrams),
+        delivered=delivered,
+        lost=len(ledger.lost),
+        withheld=len(captured - set(records_of)),
+        repeated=repeated,
+        altered=altered,
+        captured=len(ledger.copies),
+        written=len(written),
+        cited=sum(1 for c in ledger.copies if id(c) not in written and cited[id(c)] == "all"),
+    )
+
+    unmatched = [r for d in DIRECTIONS
+                 for r, c in zip(output.records[d], paired[d], strict=True) if c is None]
+    payloads = {c.payload for c in ledger.copies}
+    accounting = Accounting(
+        quiet=sum(1 for c in ledger.copies if id(c) not in written and cited[id(c)] == "none"),
+        doubled=sum(1 for c in ledger.copies if id(c) in written and cited[id(c)] != "none"),
+        partial=sum(1 for c in ledger.copies if id(c) not in written and cited[id(c)] == "some"),
+        invented=sum(1 for r in unmatched if r.payload in payloads),
+        unknown=sum(1 for r in unmatched if r.payload not in payloads),
+        stats=_stats(conversion, output, ledger),
+        flags=sum(
+            1 for d in DIRECTIONS for r in output.records[d]
+            if not r.flags & zpf.RecordFlags.MESSAGE or r.flags & zpf.RecordFlags.RETRANSMIT
+        ),
+        misordered=sum(_inversions([ledger.copies.index(c) for c in paired[d] if c is not None])
+                       for d in DIRECTIONS),
+        timeline=_timeline_ok(output),
+        mistimed=sum(
+            1 for d in DIRECTIONS
+            for r, c in zip(output.records[d], paired[d], strict=True)
+            if c is not None and r.usec != c.usec
+        ),
+        misattributed=sum(
+            1 for d in DIRECTIONS
+            for r, c in zip(output.records[d], paired[d], strict=True)
+            if c is not None and conversion.path == "packets"
+            and set(r.spans) != _spans(conversion, run, c)
+        ),
+        sessions=len(output.end_reasons),
+        end_reasons=output.end_reasons,
+    )
+
+    inversions = unexplained = 0
+    timing = []
+    for direction in DIRECTIONS:
+        copies = [c for c in paired[direction] if c is not None]
+        for later, copy in enumerate(copies):
+            for before in copies[:later]:
+                if before.datagram > copy.datagram:
+                    inversions += 1
+                    if "REORDER" not in copy.kinds:
+                        unexplained += 1
+        for record, copy in zip(output.records[direction], paired[direction], strict=True):
+            if copy is not None:
+                timing.append(Timing(copy.datagram, copy.kind,
+                                     record.usec - run.truth.datagrams[copy.datagram].sent_usec))
+    return delivery, accounting, OrderScore(inversions, unexplained, tuple(timing))
+
+
+def _cited(conversion: Conversion, run: Run) -> dict[int, str]:
+    """Say how much of each copy's payload the file cites: ``all``, ``some`` or ``none``.
+
+    On the capture path a citation names capture-file bytes, and a copy's
+    payload is located by its pieces.  On the packets path it names input
+    records whole, so a copy is cited by its frames, headers and all; an
+    empty datagram is cited there the same way.
+    """
+    spans: dict[int | None, list[tuple[int, int]]] = {}
+    for space, start, end, _ in conversion.output.undecoded:
+        spans.setdefault(space, []).append((start, end))
+    out: dict[int, str] = {}
+    for copy in run.ledger.copies:
+        if conversion.path == "packets":
+            ranges = [_frame_range(conversion, run, i) for i in copy.packets]
+        else:
+            ranges = [(conversion.locate(p.packet, p.at), p.length) for p in copy.pieces]
+        total = sum(length for _, length in ranges)
+        covered = sum(_covered(spans.get(space, []), start, start + length)
+                      for (space, start), length in ranges)
+        out[id(copy)] = "none" if covered == 0 else "all" if covered == total and total else "some"
+    return out
+
+
+def _frame_range(
+    conversion: Conversion, run: Run, frame: int,
+) -> tuple[tuple[int | None, int], int]:
+    """Return where a frame's input record sits, and its length, on the packets path."""
+    return conversion.frames[frame], len(run.stream.packets[frame].raw) - _ETHERNET
+
+
+def _covered(spans: list[tuple[int, int]], start: int, end: int) -> int:
+    """Count the bytes of ``[start, end)`` that any of *spans* covers."""
+    edge = start
+    total = 0
+    for a, b in sorted(spans):
+        lo, hi = max(a, edge), min(b, end)
+        if hi > lo:
+            total += hi - lo
+            edge = hi
+    return total
+
+
+def _spans(conversion: Conversion, run: Run, copy: Copy) -> set[tuple[int, int, int]]:
+    """Return the spans a record carrying *copy* should have: one per frame, whole."""
+    out = set()
+    for frame in copy.packets:
+        (space, start), length = _frame_range(conversion, run, frame)
+        assert space is not None
+        out.add((space, start, start + length))
+    return out
+
+
+def _inversions(order: list[int]) -> int:
+    """Count the pairs of *order* out of ascending order."""
+    return sum(1 for j, b in enumerate(order) for a in order[:j] if a > b)
+
+
+def _timeline_ok(output: Output) -> bool:
+    """Return whether the timeline keeps each direction's stored order, in time order."""
+    for direction in DIRECTIONS:
+        mine = [r for d, r in output.timeline if d == direction]
+        if mine != list(output.records[direction]):
+            return False
+    times = [r.usec for _, r in output.timeline]
+    return times == sorted(times)
+
+
+def _stats(conversion: Conversion, output: Output, ledger: Ledger) -> tuple[str, ...]:
+    """Return where the conversion's stats disagree with the file and the ledger."""
+    stats = conversion.stats
+    records = [r for d in DIRECTIONS for r in output.records[d]]
+    out = []
+    if stats.records != len(records):
+        out.append(f"stats.records is {stats.records}, the file holds {len(records)}")
+    written = sum(len(r.payload) for r in records)
+    if stats.payload_bytes != written:
+        out.append(f"stats.payload_bytes is {stats.payload_bytes}, the records hold {written}")
+    # A datagram withheld before its checksum is read is not counted: on the
+    # packets path, a fragmented one (zipline#166).
+    read = [c for c in ledger.copies if not (conversion.path == "packets" and c.fragmented)]
+    bad = sum(1 for c in read if not c.checksum_ok)
+    if stats.bad_checksum != bad:
+        out.append(f"stats.bad_checksum is {stats.bad_checksum}, the ledger has {bad}")
+    return tuple(out)
+
+
+def measure(
+    run: Run,
+    options: ReassemblyOptions | None = None,
+    *,
+    path: Path = "capture",
+    sequenced: bool = False,
+) -> Measurement:
+    """Convert a run along one path, read it back, and score it.
+
+    A void run is measured all the same: :attr:`Run.void` is what keeps it
+    out of a report, and a test may want its numbers regardless.
+
+    Args:
+        run: The run.
+        options: The reassembly policy; zpfwire's defaults when ``None``.
+        path: ``"capture"`` or ``"packets"``.
+        sequenced: Whether to ask for causal order.
+
+    Returns:
+        The measurement.
+
+    Raises:
+        Unclean: If the file does not read back clean.
+
+    """
+    conversion = convert(run.stream, options, path=path, sequenced=sequenced)
+    delivery, accounting, order = score(run, conversion)
+    return Measurement(run, conversion, delivery, accounting, order)
+
