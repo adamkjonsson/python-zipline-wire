@@ -132,8 +132,10 @@ does, and zpfwire's own version too. So a comparison across a version bump
 starts below the header, at line 6 (`tail -n +6 summary.md`). A baseline
 claimed for a release runs in `.venv`.
 
-The tool is three modules. `tools/fidelity.py` is the matrix, the sweep and
-the report. `tools/fidelity_tcp.py` is TCP's truth, ledger and scorer.
+The tool is four modules. `tools/fidelity.py` is the matrix, the sweep and
+the report. `tools/fidelity_tcp.py` is TCP's truth, ledger and scorer, and
+`tools/fidelity_udp.py` UDP's, where each datagram copy is reassembled from
+its fragments and checksummed by the ledger itself.
 `tools/fidelity_common.py` holds what every transport shares: the
 position-unique payloads, packeteer's label grammar, and where a frame sits
 in the capture a citation points into. Scores are reported,

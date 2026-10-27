@@ -112,7 +112,8 @@ warnings can only be used as a last resort, and **always ask before making such 
 - `tools/` — development scripts, not in the wheel: `byte_identity.py` checks
   that a change leaves output unchanged against the last release, and
   `fidelity.py` scores conversions against the traffic packeteer generated
-  them from (with `fidelity_tcp.py` and `fidelity_common.py`)
+  them from (with `fidelity_tcp.py`, `fidelity_udp.py` and
+  `fidelity_common.py`)
 - `benchmarks/` — `reassembly.py`, which times the reassembler
 - `plans/` — release plans and the design record, historical rather than
   normative; `plans/PLAN.md` is the design and phasing this project was built to
