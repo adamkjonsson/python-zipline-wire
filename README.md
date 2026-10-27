@@ -24,8 +24,8 @@ This README is the short version.
 
 ## Install
 
-The two dependencies are not on PyPI; `requirements.txt` installs them from
-their release tags on GitHub:
+The two dependencies are not on PyPI, and zpfwire declares each by its
+release tag on GitHub, so installing zpfwire installs them from there:
 
 ```bash
 git clone https://github.com/adamkjonsson/python-zipline-wire.git

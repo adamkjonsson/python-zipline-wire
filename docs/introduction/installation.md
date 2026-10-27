@@ -8,8 +8,9 @@ sets — and depends on two sibling projects:
 | packeteer | `packeteer` | Reads captures, parses packets, reassembles IP fragments |
 | python-zipline | `zpf` | Writes and validates the `.zpf` container |
 
-Neither is published to PyPI yet, so both are installed from their GitHub
-release tags.
+Neither is published to PyPI yet, and both names are taken there by
+unrelated projects. So zpfwire declares each by its GitHub release tag, and
+installing zpfwire installs them from there, never from an index.
 
 ## Development install
 
@@ -18,8 +19,8 @@ python3 -m venv .venv
 .venv/bin/pip install -e . -r requirements.txt
 ```
 
-`requirements.txt` installs each sibling at the release tag this tree is
-built against. It also brings in pytest, ruff, Sphinx, and the build tooling,
+`-e .` installs each sibling at the release tag this tree is built against.
+`requirements.txt` brings in pytest, ruff, Sphinx, and the build tooling,
 which is everything the project's checks need.
 
 Verify the install:
@@ -64,6 +65,15 @@ list` and `zpf.__version__` can name a release while the code that runs is
 whatever is checked out. The test header's path is what tells the two
 apart. A result to be quoted as "against release X" comes from `.venv`.
 
+To reinstall zpfwire in this venv, pass `--no-deps`:
+
+```bash
+.venv-dev/bin/pip install --no-deps -e .
+```
+
+zpfwire names each sibling by its release tag, which no checkout satisfies,
+so without the flag pip puts the releases back over the checkouts.
+
 The second number is the **specification** version the `zpf` library
 implements, read from `zpf.SPEC_VERSION` rather than hard-coded.  It is the
 one to quote when asking whether a file zpfwire wrote will be readable by
@@ -75,13 +85,13 @@ something else.
 .venv/bin/python -m build
 ```
 
-The wheel declares a range for each sibling, closed above:
-`zpf>=0.7.0,<0.8` and `packeteer>=0.21.0,<0.22`. Both siblings are in `0.x`,
-where every minor may break, so a range stops at the last minor this tree
-was tested against. `CHANGELOG.md` names those releases. With neither sibling
-on PyPI, installing the wheel needs them supplied, as `requirements.txt`
-does; pip refuses a sibling outside the range rather than installing a
-combination nobody ran.
+The wheel declares each sibling as a direct reference to its release tag,
+`packeteer @ git+https://github.com/adamkjonsson/packeteer.git@vX.Y.Z` and
+the same for `zpf`, so installing it fetches them from GitHub. It never asks
+a package index for either name. Both names belong to unrelated projects on
+PyPI, and anything uploaded there under them would otherwise be installed
+in their place. `CHANGELOG.md` names the releases. The wheel cannot be
+uploaded to PyPI, which refuses packages that declare direct references.
 
 ## Running the checks
 

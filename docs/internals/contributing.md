@@ -11,8 +11,8 @@ python3 -m venv .venv
 .venv/bin/pip install -e . -r requirements.txt
 ```
 
-Python ≥ 3.10 — the floor `zpf` sets.  The two siblings are installed from
-the release tags this tree is built against, so `.venv` tests what the wheel
+Python ≥ 3.10 — the floor `zpf` sets.  `-e .` installs the two siblings from
+the release tags `pyproject.toml` names, so `.venv` tests what the wheel
 declares, and `pip list` says what is running.
 
 To change packeteer or python-zipline alongside this tree, add a second venv
@@ -27,13 +27,16 @@ python3 -m venv .venv-dev
 Every test run prints each sibling's version **and** the file it was imported
 from.  In `.venv-dev` the path is a checkout, and the version beside it is
 whatever was recorded when the install was made, which can be stale.  A
-result to be quoted as "against release X" comes from `.venv`.
+result to be quoted as "against release X" comes from `.venv`.  To reinstall
+zpfwire there, use `pip install --no-deps -e .`, or pip puts the tags back over
+the checkouts.
 
-**Moving to a new sibling release** is two edits that go together: the tag in
-`requirements.txt` and the range in `pyproject.toml`.  `test_package.py`
-fails if the tag falls outside the range.  The range's ceiling is one minor
-above the newest release tested; widen it only once the suite has passed
-against that release.
+**Moving to a new sibling release** is one edit: the tag in `pyproject.toml`'s
+`dependencies`, made once the suite has passed against that release.  The
+tags are named there and nowhere else (#67); `test_package.py` fails if a
+sibling is declared by name or a requirements file names one, and checks
+that `.venv` runs the declared release.  Rebuild `.venv`, or run
+`pip install -e .` in it, to take the new tag in.
 
 Note the `-e .` — installing the requirements alone leaves zpfwire itself
 uninstalled, and the tests will still pass because `pyproject.toml` puts `src`

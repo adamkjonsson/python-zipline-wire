@@ -120,8 +120,9 @@ warnings can only be used as a last resort, and **always ask before making such 
 
 ## Virtual environment
 
-Development uses `.venv`, created from `requirements.txt`, which installs the
-two siblings from the **release tags** this tree is built against:
+Development uses `.venv`. `-e .` installs the two siblings from the
+**release tags** `pyproject.toml` declares them by (#67), and
+`requirements.txt` adds the development tools:
 
 ```bash
 python -m venv .venv
@@ -149,9 +150,12 @@ running whatever is checked out. So:
   stale.
 - **Anything claimed "against release X"** (a review, a byte-identity check,
   a benchmark) runs in `.venv`, or in a throwaway venv on the tag.
-- **A new sibling release** moves the tag in `requirements.txt` and the
-  range in `pyproject.toml` together; `tests/test_package.py` holds the one
-  inside the other.
+- **Reinstalling zpfwire in `.venv-dev`** takes `--no-deps`, or pip puts
+  the release tags back over the checkouts.
+- **A new sibling release** moves the tag in `pyproject.toml`'s
+  `dependencies`, the only place it is named. Never declare a sibling by
+  name: both names are taken on PyPI by other projects.
+  `tests/test_package.py` holds the form.
 
 ## Conventions
 

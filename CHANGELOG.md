@@ -33,6 +33,38 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+### Changed
+
+- **Breaking: each sibling is declared by its release tag, not by a range**
+  ([#67](https://github.com/adamkjonsson/python-zipline-wire/issues/67)):
+  `packeteer @ git+https://github.com/adamkjonsson/packeteer.git@v0.21.0`
+  and `zpf @ git+https://github.com/adamkjonsson/python-zipline.git@v0.7.0`,
+  where `0.7.0` declared `packeteer>=0.21.0,<0.22` and `zpf>=0.7.0,<0.8`.
+  Installing zpfwire fetches both from GitHub and never asks a package
+  index for either name.  An environment that paired zpfwire with any other
+  release inside the old ranges no longer resolves: install the tagged
+  releases, which are the ones this tree is tested against.  A sibling's
+  patch release now reaches zpfwire users through a zpfwire release.
+  `requirements.txt` no longer names the siblings, since `pip install -e .`
+  installs them; the development recipe, `pip install -e . -r
+  requirements.txt`, is unchanged.  In `.venv-dev`, reinstall zpfwire with
+  `pip install --no-deps -e .`, or pip puts the tags back over the
+  checkouts.
+
+### Security
+
+- **Dependency confusion closed**
+  ([#67](https://github.com/adamkjonsson/python-zipline-wire/issues/67)).
+  Neither sibling is on PyPI, and both names are taken there by unrelated
+  projects: a 2019 packet serializer called `packeteer`, and an unrelated
+  `zpf`.  A wheel declaring them by name and range is resolved against
+  PyPI, so whoever uploaded a `packeteer 0.21.x` or a `zpf 0.7.x` there
+  would have been installed by a plain `pip install zpfwire`.  The `0.7.0`
+  wheel, installed beside a local index holding `packeteer 0.21.9` and
+  `zpf 0.7.9`, took both.  The declaration by tag cannot be satisfied by an
+  index at all.  Upstream, packeteer#231 and python-zipline#102 ask each
+  sibling for a distribution name of its own.
+
 ---
 
 ## [0.7.0] - 2026-10-26
