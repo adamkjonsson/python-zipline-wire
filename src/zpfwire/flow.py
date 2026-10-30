@@ -439,7 +439,7 @@ class CaptureSink(RecordSink):
         )
 
     def undecoded(self, off_start: int | None, length: int, *, reason: str) -> None:
-        """Declare capture bytes that reached no record; see :func:`cite_undecoded`.
+        """Declare capture bytes that reached no record; see :func:`~zpfwire.flow.cite_undecoded`.
 
         Args:
             off_start: Byte offset of the region in the capture file, or

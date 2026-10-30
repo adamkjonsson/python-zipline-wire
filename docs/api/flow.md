@@ -58,6 +58,13 @@ A tracker writes through a sink, so the same tracker converts a capture and a
    :members:
 ```
 
+Both write an Undecoded block against the capture through one function, which
+a caller building its own sink can use too:
+
+```{eval-rst}
+.. autofunction:: zpfwire.flow.cite_undecoded
+```
+
 ---
 
 ## Per-transport trackers
@@ -132,6 +139,10 @@ follow the reference to fetch them.  See {doc}`../guide/provenance`.
 
 ```{eval-rst}
 .. autodata:: zpfwire.flow.REASON_TS_MISSING
+```
+
+```{eval-rst}
+.. autodata:: zpfwire.flow.REASON_CHECKSUM
 ```
 
 ```{eval-rst}

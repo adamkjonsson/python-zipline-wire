@@ -79,7 +79,7 @@ class Outcome:
 
     @property
     def scored(self) -> bool:
-        """Whether the run counts toward the scores: not void, and read back clean."""
+        """Whether the run counts toward the scores, being neither void nor unclean."""
         return not self.void and self.measurement is not None
 
     def failures(self) -> list[str]:
@@ -120,7 +120,7 @@ class Evaluation:
 
     @property
     def unclean(self) -> int:
-        """How many runs' files did not read back clean: each is a bug."""
+        """How many runs' files did not read back clean, each of them a bug."""
         return sum(1 for o in self.outcomes if o.unclean is not None)
 
     def jsonl(self) -> Iterator[str]:

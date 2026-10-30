@@ -292,7 +292,7 @@ class Entry:
 
     @property
     def kind(self) -> str:
-        """The outermost kind: ``DATA``, ``RETRANS``, ``DUP``, ``CORRUPT`` and so on."""
+        """The outermost kind, such as ``DATA``, ``RETRANS``, ``DUP`` or ``CORRUPT``."""
         return self.kinds[0]
 
     @property
@@ -813,12 +813,12 @@ class ByteScore:
 
     @property
     def fidelity(self) -> float:
-        """Correct over sent: what a reader of the file gets."""
+        """Correct bytes over bytes sent, which is what a reader of the file gets."""
         return self.correct / self.sent if self.sent else 1.0
 
     @property
     def recovery(self) -> float:
-        """Correct over available: what the reassembler made of what it was given."""
+        """Correct bytes over bytes captured, which is what the reassembler made of them."""
         return self.correct / self.available if self.available else 1.0
 
 

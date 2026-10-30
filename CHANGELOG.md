@@ -33,6 +33,43 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+---
+
+## [0.9.0] - 2026-10-30
+
+**The spec `0.24` release.**  Writes spec **v0.24**
+(`zpf.SPEC_VERSION == (0, 24)`), against python-zipline **0.8.0**, now
+distributed as `python-zipline`, and packeteer **0.21.0**.
+
+**Breaking, in what every file is.**  A `0.24` file is not readable by a
+`0.23` reader, and this release reads no `0.23` file.  In an existing
+environment, `pip uninstall zpf` before installing.
+
+**Two questions this project put to the format are answered, and taken
+up.**  A UDP datagram reassembled from IP fragments in a `.zpf` of packets
+is now written, as one `message` record (zipline#166, #75), where `0.8.0`
+withheld it.  A datagram the capture saw twice is marked `copy` when zpfwire
+can tell it is one (zipline#169, #77).
+
+**One new requirement is met.**  The fragments of a datagram that never
+completed are cited on a capture, as spec `0.24` requires (zipline#170,
+#74).  TCP's are cited too.
+
+**One bug the stricter reader showed.**  `stats.gaps` did not count the
+hole under the last records of a lossy direction, so such a conversion
+reported itself `lossless` (#76).
+
+**What the fidelity sweep measured**: 42,576 conversions, none failing
+accounting.  Against `0.8.0`, only three things move:
+- the 537 runs #76 corrects;
+- 265 of those, whose missing bytes the new reader declares rather than
+  leaves past the end;
+- the 1,200 `udp-fragmented` runs on the packets path, which now match the
+  capture path.
+
+No fixture's output moves: 198 of 198 outputs are identical to `0.8.0`'s
+on the new library.
+
 ### Added
 
 - **`CaptureReader.incomplete`**, the datagrams whose fragments never all
@@ -65,6 +102,18 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 
 ### Changed
 
+- **Breaking: spec `0.24`, through python-zipline `0.8.0`**
+  ([#73](https://github.com/adamkjonsson/python-zipline-wire/issues/73)).
+  Every file is stamped `0.24`. Under the format's `0.x` rule a `0.23`
+  reader refuses it, and this release cannot read a `0.23` file.
+  - **The output does not change**, apart from that stamp: all 198 outputs
+    of the 22 fixtures are byte-identical to `0.8.0`'s when both run on the
+    new library.
+  - python-zipline is distributed as **`python-zipline`** since its `0.8.0`
+    (python-zipline#102), and still imported as `zpf`. So the dependency is
+    now `python-zipline @ git+https://github.com/adamkjonsson/python-zipline.git@v0.8.0`.
+    **In an existing environment, `pip uninstall zpf` before installing**, or
+    the old distribution's metadata stays behind.
 - **Breaking: a capture holding a capture-point copy of a UDP datagram
   writes it flagged `copy`**
   ([#77](https://github.com/adamkjonsson/python-zipline-wire/issues/77)), as
@@ -108,18 +157,6 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   - The tally under `skipped["incomplete-datagram"]` stays.
   - Bytes move for a capture holding such a datagram, which no fixture does:
     198 of 198 outputs are identical to `0.8.0`.
-- **Breaking: spec `0.24`, through python-zipline `0.8.0`**
-  ([#73](https://github.com/adamkjonsson/python-zipline-wire/issues/73)).
-  Every file is stamped `0.24`. Under the format's `0.x` rule a `0.23`
-  reader refuses it, and this release cannot read a `0.23` file.
-  - **The output does not change**, apart from that stamp: all 198 outputs
-    of the 22 fixtures are byte-identical to `0.8.0`'s when both run on the
-    new library.
-  - python-zipline is distributed as **`python-zipline`** since its `0.8.0`
-    (python-zipline#102), and still imported as `zpf`. So the dependency is
-    now `python-zipline @ git+https://github.com/adamkjonsson/python-zipline.git@v0.8.0`.
-    **In an existing environment, `pip uninstall zpf` before installing**, or
-    the old distribution's metadata stays behind.
 - **Breaking: `zpfwire.fidelity` measures a lost tail as the `0.24` reader
   shows it.** Since spec `0.24` (zipline#168), a transport stream's extent
   counts sequence numbers to the furthest point a record reaches. A pure ACK
@@ -160,6 +197,23 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   The fidelity sweep found 537 conversions whose stats disagreed with
   their own file, and now finds none. No file byte moves, and no fixture
   has the shape.
+
+### Documentation
+
+- **Sample output that had drifted since `0.7.0` is current.** The `convert`
+  page's summary of `retransmission.pcap` shows 134 records, not 135. The
+  lossy summary on that page and in the README shows `packet_loss.pcap`'s
+  133, not 105. Both moved with `0.7.0`'s record boundaries, and the `Note:`
+  is printed on one line, as the CLI prints it. Every other sample was rerun
+  and matches, and every Python example in the README and the guides runs.
+- **The API reference lists `cite_undecoded`, `REASON_CHECKSUM` and
+  `CHECKSUM_POLICIES`**, which are public and had no entry. Six docstrings
+  no longer render their opening phrase as a type, among them
+  `ByteScore.fidelity` and the `TS_ABSENT` and `TS_STALE` keys.
+- The upstream-first page records which issues `0.24` answered, the testing
+  page says the suite is about 1,700 tests, and the cost of storing pure
+  ACKs is re-measured on python-zipline `0.8.0`: about 20% more conversion
+  time, where `0.6.0` measured 30%.
 
 ---
 
@@ -1575,7 +1629,8 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.5.0...v0.6.0

@@ -129,10 +129,10 @@ is recognised by the TCP Timestamps option; see
 """
 
 TS_ABSENT = "absent"
-"""Fallback key: a repeat could not be judged because one side lacked the option."""
+"""Fallback key for a repeat not judged because one side lacked the option."""
 
 TS_STALE = "stale"
-"""Fallback key: a repeat could not be judged because its original had aged out."""
+"""Fallback key for a repeat not judged because its original had aged out."""
 
 _DUPLICATE = "duplicate"
 _RETRANSMIT = "retransmit"

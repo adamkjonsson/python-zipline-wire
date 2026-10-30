@@ -19,6 +19,10 @@ The policy that decides which bytes reach the output.  See
 ```
 
 ```{eval-rst}
+.. autodata:: zpfwire.options.CHECKSUM_POLICIES
+```
+
+```{eval-rst}
 .. autodata:: zpfwire.options.DECODER_NAME
 ```
 

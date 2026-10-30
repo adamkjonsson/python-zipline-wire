@@ -265,9 +265,10 @@ is what it is stored for:
 
 It costs a record per pure ACK, and there are many.  `http_stream_1.pcap`,
 a 4,140-packet HTTP capture, carries 2,060 pure ACKs beside 2,000 data
-segments, so storing them doubles its records: 23% more output (543,900 →
-667,500 bytes) and about 30% more conversion time (119 → 154 ms), almost all
-of it in the `zpf` writer's per-record work.  Storing them changes no data
+segments, so storing them doubles its records: 23% more output (546,252 →
+669,852 bytes) and about 20% more conversion time (123 → 149 ms), almost all
+of it in the `zpf` writer's per-record work.  That was about 30% before
+python-zipline `0.8.0` made writing a record 45% cheaper.  Storing them changes no data
 record: every fixture converts to what `pure_acks=False` writes, plus the
 pure-ACK records.
 

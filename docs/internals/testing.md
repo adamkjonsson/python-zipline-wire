@@ -1,6 +1,6 @@
 # Testing
 
-Some 930 tests, native pytest style, in a top-level `tests/`.  Run them with:
+Some 1,700 tests, native pytest style, in a top-level `tests/`.  Run them with:
 
 ```bash
 .venv/bin/pytest
