@@ -46,6 +46,27 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 
 ### Changed
 
+- **Breaking: on a `.zpf` of packets, a UDP datagram reassembled from IP
+  fragments is written**, as one `message` record citing every fragment
+  ([#75](https://github.com/adamkjonsson/python-zipline-wire/issues/75)).
+  Spec `0.24` lets a record flagged `message` cite several input units, or
+  cross a declared break, because its flag says they are one message's
+  fragments (zipline#166, filed from this project).
+  - Through `0.8.0` such a datagram was withheld, and each fragment marked
+    `undecodable`. A tunnel whose inner MTU is smaller than its datagrams
+    lost every one of them.
+  - The record is stamped with its last fragment's time, as a capture
+    conversion stamps it. The `sessionized-fragments` vector stamps the
+    first, an open vector defect (zipline#175); everything else in it
+    matches.
+  - A datagram that lost a fragment is not a message, so it still gets no
+    record. Its fragments are marked `undecodable`, with the capture path's
+    comment, which says what arrived and why it was given up.
+  - In the fidelity sweep the packets path now matches the capture path
+    everywhere. Its 1,200 `udp-fragmented` runs, which conserved nothing,
+    conserve every datagram.
+  - Bytes move for a `.zpf` of packets holding a fragmented UDP datagram,
+    which no fixture does: 198 of 198 outputs are identical to `0.8.0`.
 - **Breaking: the fragments of a datagram that never completed are cited**
   ([#74](https://github.com/adamkjonsson/python-zipline-wire/issues/74)).
   Spec `0.24` says the pieces of a message a reassembler could not complete
@@ -87,6 +108,15 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
     whether pure ACKs are stored or not.
   - Over the fidelity sweep's 32,256 TCP runs, 281 directions move from one
     field to the other, and nothing else does.
+
+### Removed
+
+- **Breaking: `SKIP_FRAGMENTED_UDP`**, from `zpfwire` and `zpfwire.packets`
+  ([#75](https://github.com/adamkjonsson/python-zipline-wire/issues/75)).
+  A reassembled UDP datagram is now written, so the skip never happens. A
+  caller reading `stats.skipped["fragmented-udp"]` finds the datagram in the
+  output instead. One that never completed is counted under
+  `skipped["incomplete-datagram"]`, as before.
 
 ### Fixed
 

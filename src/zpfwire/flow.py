@@ -107,10 +107,12 @@ spec ``0.24`` names for the pieces of a message that never completed
   would show the fragment was there (#74).  Each fragment that arrived is
   cited, whatever its transport;
 - on a ``.zpf`` of packets, **a selected record that did not become a
-  packet**, its IP or transport header not parsing;
-- on a ``.zpf`` of packets, **a UDP datagram reassembled from fragments**,
-  which no conformant record can cite (see
-  :data:`~zpfwire.packets.SKIP_FRAGMENTED_UDP`).
+  packet**, its IP or transport header not parsing.
+
+Through ``0.8.0`` a UDP datagram reassembled from fragments on a ``.zpf`` of
+packets was marked this way too, since no record without ``seq_start`` could
+cite several input units.  Spec ``0.24`` lets a ``message`` record do so
+(zipline#166), and since ``0.9.0`` it is written (#75).
 """
 
 REASON_CHECKSUM = "bad-checksum"

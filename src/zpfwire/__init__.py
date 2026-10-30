@@ -60,7 +60,6 @@ from zpfwire.options import (
     tool_version,
 )
 from zpfwire.packets import (
-    SKIP_FRAGMENTED_UDP,
     PacketRecordReader,
     PacketSink,
     PcapExport,
@@ -100,7 +99,6 @@ __all__ = [
     "REASON_PAWS",
     "REASON_TS_MISSING",
     "REASON_UNDECODABLE",
-    "SKIP_FRAGMENTED_UDP",
     "TICK_HZ_NS",
     "TICK_HZ_US",
     "TS_ABSENT",

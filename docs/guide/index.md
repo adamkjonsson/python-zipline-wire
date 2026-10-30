@@ -15,7 +15,7 @@ except `zpfwire.fidelity` (the last row), which is imported by name:
 | `convert` | The lower half, for a caller who built their own reader |
 | `describe_source` | Hash a capture, for the Source Descriptor |
 | `CaptureReader`, `PacketView`, `SkipReason`, `IncompleteDatagram` | Reading a capture as convertible packets, and what never became one |
-| `PacketRecordReader`, `SKIP_FRAGMENTED_UDP`, `REASON_UNDECODABLE` | Reading a `.zpf` of packets the same way |
+| `PacketRecordReader`, `REASON_UNDECODABLE` | Reading a `.zpf` of packets the same way |
 | `ReassemblyOptions`, `OVERLAP_POLICIES`, `CHECKSUM_POLICIES`, `DECODER_NAME` | The policy that decides which bytes survive |
 | `ConversionStats` | What a conversion did, and what it could not do |
 | `survey`, `FlowSummary` | Looking at a capture without writing anything |

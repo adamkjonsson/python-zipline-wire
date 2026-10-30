@@ -165,17 +165,8 @@ class IncompleteDatagram:
     @property
     def comment(self) -> str:
         """Say what arrived of the datagram, and why it was given up, for its citation."""
-        what = self.protocol.upper() if self.protocol in ("tcp", "udp") else (
-            f"protocol {self.protocol}"
-        )
-        expected = (f" of {self.expected_bytes}" if self.expected_bytes is not None
-                    else ", its last fragment never arriving")
-        count = len(self.fragments)
-        return (
-            f"{count} fragment{'' if count == 1 else 's'} of {what} datagram "
-            f"{self.src} > {self.dst} id 0x{self.identification:04x}: "
-            f"{self.bytes_seen} bytes{expected}; abandoned ({self.reason})"
-        )
+        return _describe(self.protocol, self.src, self.dst, self.identification,
+                         len(self.fragments), self.bytes_seen, self.expected_bytes, self.reason)
 
 
 @dataclass(frozen=True)
@@ -583,6 +574,34 @@ def _payload_offset(packet: ParsedPacket) -> int | None:
     return packet.source_records[0].data_offset + packet.payload_offset
 
 
+def abandoned_comment(lost: _Abandoned) -> str:
+    """Describe a datagram packeteer's reassembler abandoned, for the block that cites it.
+
+    The words :attr:`IncompleteDatagram.comment` uses, so that a capture and
+    a ``.zpf`` of packets describe the same loss the same way.
+    """
+    return _describe(_protocol(lost.protocol), lost.src, lost.dst, lost.identification,
+                     len(lost.tokens), lost.bytes_seen, lost.expected_bytes, lost.reason)
+
+
+def _describe(
+    protocol: str, src: str, dst: str, identification: int, count: int,
+    bytes_seen: int, expected_bytes: int | None, reason: str,
+) -> str:
+    what = protocol.upper() if protocol in ("tcp", "udp") else f"protocol {protocol}"
+    expected = (f" of {expected_bytes}" if expected_bytes is not None
+                else ", its last fragment never arriving")
+    return (
+        f"{count} fragment{'' if count == 1 else 's'} of {what} datagram "
+        f"{src} > {dst} id 0x{identification:04x}: "
+        f"{bytes_seen} bytes{expected}; abandoned ({reason})"
+    )
+
+
+def _protocol(number: int) -> str:
+    return {socket.IPPROTO_TCP: "tcp", socket.IPPROTO_UDP: "udp"}.get(number, str(number))
+
+
 def _incomplete(lost: _Abandoned) -> IncompleteDatagram:
     """Turn packeteer's report of an abandoned datagram into where its fragments are.
 
@@ -590,9 +609,8 @@ def _incomplete(lost: _Abandoned) -> IncompleteDatagram:
     read from, whose ``data_offset`` is the first captured byte of its frame
     in the file: the byte to cite.
     """
-    protocols = {socket.IPPROTO_TCP: "tcp", socket.IPPROTO_UDP: "udp"}
     return IncompleteDatagram(
-        protocol=protocols.get(lost.protocol, str(lost.protocol)),
+        protocol=_protocol(lost.protocol),
         src=lost.src,
         dst=lost.dst,
         identification=lost.identification,

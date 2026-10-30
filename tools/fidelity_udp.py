@@ -44,6 +44,7 @@ import io
 import ipaddress
 import re
 import struct
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -856,8 +857,8 @@ class Accounting:
             frames; on the packets path, where records carry spans.
         sessions: How many sessions the file holds.
         expected_sessions: How many it should: one flow is one session, and
-            none when nothing was written, as when the packets path withholds
-            every datagram of a flow (zipline#166).
+            none when nothing was written: a flow whose every datagram is
+            withheld, as ``0.8.0``'s packets path withheld fragmented ones.
         end_reasons: Each session's end reason; ``capture-end`` expected.
 
     """
@@ -1067,7 +1068,7 @@ def score(run: Run, conversion: Conversion) -> tuple[Delivery, Accounting, Order
             1 for d in DIRECTIONS
             for r, c in zip(output.records[d], paired[d], strict=True)
             if c is not None and conversion.path == "packets"
-            and set(r.spans) != _spans(conversion, run, c)
+            and _union(r.spans) != _spans(conversion, run, c)
         ),
         sessions=len(output.end_reasons),
         expected_sessions=1 if any(output.records[d] for d in DIRECTIONS) else 0,
@@ -1133,13 +1134,30 @@ def _covered(spans: list[tuple[int, int]], start: int, end: int) -> int:
     return total
 
 
-def _spans(conversion: Conversion, run: Run, copy: Copy) -> set[tuple[int, int, int]]:
-    """Return the spans a record carrying *copy* should have: one per frame, whole."""
-    out = set()
+def _spans(conversion: Conversion, run: Run, copy: Copy) -> list[tuple[int, int, int]]:
+    """Return what a record carrying *copy* should cite: each frame, whole, merged.
+
+    Since spec ``0.24`` a reassembled datagram is one ``message`` record citing
+    every fragment (zipline#166, #75), and the stage merges adjacent ranges of
+    one input stream into one span.  So the expectation is compared as the
+    union of ranges, per input stream.
+    """
+    ranges = []
     for frame in copy.packets:
         (space, start), length = _frame_range(conversion, run, frame)
         assert space is not None
-        out.add((space, start, start + length))
+        ranges.append((space, start, start + length))
+    return _union(ranges)
+
+
+def _union(ranges: Iterable[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
+    """Merge ``(space, start, end)`` ranges that touch or overlap, per space."""
+    out: list[tuple[int, int, int]] = []
+    for space, start, end in sorted(ranges):
+        if out and out[-1][0] == space and start <= out[-1][2]:
+            out[-1] = (space, out[-1][1], max(out[-1][2], end))
+        else:
+            out.append((space, start, end))
     return out
 
 
@@ -1178,10 +1196,7 @@ def _stats(conversion: Conversion, output: Output, ledger: Ledger) -> tuple[str,
     written = sum(len(r.payload) for r in records)
     if stats.payload_bytes != written:
         out.append(f"stats.payload_bytes is {stats.payload_bytes}, the records hold {written}")
-    # A datagram withheld before its checksum is read is not counted: on the
-    # packets path, a fragmented one (zipline#166).
-    read = [c for c in ledger.copies if not (conversion.path == "packets" and c.fragmented)]
-    bad = sum(1 for c in read if not c.checksum_ok)
+    bad = sum(1 for c in ledger.copies if not c.checksum_ok)
     if stats.bad_checksum != bad:
         out.append(f"stats.bad_checksum is {stats.bad_checksum}, the ledger has {bad}")
     return tuple(out)
