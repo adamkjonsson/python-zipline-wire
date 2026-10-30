@@ -35,6 +35,188 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 
 ---
 
+## [0.9.0] - 2026-10-30
+
+**The spec `0.24` release.**  Writes spec **v0.24**
+(`zpf.SPEC_VERSION == (0, 24)`), against python-zipline **0.8.0**, now
+distributed as `python-zipline`, and packeteer **0.21.0**.
+
+**Breaking, in what every file is.**  A `0.24` file is not readable by a
+`0.23` reader, and this release reads no `0.23` file.  In an existing
+environment, `pip uninstall zpf` before installing.
+
+**Two questions this project put to the format are answered, and taken
+up.**  A UDP datagram reassembled from IP fragments in a `.zpf` of packets
+is now written, as one `message` record (zipline#166, #75), where `0.8.0`
+withheld it.  A datagram the capture saw twice is marked `copy` when zpfwire
+can tell it is one (zipline#169, #77).
+
+**One new requirement is met.**  The fragments of a datagram that never
+completed are cited on a capture, as spec `0.24` requires (zipline#170,
+#74).  TCP's are cited too.
+
+**One bug the stricter reader showed.**  `stats.gaps` did not count the
+hole under the last records of a lossy direction, so such a conversion
+reported itself `lossless` (#76).
+
+**What the fidelity sweep measured**: 42,576 conversions, none failing
+accounting.  Against `0.8.0`, only three things move:
+- the 537 runs #76 corrects;
+- 265 of those, whose missing bytes the new reader declares rather than
+  leaves past the end;
+- the 1,200 `udp-fragmented` runs on the packets path, which now match the
+  capture path.
+
+No fixture's output moves: 198 of 198 outputs are identical to `0.8.0`'s
+on the new library.
+
+### Added
+
+- **`CaptureReader.incomplete`**, the datagrams whose fragments never all
+  arrived, each an **`IncompleteDatagram`**: its transport, addresses and IP
+  identification; the capture-file byte range of each fragment that arrived;
+  and why the reassembler gave up
+  ([#74](https://github.com/adamkjonsson/python-zipline-wire/issues/74)).
+  `cite_undecoded` takes a `comment`. `REASON_UNDECODABLE` is defined in
+  `zpfwire.flow`, beside the other reasons, and is still importable from
+  `zpfwire` and `zpfwire.packets`.
+
+- **A UDP datagram the capture saw twice is marked `copy`**, when zpfwire
+  can tell
+  ([#77](https://github.com/adamkjonsson/python-zipline-wire/issues/77)).
+  Spec `0.24` adds the flag (zipline#169, filed from this project). It says
+  the record repeats its participant's preceding one and the sender sent
+  once. A reader that wants the stream as sent skips it, for instance with
+  python-zipline's `StreamView.datagrams(copies=False)`.
+  - The rule: the datagram repeats its participant's preceding datagram
+    frame for frame, under the same non-zero IP identification. A sender
+    that resends gives the datagram a new identification, and a mirror port
+    does not.
+  - A repeat with identification 0, or over IPv6, cannot be told from a
+    resend, and is written unmarked, as before.
+  - The same verdict is reached on both input paths, a fragmented datagram's
+    included.
+  - **`ConversionStats.copies`** counts the datagrams marked, with a
+    `copies` summary line, and **`PacketView.datagram_digest`** is the
+    evidence.
+
+### Changed
+
+- **Breaking: spec `0.24`, through python-zipline `0.8.0`**
+  ([#73](https://github.com/adamkjonsson/python-zipline-wire/issues/73)).
+  Every file is stamped `0.24`. Under the format's `0.x` rule a `0.23`
+  reader refuses it, and this release cannot read a `0.23` file.
+  - **The output does not change**, apart from that stamp: all 198 outputs
+    of the 22 fixtures are byte-identical to `0.8.0`'s when both run on the
+    new library.
+  - python-zipline is distributed as **`python-zipline`** since its `0.8.0`
+    (python-zipline#102), and still imported as `zpf`. So the dependency is
+    now `python-zipline @ git+https://github.com/adamkjonsson/python-zipline.git@v0.8.0`.
+    **In an existing environment, `pip uninstall zpf` before installing**, or
+    the old distribution's metadata stays behind.
+- **Breaking: a capture holding a capture-point copy of a UDP datagram
+  writes it flagged `copy`**
+  ([#77](https://github.com/adamkjonsson/python-zipline-wire/issues/77)), as
+  *Added* says. Bytes move for such a capture, which no fixture holds: 198
+  of 198 outputs are identical to `0.8.0`.
+- **Breaking: on a `.zpf` of packets, a UDP datagram reassembled from IP
+  fragments is written**, as one `message` record citing every fragment
+  ([#75](https://github.com/adamkjonsson/python-zipline-wire/issues/75)).
+  Spec `0.24` lets a record flagged `message` cite several input units, or
+  cross a declared break, because its flag says they are one message's
+  fragments (zipline#166, filed from this project).
+  - Through `0.8.0` such a datagram was withheld, and each fragment marked
+    `undecodable`. A tunnel whose inner MTU is smaller than its datagrams
+    lost every one of them.
+  - The record is stamped with its last fragment's time, as a capture
+    conversion stamps it. The `sessionized-fragments` vector stamps the
+    first, an open vector defect (zipline#175); everything else in it
+    matches.
+  - A datagram that lost a fragment is not a message, so it still gets no
+    record. Its fragments are marked `undecodable`, with the capture path's
+    comment, which says what arrived and why it was given up.
+  - In the fidelity sweep the packets path now matches the capture path
+    everywhere. Its 1,200 `udp-fragmented` runs, which conserved nothing,
+    conserve every datagram.
+  - Bytes move for a `.zpf` of packets holding a fragmented UDP datagram,
+    which no fixture does: 198 of 198 outputs are identical to `0.8.0`.
+- **Breaking: the fragments of a datagram that never completed are cited**
+  ([#74](https://github.com/adamkjonsson/python-zipline-wire/issues/74)).
+  Spec `0.24` says the pieces of a message a reassembler could not complete
+  are not content of the stream, and a reassembler reading a capture
+  **must** cite them against the `capture` source (zipline#170). Without the
+  block, the file would be byte-identical to one that withheld a whole
+  datagram.
+  - Each fragment that arrived gets an `undecodable` Undecoded block naming
+    its whole captured frame, as the `capture-fragment-lost` vector does,
+    with a `comment` saying what arrived and why it was given up.
+  - TCP is cited too. Its stream's offsets already show the hole, but the
+    fragments that arrived would otherwise leave no trace.
+  - Only a transport the conversion was asked for is cited, and a packet
+    filter does not apply, since a fragment past the first has no ports.
+  - The tally under `skipped["incomplete-datagram"]` stays.
+  - Bytes move for a capture holding such a datagram, which no fixture does:
+    198 of 198 outputs are identical to `0.8.0`.
+- **Breaking: `zpfwire.fidelity` measures a lost tail as the `0.24` reader
+  shows it.** Since spec `0.24` (zipline#168), a transport stream's extent
+  counts sequence numbers to the furthest point a record reaches. A pure ACK
+  stored past a lost tail, or past a lost FIN, therefore makes the range
+  below it a declared hole, and `StreamView.chunks()` yields it as a
+  trailing `Gap`.
+  - `ByteScore.missing_past_end` now counts only a tail nothing reaches, and
+    such a tail counts under `missing_declared`. The total is unchanged.
+  - `Accounting.holes` counts holes to that extent, a lost FIN included,
+    whether pure ACKs are stored or not.
+  - Over the fidelity sweep's 32,256 TCP runs, 281 directions move from one
+    field to the other, and nothing else does.
+
+### Removed
+
+- **Breaking: `SKIP_FRAGMENTED_UDP`**, from `zpfwire` and `zpfwire.packets`
+  ([#75](https://github.com/adamkjonsson/python-zipline-wire/issues/75)).
+  A reassembled UDP datagram is now written, so the skip never happens. A
+  caller reading `stats.skipped["fragmented-udp"]` finds the datagram in the
+  output instead. One that never completed is counted under
+  `skipped["incomplete-datagram"]`, as before.
+
+### Fixed
+
+- **`stats.gaps` counts the hole under the records a direction writes
+  last**, so a lossy conversion no longer reports itself `lossless`
+  ([#76](https://github.com/adamkjonsson/python-zipline-wire/issues/76)).
+  At the end of a session a direction may still write a FIN whose data
+  never all arrived, and pure ACKs held ahead of every placed byte. Each is
+  a record past bytes that never arrived. Since spec `0.24` a reader shows
+  the range below it as a `Gap`, but `stats.gaps` did not count it. Three
+  shapes are affected:
+  - a lost tail with a pure ACK after it;
+  - a lost FIN with the final ACK one past it, which leaves a one-wide hole
+    at the FIN's number;
+  - a FIN captured past lost data.
+
+  The fidelity sweep found 537 conversions whose stats disagreed with
+  their own file, and now finds none. No file byte moves, and no fixture
+  has the shape.
+
+### Documentation
+
+- **Sample output that had drifted since `0.7.0` is current.** The `convert`
+  page's summary of `retransmission.pcap` shows 134 records, not 135. The
+  lossy summary on that page and in the README shows `packet_loss.pcap`'s
+  133, not 105. Both moved with `0.7.0`'s record boundaries, and the `Note:`
+  is printed on one line, as the CLI prints it. Every other sample was rerun
+  and matches, and every Python example in the README and the guides runs.
+- **The API reference lists `cite_undecoded`, `REASON_CHECKSUM` and
+  `CHECKSUM_POLICIES`**, which are public and had no entry. Six docstrings
+  no longer render their opening phrase as a type, among them
+  `ByteScore.fidelity` and the `TS_ABSENT` and `TS_STALE` keys.
+- The upstream-first page records which issues `0.24` answered, the testing
+  page says the suite is about 1,700 tests, and the cost of storing pure
+  ACKs is re-measured on python-zipline `0.8.0`: about 20% more conversion
+  time, where `0.6.0` measured 30%.
+
+---
+
 ## [0.8.0] - 2026-10-27
 
 **The UDP release.**  Writes spec **v0.23** (`zpf.SPEC_VERSION == (0, 23)`),
@@ -1447,7 +1629,8 @@ than what changed since a previous one.
 
 ---
 
-[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/adamkjonsson/python-zipline-wire/compare/v0.5.0...v0.6.0

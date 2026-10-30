@@ -129,10 +129,10 @@ is recognised by the TCP Timestamps option; see
 """
 
 TS_ABSENT = "absent"
-"""Fallback key: a repeat could not be judged because one side lacked the option."""
+"""Fallback key for a repeat not judged because one side lacked the option."""
 
 TS_STALE = "stale"
-"""Fallback key: a repeat could not be judged because its original had aged out."""
+"""Fallback key for a repeat not judged because its original had aged out."""
 
 _DUPLICATE = "duplicate"
 _RETRANSMIT = "retransmit"
@@ -574,13 +574,16 @@ class TcpFlow(FlowTracker):
             # A FIN whose preceding bytes never all came: nothing will end
             # where it sits, so it is a record of its own, before the ACKs
             # that followed it (#60).
-            if (
+            fin_last = (
                 stream.fin_deferred is not None
                 and not stream.fin_placed
                 and stream.fin_seq is not None
                 and stream.next_seq is not None
                 and _delta(stream.fin_seq, stream.next_seq) >= 0
-            ):
+            )
+            self._commit_tail(stream, fin=fin_last)
+            if fin_last:
+                assert stream.fin_deferred is not None
                 flags, origin, ts, ack = stream.fin_deferred
                 stream.fin_deferred = None
                 self._write_fin(stream, flags, origin, ts=ts, ack=ack)
@@ -601,6 +604,42 @@ class TcpFlow(FlowTracker):
         if self._split_reason is not None:
             return self._split_reason
         return END_TIMEOUT if self.timed_out else END_CAPTURE_END
+
+    def _commit_tail(self, stream: _Stream, *, fin: bool) -> None:
+        """Commit the holes below the records a closing direction writes last (#76).
+
+        Past every placed byte there may still come a FIN whose preceding
+        bytes never all arrived, written at its own number, and pure ACKs
+        held ahead of the frontier, written at theirs.  Each is a record
+        emitted past bytes that never arrived, so the range below it is a
+        gap, as one below held data is in :meth:`_commit_remaining`.  Since
+        spec ``0.24`` a transport extent runs to the furthest point a record
+        reaches (zipline#168), and a reader shows each such range as a
+        ``Gap``.  A FIN occupies its one number, so an ACK just past it
+        leaves no hole; a FIN that was never captured occupies nothing, and
+        an ACK past its number leaves that number a hole.
+
+        Args:
+            stream: The direction being closed.
+            fin: Whether a deferred FIN will be written at ``fin_seq``.
+
+        """
+        if stream.next_seq is None:
+            return
+        holes: list[tuple[int, int]] = []
+        if fin:
+            assert stream.fin_seq is not None
+            if _delta(stream.fin_seq, stream.next_seq) > 0:
+                holes.append((stream.next_seq, stream.fin_seq))
+            edge = _advance(stream.fin_seq, 1)
+        else:
+            edge = self._frontier(stream)
+        reach = max((_delta(held.seq, edge) for held in stream.held_acks), default=0)
+        if reach > 0:
+            holes.append((edge, _advance(edge, reach)))
+        for start, end in holes:
+            stream.committed_gaps.append(_Gap(start, end, None))
+            self._stats.gaps += 1
 
     # ── participants ────────────────────────────────────────────────────
 

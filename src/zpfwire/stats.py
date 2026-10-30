@@ -55,6 +55,12 @@ class ConversionStats:
             statement about the capture: set it beside :attr:`packets` and
             it says how much of the file is doubled.
         duplicate_bytes: Payload bytes those copies carried, all discarded.
+        copies: UDP datagrams written with the ``copy`` flag: a capture point's
+            copy of the participant's preceding datagram, the same frames
+            seen twice, with a non-zero IP identification (#77).  Written,
+            since a datagram may not be withheld, and marked.  A repeat
+            zpfwire cannot tell from a resend is written unmarked, and not
+            counted here.
         paws_bytes: Payload bytes discarded because the segment's TSval was
             older than the last accepted in order — an old segment from
             before a sequence wrap, which a receiver drops whole (RFC 7323
@@ -147,6 +153,7 @@ class ConversionStats:
     overlap_bytes: int = 0
     duplicates: int = 0
     duplicate_bytes: int = 0
+    copies: int = 0
     paws_bytes: int = 0
     wrap_resolved: int = 0
     acked_swaps: int = 0
@@ -215,6 +222,11 @@ class ConversionStats:
             lines.append(
                 f"duplicates   {self.duplicates} of {self.packets} packets were copies, "
                 f"{self.duplicate_bytes} bytes (discarded)",
+            )
+        if self.copies:
+            lines.append(
+                f"copies       {self.copies} UDP datagram(s) seen twice "
+                "(written, flagged copy)",
             )
         lines += self._timestamp_lines()
         if self.bad_checksum:

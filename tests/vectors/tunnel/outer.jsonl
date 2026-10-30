@@ -1,4 +1,4 @@
-{"type":"file","format":"zipline-payload/0.23","tick_hz":1000000,"creator":"zpf-sessionize 1.0"}
+{"type":"file","format":"zipline-payload/0.24","tick_hz":1000000,"creator":"zpf-sessionize 1.0"}
 {"type":"source","source_id":1,"kind":"capture","uri":"wg.pcap","link_type":1}
 {"type":"session","session_id":1,"proto":"udp","key":"198.51.100.7:51820 -> 203.0.113.9:51820"}
 {"type":"participant","session_id":1,"pid":0,"adjacency":"contiguous","endpoint":["198.51.100.7:51820"]}

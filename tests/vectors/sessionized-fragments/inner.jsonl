@@ -1,0 +1,12 @@
+{"type":"file","format":"zipline-payload/0.24","tick_hz":1000000,"produced_by":"zpf-sessionize 1.0","produced_at":1719700100}
+{"type":"source","source_id":1,"kind":"zpf-input","uri":"packets.zpf","digest":"sha256:3a80f4ed9714d4abf2ed72029cb7b86c18e467a8a801f53a49c4c3885cb6c646"}
+{"type":"decoder","decoder_id":1,"output_layer":"transport","name":"udp-reassembly","version":"1.1"}
+{"type":"session","session_id":20,"proto":"udp"}
+{"type":"participant","session_id":20,"pid":0,"adjacency":"contiguous","endpoint":["10.8.0.2:5000"]}
+{"type":"record","session_id":20,"sender_pid":0,"source_id":1,"ts":1000,"flags":["message"],"payload":"ZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZA==","decoder_id":1,"spans":[{"source_id":1,"session_id":5,"pid":0,"off_start":0,"off_end":52},{"source_id":1,"session_id":5,"pid":0,"off_start":92,"off_end":128}]}
+{"type":"session_end","session_id":20,"input_extents":[{"source_id":1,"session_id":5,"pid":0,"extent":128}]}
+{"type":"session","session_id":21,"proto":"udp"}
+{"type":"participant","session_id":21,"pid":0,"adjacency":"contiguous","endpoint":["10.8.0.2:5001"]}
+{"type":"record","session_id":21,"sender_pid":0,"source_id":1,"ts":1100,"flags":["message"],"payload":"ZWVlZWVlZWVlZWVl","decoder_id":1,"spans":[{"source_id":1,"session_id":5,"pid":0,"off_start":52,"off_end":92}]}
+{"type":"session_end","session_id":21,"input_extents":[{"source_id":1,"session_id":5,"pid":0,"extent":128}]}
+{"type":"end"}

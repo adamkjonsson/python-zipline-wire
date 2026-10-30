@@ -111,7 +111,7 @@ One per run of contiguous stream bytes, or one per datagram for UDP.
 | `payload` | The stream bytes |
 | `seq_start` | The absolute wire sequence number of the first payload byte (TCP) |
 | `ack` | The serial **maximum** of the acknowledgement numbers on the packets that contributed bytes (TCP) — acks are cumulative, so it is the strongest statement the run can make that is certainly true |
-| `flags` | `PSH` / `FIN` / `RST` / `URG` as seen; `RETRANSMIT` when the sender resent bytes of the record's range — see below; `MESSAGE` for a UDP datagram |
+| `flags` | `PSH` / `FIN` / `RST` / `URG` as seen; `RETRANSMIT` when the sender resent bytes of the record's range — see below; `MESSAGE` for a UDP datagram; `COPY` for a UDP datagram that repeats its participant's preceding one frame for frame, under the same non-zero IP identification: the capture point saw it twice (since `0.9.0`) |
 | `decoder` | The reassembly decoder |
 
 One record is not a byte run: the **handshake record**, written once per
@@ -175,7 +175,8 @@ Written for bytes that are in the capture and reached no record.
 | `source_id` | The capture source |
 | `session_id`, `participant_id` | **`0`** — against a capture source there is no input `.zpf`, so there is no id namespace to name |
 | `off_start`, `off_end` | Byte offsets **into the capture file**, half-open |
-| `reason` | `overlap-discarded` or `duplicate-discarded` for a repeat; `late-arrival`, `late-reordered` or `late-retransmitted` for a byte inside a committed gap; `paws-rejected`; `bad-checksum` for a TCP segment under `checksum="drop"` — see {doc}`../api/flow` |
+| `reason` | `overlap-discarded` or `duplicate-discarded` for a repeat; `late-arrival`, `late-reordered` or `late-retransmitted` for a byte inside a committed gap; `paws-rejected`; `bad-checksum` for a TCP segment under `checksum="drop"`; `undecodable` for each fragment that arrived of a datagram that never completed, its whole frame (since `0.9.0`) — see {doc}`../api/flow` |
+| `comment` | For an incomplete datagram, what arrived of it and why it was abandoned; otherwise none |
 | `reason_class` | `bytes` |
 | `decoder_id` | The reassembly decoder |
 

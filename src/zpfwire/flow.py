@@ -36,6 +36,7 @@ __all__ = [
     "REASON_OVERLAP",
     "REASON_PAWS",
     "REASON_TS_MISSING",
+    "REASON_UNDECODABLE",
     "CaptureSink",
     "FlowKey",
     "FlowTracker",
@@ -92,6 +93,26 @@ receiver accepted in order is an old segment whose sequence numbers have
 come round again, and a receiver drops it whole.  Applied only to segments
 that would otherwise contribute bytes; a repeat of accepted bytes is judged
 as a repeat, whatever its clock.
+"""
+
+REASON_UNDECODABLE = "undecodable"
+"""Undecoded reason for input that a stage tried to turn into a packet, and could not.
+
+The specification's canonical word for *the stage tried and failed*, which
+spec ``0.24`` names for the pieces of a message that never completed
+(zipline#170).  Its ``comment`` says which case:
+
+- **a fragment of a datagram that never completed**, on either path.  On a
+  capture, spec ``0.24`` makes the block a ``MUST``: nothing else in the file
+  would show the fragment was there (#74).  Each fragment that arrived is
+  cited, whatever its transport;
+- on a ``.zpf`` of packets, **a selected record that did not become a
+  packet**, its IP or transport header not parsing.
+
+Through ``0.8.0`` a UDP datagram reassembled from fragments on a ``.zpf`` of
+packets was marked this way too, since no record without ``seq_start`` could
+cite several input units.  Spec ``0.24`` lets a ``message`` record do so
+(zipline#166), and since ``0.9.0`` it is written (#75).
 """
 
 REASON_CHECKSUM = "bad-checksum"
@@ -200,6 +221,7 @@ def cite_undecoded(
     reason: str,
     decoder: DecoderHandle | None,
     stats: ConversionStats,
+    comment: str | None = None,
 ) -> None:
     """Declare capture bytes that reached no record.
 
@@ -219,9 +241,12 @@ def cite_undecoded(
         length: How many bytes the region covers.
         reason: Why the region went undecoded; see :data:`REASON_OVERLAP`,
             :data:`REASON_DUPLICATE`, :data:`REASON_LATE` and its two
-            refinements, :data:`REASON_PAWS` and :data:`REASON_CHECKSUM`.
+            refinements, :data:`REASON_PAWS`, :data:`REASON_CHECKSUM` and
+            :data:`REASON_UNDECODABLE`.
         decoder: The stage that discarded the bytes.
         stats: Tally to record the block, or the failure to place it, in.
+        comment: What the block's ``reason`` alone cannot say, such as which
+            fragments of a datagram never arrived.
 
     """
     if length <= 0:
@@ -240,6 +265,7 @@ def cite_undecoded(
         reason=reason,
         reason_class=_BYTES_EXIST,
         decoder=decoder,
+        comment=comment,
     )
     stats.undecoded_regions += 1
 
@@ -413,7 +439,7 @@ class CaptureSink(RecordSink):
         )
 
     def undecoded(self, off_start: int | None, length: int, *, reason: str) -> None:
-        """Declare capture bytes that reached no record; see :func:`cite_undecoded`.
+        """Declare capture bytes that reached no record; see :func:`~zpfwire.flow.cite_undecoded`.
 
         Args:
             off_start: Byte offset of the region in the capture file, or

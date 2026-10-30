@@ -17,7 +17,7 @@ It is glue, and deliberately so:
   mapping onto the specification's model.
 
 **Status: early.** The format itself is `0.x` and says it is not ready for
-production; this is a first implementation against `0.23`.
+production; this is a first implementation against `0.24`.
 
 Full documentation lives in `docs/` — build it with `cd docs && make html`.
 This README is the short version.
@@ -123,11 +123,10 @@ $ zpfwire convert lossy.pcap -o lossy.zpf
 packets      193
 converted    193
 sessions     1
-records      105 (95 pure ACKs)
+records      133 (95 pure ACKs)
 payload      71617 bytes
 gaps         6
-Note: some bytes never reached the output. Raise --reorder-window or
---flush-timeout to wait longer.
+Note: some bytes never reached the output. Raise --reorder-window or --flush-timeout to wait longer.
 ```
 
 | Flag | What it decides |
@@ -137,7 +136,7 @@ Note: some bytes never reached the output. Raise --reorder-window or
 | `--overlap {favor-old,favor-acked}` | which copy wins when retransmitted bytes disagree — the first seen, or the one the receiver's acknowledgement echoed |
 | `--session-timeout SECONDS` | silence after which a conversation is closed |
 | `--no-coalesce` | one record per segment instead of per contiguous byte run |
-| `--no-pure-acks` | fold each pure ACK's `ack` into the next data record instead of storing it, as before `0.6.0`: about a fifth smaller and faster to write, but readers lose the ordering and timing the pure ACKs carry |
+| `--no-pure-acks` | fold each pure ACK's `ack` into the next data record instead of storing it, as before `0.6.0`: about a fifth smaller and a sixth faster to write, but readers lose the ordering and timing the pure ACKs carry |
 | `--checksum {ignore,drop}` | whether to discard a TCP segment whose checksum does not verify; a UDP datagram is always kept |
 | `--acked-hold SECONDS` | under `favor-acked`, how long a run may wait for the receiver's ack, for paths whose resend comes later than `--flush-timeout` |
 | `--require-timestamps` | drop a segment lacking the TCP Timestamps option on a connection that negotiated it (RFC 7323 §3.2), which keeps forged segments out |

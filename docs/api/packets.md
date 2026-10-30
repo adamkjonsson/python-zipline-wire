@@ -53,15 +53,3 @@ python-zipline's sessionization stage, whose records cite input packets.
 .. autoclass:: zpfwire.packets.PacketSink
    :members:
 ```
-
----
-
-## Reasons and skip keys
-
-```{eval-rst}
-.. autodata:: zpfwire.packets.REASON_UNDECODABLE
-```
-
-```{eval-rst}
-.. autodata:: zpfwire.packets.SKIP_FRAGMENTED_UDP
-```

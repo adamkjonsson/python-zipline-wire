@@ -123,10 +123,16 @@ region is a range of `outer.zpf`, not of this file's input.  The chain stays
 walkable all the same — the records either side of the hole cite the
 packets either side of the input's break.
 
-UDP has no sequence numbers, so a UDP record cites one packet.  A UDP datagram
-**reassembled from IP fragments** would cite several, which no record without
-`seq_start` may; its fragments are marked `undecodable` and counted under
-`SKIP_FRAGMENTED_UDP` (zipline#166).  Fragmented TCP is one record.
+UDP has no sequence numbers, so a UDP record usually cites one packet.  A UDP
+datagram **reassembled from IP fragments** is one record citing every
+fragment: since spec `0.24` a record flagged `message` may cite several input
+units, or cross a declared break, because its flag says the units are one
+message's fragments (zipline#166).  Through `0.8.0` such a datagram was marked
+`undecodable` instead.  It is stamped with its last fragment's time, as a
+capture conversion stamps it.  A datagram that lost a fragment is not a
+message, so it gets no record, and each fragment that arrived is marked
+`undecodable`, with a comment saying what arrived (zipline#170).  Fragmented
+TCP is one record, as it always was.
 
 ## Order
 

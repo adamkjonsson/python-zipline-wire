@@ -6,8 +6,9 @@
 It is glue: it owns no file format and no packet parser of its own.
 
 - **packeteer** (`../packeteer`) parses captures and packets.
-- **zpf** (`../python-zipline`, import name `zpf`) reads and writes `.zpf`
-  against **spec v0.23** — `zpf.SPEC_VERSION` is the single source of truth.
+- **zpf** (`../python-zipline`, distributed as `python-zipline`, import name
+  `zpf`) reads and writes `.zpf` against **spec v0.24** — `zpf.SPEC_VERSION` is
+  the single source of truth.
 - The specification itself lives in `../zipline/docs/zipline-payload-format.md`.
 
 The output of a capture conversion is a **capture-sourced, transport-layer**
@@ -153,6 +154,9 @@ running whatever is checked out. So:
   a benchmark) runs in `.venv`, or in a throwaway venv on the tag.
 - **Reinstalling zpfwire in `.venv-dev`** takes `--no-deps`, or pip puts
   the release tags back over the checkouts.
+- **An existing venv from before `0.9.0`** has zpf installed under its old
+  distribution name, `zpf`. `pip uninstall zpf` before installing, or that
+  distribution's metadata stays behind beside `python-zipline`.
 - **A new sibling release** moves the tag in `pyproject.toml`'s
   `dependencies`, the only place it is named. Never declare a sibling by
   name: both names are taken on PyPI by other projects.

@@ -104,7 +104,7 @@ class ReassemblyOptions:
             cites the packet instead of leaving it ``skipped``. It costs a
             record per pure ACK, and there are about as many pure ACKs as
             data segments: on a 4,140-packet HTTP capture, 23% more output
-            and about 30% more conversion time, mostly the ``zpf`` writer's
+            and about 20% more conversion time, mostly the ``zpf`` writer's
             per-record work. A cost paid once when writing, for information
             every reader gets, since a file is read far more often than
             written. ``False`` folds each ``ack`` into the next data record

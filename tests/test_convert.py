@@ -12,6 +12,7 @@ from helpers import (
     TCP_PSH,
     Seg,
     capture_of,
+    fragmented_frames,
     tcp_segments,
     to_zpf,
     udp_packet,
@@ -19,6 +20,7 @@ from helpers import (
 
 from zpfwire import (
     DECODER_NAME,
+    REASON_UNDECODABLE,
     CaptureReader,
     ReassemblyOptions,
     SkipReason,
@@ -392,3 +394,71 @@ def test_the_packet_count_includes_the_packets_that_were_skipped(
 def test_bad_options_are_rejected(kwargs: dict[str, object], match: str):
     with pytest.raises(ValueError, match=match):
         ReassemblyOptions(**kwargs)  # type: ignore[arg-type]
+
+
+# ── #74: the fragments of a datagram that never completed are cited ────
+
+
+def _orphan(*, tcp: bool = False) -> list[bytes]:
+    """Return the first fragment of a datagram whose second never arrives.
+
+    The shape of the ``capture-fragment-lost`` vector: a 66-byte frame,
+    which as the capture's first record sits at bytes ``[40, 106)``.
+    """
+    first, _second = fragmented_frames(payload=b"e" * 40, mtu=52, identification=0x1234,
+                                       tcp=tcp)
+    return [first]
+
+
+@pytest.mark.parametrize("tcp", [False, True], ids=["udp", "tcp"])
+def test_the_fragment_of_an_incomplete_datagram_is_cited(tmp_path: pathlib.Path, tcp: bool):
+    """Spec 0.24 makes the block a MUST on a capture (zipline#170, #74); TCP is cited too.
+
+    Its pieces are not content, so they get no record.  Without the block,
+    the file would be byte-identical to one that withheld a whole datagram.
+    The block names the orphan fragment's whole frame, as the vector does.
+    """
+    other = udp_packet(src_port=5001, payload=b"another flow")
+    out = to_zpf(capture_of([*_orphan(tcp=tcp), other]), tmp_path)
+
+    (block,) = out.undecoded
+    assert (block.off_start, block.off_end) == (40, 106)
+    assert block.reason == REASON_UNDECODABLE
+    assert block.reason_class == "bytes"
+    assert block.comment == (
+        f"1 fragment of {'TCP' if tcp else 'UDP'} datagram 10.0.0.1 > 10.0.0.2 id 0x1234: "
+        "32 bytes, its last fragment never arriving; abandoned (timeout)"
+    )
+    assert out.stats.skipped[SkipReason.INCOMPLETE_DATAGRAM] == 1
+    assert out.stats.undecoded_regions == 1
+    assert [r.payload for s in out.sessions for r in s.records] == [b"another flow"]
+
+
+def test_every_fragment_that_arrived_is_cited_once(tmp_path: pathlib.Path):
+    """One block per frame: a datagram missing its middle fragment leaves two."""
+    frames = fragmented_frames(identification=0x2222)
+    assert len(frames) >= 3
+    out = to_zpf(capture_of([frames[0], *frames[2:]]), tmp_path)
+
+    spans = [(b.off_start, b.off_end) for b in out.undecoded]
+    assert len(spans) == len(frames) - 1
+    assert spans == sorted(spans)
+    assert all(a[1] < b[0] for a, b in zip(spans, spans[1:], strict=False))
+    assert {b.reason for b in out.undecoded} == {REASON_UNDECODABLE}
+
+
+def test_a_transport_not_asked_for_is_not_cited(tmp_path: pathlib.Path):
+    """Its whole packets reach no flow either: they are counted, as before."""
+    out = to_zpf(capture_of([*_orphan(), udp_packet(payload=b"x")]), tmp_path, udp=False,
+                 tcp=True)
+
+    assert out.undecoded == []
+    assert out.stats.skipped[SkipReason.INCOMPLETE_DATAGRAM] == 1
+
+
+def test_a_complete_datagram_is_cited_nowhere(tmp_path: pathlib.Path):
+    out = to_zpf(capture_of(fragmented_frames(identification=0x3333)), tmp_path)
+
+    assert out.undecoded == []
+    assert SkipReason.INCOMPLETE_DATAGRAM not in out.stats.skipped
+

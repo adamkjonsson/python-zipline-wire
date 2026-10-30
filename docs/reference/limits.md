@@ -20,17 +20,23 @@ run has no media type.
 the one thing spans would otherwise have carried.  A conversion of a `.zpf`
 of packets is zpf-sourced, and its records do carry them.
 
-**A UDP datagram the capture saw twice is written twice, unmarked.**  A
+**A UDP datagram the capture saw twice is written twice.**  A
 transport-layer stage may not withhold content from a stream without
 sequence numbers (spec §Discontinuity). So a copy from a mirror port, a
 two-interface capture or a veth pair is a second `message` record, where TCP
 discards such a copy and cites it `duplicate-discarded`.  A corrupt
 datagram is kept the same way, under `--checksum drop` too, and so is a
-reordered one, in the order it arrived.  The format has no way to mark a
-record as a capture-point copy:
+reordered one, in the order it arrived.  Since `0.9.0` the copy is flagged
+`copy` (spec `0.24`,
 [zipline#169](https://github.com/adamkjonsson/zipline/issues/169), filed
-from this project.  Often a copy could not be told from an application
-resending the same bytes anyway, as a DNS client retrying a query does.
+from this project), so a reader can skip it, **but only when zpfwire can
+tell it is one**: it repeats its participant's preceding datagram frame for
+frame, under the same non-zero IP identification.  An application
+resending the same bytes, as a DNS client retrying a query does, gets a new
+identification.  With identification 0, as a sender with DF set may leave
+it, the two cannot be told apart, and the copy is written unmarked.  So is
+one whose frames differ, as on a two-interface capture where the link
+headers differ.
 
 **No `Discontinuity` blocks.** A transport stream expresses its gaps in its
 offsets.  See {doc}`zpf-mapping`.
@@ -172,15 +178,6 @@ The contributing records are known, so emitting one block per fragment is
 possible; it is not done.
 
 ## A `.zpf` of packets as input
-
-**A fragmented UDP datagram is not converted.**  Its fragments are separate
-input records, and only a record carrying `seq_start` may cite several input
-units (spec `0.22`); a UDP record has none.  The fragments are marked
-`undecodable` and counted under `SKIP_FRAGMENTED_UDP`.  Whether the
-permission should extend to a datagram reassembled from IP fragments, whose
-offsets prove the join as sequence numbers do, is
-[zipline#166](https://github.com/adamkjonsson/zipline/issues/166), filed from
-this project.  Fragmented TCP is unaffected.
 
 **Each input stream is read in stored order**, and the streams are merged by
 timestamp.  A decryptor writes each tunnel direction in time order, which is

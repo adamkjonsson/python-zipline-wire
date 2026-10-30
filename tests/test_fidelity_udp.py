@@ -318,18 +318,21 @@ def test_checksum_drop_keeps_a_corrupt_datagram(seed: int):
 
 
 @pytest.mark.parametrize("seed", range(10))
-def test_the_packets_path_withholds_a_fragmented_datagram_and_cites_it(seed: int):
-    """zipline#166: no record without ``seq_start`` may cite several input records."""
-    r = prototype(seed, FRAGMENTING, **dataclasses.asdict(ALL))
-    m = measure(r, path="packets")
+def test_the_packets_path_writes_a_fragmented_datagram_as_the_capture_path_does(seed: int):
+    """Since spec 0.24 a ``message`` record may cite several input units (zipline#166, #75).
 
-    fragmented = sum(1 for c in r.ledger.copies if c.fragmented)
-    assert fragmented
-    assert m.accounting.failures() == []
-    assert m.delivery.cited == fragmented
-    assert m.delivery.written == len(r.ledger.copies) - fragmented
-    # The capture path writes them all.
-    assert measure(r).delivery.conservation == 1
+    Through ``0.8.0`` the packets path withheld every fragmented datagram,
+    and cited its fragments.  Now it writes each as one record, citing them,
+    so the two paths differ nowhere.
+    """
+    r = prototype(seed, FRAGMENTING, **dataclasses.asdict(ALL))
+    packets, capture = measure(r, path="packets"), measure(r)
+
+    assert sum(1 for c in r.ledger.copies if c.fragmented)
+    assert packets.accounting.failures() == []
+    assert packets.delivery.conservation == capture.delivery.conservation == 1
+    assert packets.delivery.cited == 0
+    assert packets.delivery == capture.delivery
 
 
 def test_a_fragmented_datagram_is_stamped_with_its_last_fragment():
@@ -435,12 +438,31 @@ def test_a_timestamp_moved_by_a_microsecond_is_caught(lossless: tuple[Run, Conve
     assert accounting.mistimed == 1
 
 
-def test_a_citation_removed_is_a_datagram_lost_quietly():
+def test_a_datagram_withheld_is_cited_whole_or_lost_quietly_in_part():
+    """The citation check, on a datagram replaced by a citation of its frames.
+
+    No generated flow withholds anything since #75, so the mutation makes
+    one: one fragmented datagram's record removed and its frames cited, as
+    ``0.8.0`` wrote it.  Cited whole, it is withheld and accounted for.
+    With one fragment's citation removed, it is cited in part.
+    """
     r = prototype(mtu=FRAGMENTING)
     conversion = measure(r, path="packets").conversion
-    _, accounting, _ = _rescored(r, conversion, undecoded=conversion.output.undecoded[1:])
+    copy = next(c for c in r.ledger.copies if c.fragmented and c.direction == "c2s")
+    frames = []
+    for frame in copy.packets:
+        space, start = conversion.frames[frame]
+        frames.append((space, start, start + len(r.stream.packets[frame].raw) - 14,
+                       "undecodable"))
+    withheld = _records(conversion, "c2s",
+                        lambda rs: [w for w in rs if w.payload != copy.payload])
 
-    # The first fragmented datagram's first fragment is now uncited.
+    delivery, accounting, _ = _rescored(r, conversion, **withheld, undecoded=tuple(frames))
+    assert (delivery.withheld, delivery.cited) == (1, 1)
+    # The stats still count the removed record; the citation itself holds.
+    assert (accounting.quiet, accounting.partial, accounting.doubled) == (0, 0, 0)
+
+    _, accounting, _ = _rescored(r, conversion, **withheld, undecoded=tuple(frames[1:]))
     assert accounting.partial == 1
 
 
@@ -463,7 +485,7 @@ def test_a_span_naming_the_wrong_frame_is_misattributed():
     ("corruption", None, "capture", {"altered": 77, "written": 400}),
     ("reorder", None, "capture", {"written": 400}),
     ("clean", FRAGMENTING, "capture", {"written": 400}),
-    ("clean", FRAGMENTING, "packets", {"withheld": 240, "cited": 240, "written": 160}),
+    ("clean", FRAGMENTING, "packets", {"withheld": 0, "cited": 0, "written": 400}),
 ])
 def test_the_prototype_table_reproduces(
     impairment: str, mtu: int | None, path: str, expected: dict[str, int],
@@ -478,13 +500,18 @@ def test_the_prototype_table_reproduces(
     assert totals == expected
 
 
-def test_a_flow_the_packets_path_withholds_whole_opens_no_session():
-    """Every datagram fragmented, every one cited: nothing to write, so no session (zipline#166)."""
-    shape = (("c2s", 2000), ("s2c", 3000)) * 5
-    r = run(Scenario(shape=shape, mtu=FRAGMENTING))
-    m = measure(r, path="packets")
+def test_a_file_with_no_record_is_owed_no_session():
+    """A flow whose every datagram is withheld writes nothing, and opens no session.
 
-    assert m.accounting.sessions == m.accounting.expected_sessions == 0
-    assert m.accounting.failures() == []
-    assert m.delivery.cited == len(shape)
-    assert measure(r).accounting.sessions == 1
+    ``0.8.0``'s packets path did this to a flow of fragmented datagrams.
+    None does now, so the expectation is held by mutation: every record
+    removed, the file's one session dropped, and nothing fails on its
+    account.
+    """
+    r = prototype()
+    conversion = measure(r).conversion
+    _, accounting, _ = _rescored(r, conversion, records={"c2s": (), "s2c": ()}, timeline=(),
+                                 end_reasons=())
+
+    assert accounting.sessions == accounting.expected_sessions == 0
+    assert not any("session" in f for f in accounting.failures())

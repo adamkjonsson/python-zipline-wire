@@ -1,0 +1,9 @@
+{"type":"file","format":"zipline-payload/0.24","tick_hz":1000000,"produced_by":"zpf-wg 0.3","produced_at":1719700000}
+{"type":"source","source_id":1,"kind":"capture","uri":"wg.pcap"}
+{"type":"decoder","decoder_id":1,"output_layer":"decoded","name":"wireguard-decrypt","version":"0.3"}
+{"type":"session","session_id":5,"proto":"ip"}
+{"type":"participant","session_id":5,"pid":0,"adjacency":"units","endpoint":["10.8.0.2"]}
+{"type":"record","session_id":5,"sender_pid":0,"source_id":1,"ts":1000,"payload":"RQAANBI0IABAETRrCggAAgoIAAkTiBTpADDrKmRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZA==","decoder_id":1,"content_type":"net:ip"}
+{"type":"record","session_id":5,"sender_pid":0,"source_id":1,"ts":1100,"payload":"RQAAKAAAQABAESarCggAAgoIAAkTiQA1ABR3jWVlZWVlZWVlZWVlZQ==","decoder_id":1,"content_type":"net:ip"}
+{"type":"record","session_id":5,"sender_pid":0,"source_id":1,"ts":1200,"payload":"RQAAJBI0AARAEVR3CggAAgoIAAlkZGRkZGRkZGRkZGRkZGRk","decoder_id":1,"content_type":"net:ip"}
+{"type":"end"}

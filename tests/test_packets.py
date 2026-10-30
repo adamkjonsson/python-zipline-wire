@@ -40,8 +40,8 @@ from test_tcp import ISN, PAST_THE_WRAP, handshake
 from zpfwire import (
     OVERLAP_POLICIES,
     REASON_UNDECODABLE,
-    SKIP_FRAGMENTED_UDP,
     ReassemblyOptions,
+    SkipReason,
     capture_to_zpf,
     input_kind,
     packets_to_zpf,
@@ -237,33 +237,106 @@ def test_the_tunnel_vectors_packets_rebuild_its_inner_file(tmp_path: pathlib.Pat
 # ── what the stage owes, and what it cannot yet do ──────────────────────
 
 
-def _fragmented_udp() -> io.BytesIO:
+def _fragmented_udp_frames() -> list[bytes]:
     """One UDP datagram, fragmented in three, over IPv4 with no checksum."""
     payload = bytes(range(256)) * 4
     datagram = struct.pack("!HHHH", 12345, 53, 8 + len(payload), 0) + payload
     header = IPHeader("10.0.0.1", "10.0.0.2", socket.IPPROTO_UDP, identification=4242)
     eth = EthernetHeader("00:00:00:00:00:02", "00:00:00:00:00:01")
-    return capture_of(fragment_ipv4(header, datagram, mtu=400, eth_header=eth))
+    return fragment_ipv4(header, datagram, mtu=400, eth_header=eth)
 
 
-def test_a_fragmented_udp_datagram_is_marked_undecodable(tmp_path: pathlib.Path):
-    """No record without ``seq_start`` may cite several input units (zipline#166).
+def _fragmented_udp() -> io.BytesIO:
+    return capture_of(_fragmented_udp_frames())
 
-    A capture conversion writes the reassembled datagram.  Over a ``.zpf``
-    each fragment is its own input record, so the datagram would cite three
-    of them, and a UDP record has no sequence numbers to say they join; the
-    fragments are declared ``undecodable`` instead, and counted.
+
+@pytest.mark.parametrize("adjacency", SHAPES, ids=lambda a: a.name.lower())
+def test_a_fragmented_udp_datagram_is_one_message_record(
+    tmp_path: pathlib.Path, adjacency: zpf.Adjacency,
+):
+    """Since spec 0.24 a ``message`` record may cite several input units (zipline#166, #75).
+
+    Its flag says it is one message, and the units are its fragments.  So
+    the datagram a capture conversion writes, a ``.zpf`` of the same packets
+    writes too: one record, stamped with its last fragment's time, citing
+    all three.  Under ``contiguous`` adjacency the input declares a break
+    among them, which such a record may cross as well.
     """
-    direct_stats, _, inner_stats, inner, packets = convert_both(_fragmented_udp(), tmp_path)
+    direct_stats, direct, inner_stats, inner, packets = convert_both(
+        _fragmented_udp(), tmp_path, adjacency=adjacency,
+    )
 
-    assert direct_stats.records == 1
-    assert inner_stats.records == 0
-    assert inner_stats.skipped[SKIP_FRAGMENTED_UDP] == 1
+    assert direct_stats.records == inner_stats.records == 1
+    assert shape(inner) == shape(direct)
     with zpf.open(inner) as reader:
-        marked = [u for u in reader.undecoded if u.reason == REASON_UNDECODABLE]
-        assert len(marked) == 3
-        assert all("zipline#166" in (u.comment or "") for u in marked)
+        (session,) = reader.sessions()
+        (record,) = session.records()
+        assert record.flags & zpf.RecordFlags.MESSAGE
+        assert len(record.spans) == 3
+        assert [u for u in reader.undecoded if u.reason == REASON_UNDECODABLE] == []
     assert zpf.check_coverage(inner, packets) == []
+
+
+def test_an_incomplete_udp_datagram_is_marked_undecodable(tmp_path: pathlib.Path):
+    """Its pieces are not a message, so no record; spec 0.24 has them marked (zipline#170).
+
+    The comment is the capture path's, from the same report of what arrived.
+    """
+    frames = list(_fragmented_udp_frames())
+    _, _, inner_stats, inner, packets = convert_both(
+        capture_of([frames[0], frames[2]]), tmp_path,
+    )
+
+    assert inner_stats.records == 0
+    assert inner_stats.skipped[SkipReason.INCOMPLETE_DATAGRAM] == 1
+    with zpf.open(inner) as reader:
+        list(reader.sessions())
+        marked = [u for u in reader.undecoded if u.reason == REASON_UNDECODABLE]
+    assert len(marked) == 2
+    assert {u.reason_class for u in marked} == {"bytes"}
+    assert {u.comment for u in marked} == {
+        "2 fragments of UDP datagram 10.0.0.1 > 10.0.0.2 id 0x1092: 656 bytes of 1032; "
+        "abandoned (timeout)",
+    }
+    assert zpf.check_coverage(inner, packets) == []
+
+
+def test_the_sessionized_fragments_vector(tmp_path: pathlib.Path):
+    """``vectors/sessionized-fragments`` (spec 0.24): its packets rebuild its records.
+
+    Each flow's datagram is one ``message`` record with the vector's payload,
+    citing the vector's input ranges, a reassembled one citing both its
+    fragments.  One thing differs, and it is the vector's error: it stamps
+    the reassembled record with its first fragment's time, where the spec
+    stamps a record with its last packet's (zipline#175), as this tree does.
+    """
+    inner = tmp_path / "inner.zpf"
+    packets_to_zpf(VECTORS / "sessionized-fragments" / "packets.zpf", inner,
+                   produced_at=PINNED)
+
+    def flows(path: pathlib.Path) -> dict[str, list[tuple[object, ...]]]:
+        out: dict[str, list[tuple[object, ...]]] = {}
+        with zpf.open(path) as reader:
+            for session in reader.sessions():
+                # zpfwire declares both ends of a flow; the vector, the sender.
+                endpoint = {p.participant_id: p.endpoint for p in session.participants}
+                for r in session.records():
+                    out.setdefault(endpoint[r.sender_pid], []).append(
+                        (r.payload, int(r.flags), r.timestamp,
+                         [(s.session_id, s.participant_id, s.off_start, s.off_end)
+                          for s in r.spans]),
+                    )
+            assert reader.diagnostics == [] and reader.unplaceable == []
+        return out
+
+    mine, theirs = flows(inner), flows(VECTORS / "sessionized-fragments" / "inner.zpf")
+    assert set(mine) == set(theirs) == {"10.8.0.2:5000", "10.8.0.2:5001"}
+    assert mine["10.8.0.2:5001"] == theirs["10.8.0.2:5001"]
+    (reassembled,) = mine["10.8.0.2:5000"]
+    (vector,) = theirs["10.8.0.2:5000"]
+    assert (reassembled[0], reassembled[1], reassembled[3]) == (vector[0], vector[1], vector[3])
+    assert len(reassembled[3]) == 2
+    assert (vector[2], reassembled[2]) == (1000, 1200)   # first fragment's, last fragment's
 
 
 def test_fragmented_tcp_is_one_record(tmp_path: pathlib.Path):
