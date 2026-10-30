@@ -5,8 +5,12 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 
-SIBLINGS = (("zpf", "zpf"), ("packeteer", "packeteer"))
-"""``(distribution, import name)`` of each sibling this tree is glue between."""
+SIBLINGS = (("python-zipline", "zpf"), ("packeteer", "packeteer"))
+"""``(distribution, import name)`` of each sibling this tree is glue between.
+
+python-zipline is distributed as ``python-zipline`` since ``0.8.0``, and
+imported as ``zpf`` (python-zipline#102).
+"""
 
 
 def pytest_report_header() -> list[str]:

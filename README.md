@@ -17,7 +17,7 @@ It is glue, and deliberately so:
   mapping onto the specification's model.
 
 **Status: early.** The format itself is `0.x` and says it is not ready for
-production; this is a first implementation against `0.23`.
+production; this is a first implementation against `0.24`.
 
 Full documentation lives in `docs/` — build it with `cd docs && make html`.
 This README is the short version.

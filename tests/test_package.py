@@ -54,9 +54,13 @@ def test_the_specification_link_names_the_version_we_write(
 
 SIBLINGS = {
     "packeteer": "https://github.com/adamkjonsson/packeteer.git",
-    "zpf": "https://github.com/adamkjonsson/python-zipline.git",
+    "python-zipline": "https://github.com/adamkjonsson/python-zipline.git",
 }
-"""Each sibling's distribution name, and the repository its releases are tagged in."""
+"""Each sibling's distribution name, and the repository its releases are tagged in.
+
+python-zipline is distributed as ``python-zipline`` since ``0.8.0``, and
+imported as ``zpf`` still (python-zipline#102).
+"""
 
 TAG = re.compile(r"v(\d+\.\d+\.\d+)")
 

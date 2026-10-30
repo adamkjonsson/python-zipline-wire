@@ -769,8 +769,12 @@ class ByteScore:
         sent: Bytes the sender sent (:attr:`Ledger.sent`).
         correct: Offsets holding the true byte.
         substituted: Offsets holding a different byte.
-        missing_declared: Offsets inside a ``Gap``.
-        missing_past_end: Offsets past the last ``Segment``.
+        missing_declared: Offsets inside a ``Gap``: a hole the file declares.
+        missing_past_end: Offsets past everything the file shows of this
+            direction, ``Gap`` or ``Segment``: a tail no record reaches.
+            Since spec ``0.24`` (zpfwire ``0.9.0``) a lost tail that a later
+            record reaches, such as a pure ACK, is a declared ``Gap`` and
+            counts under :attr:`missing_declared` instead.
         extra: Output bytes at or past ``sent``.
         available: Offsets where some captured, non-stray packet carries the
             true byte: the ceiling a reassembler could reach.
@@ -836,15 +840,19 @@ def score_bytes(run: Run, output: Output, direction: Direction) -> ByteScore:
     have = bytearray(sent)
     declared = bytearray(sent)
     extra = 0
+    # How far the file shows this direction, a declared hole included: since
+    # spec 0.24 a lost tail that a later record reaches is a trailing Gap
+    # (zipline#168), and only bytes past everything the file shows are
+    # missing past the end.
     end = 0
     substituted: list[tuple[int, int]] = []
     correct = 0
     for chunk in output.chunks[direction]:
         start, stop = min(chunk.off_start, sent), min(chunk.off_end, sent)
+        end = max(end, chunk.off_end)
         if isinstance(chunk, zpf.Gap):
             declared[start:stop] = b"\x01" * (stop - start)
             continue
-        end = max(end, chunk.off_end)
         extra += chunk.off_end - max(chunk.off_start, sent)
         data = chunk.data[:stop - start]
         held[start:stop] = data
@@ -1090,7 +1098,8 @@ def account(run: Run, conversion: Conversion) -> Accounting:
         miscited=miscited,
         gaps=conversion.stats.gaps,
         gaps_in_file=sum(isinstance(c, zpf.Gap) for d in DIRECTIONS for c in output.chunks[d]),
-        holes=sum(_holes(run.ledger, d) for d in DIRECTIONS),
+        holes=sum(_holes(run.ledger, d, pure_acks=conversion.options.pure_acks)
+                  for d in DIRECTIONS),
         judged=judged,
         end_reason=output.end_reason,
         expected_end=_expected_end(run.ledger),
@@ -1179,16 +1188,33 @@ def _mismatched(pieces: list[tuple[int, bytes]], written: list[tuple[int, bytes]
     return differing
 
 
-def _holes(ledger: Ledger, direction: Direction) -> int:
-    """Count the ranges below a direction's furthest captured byte that nothing carries."""
-    spans = sorted((e.offset, e.end) for e in ledger.data(direction))
+def _holes(ledger: Ledger, direction: Direction, *, pure_acks: bool) -> int:
+    """Count the ranges inside a direction's captured extent that nothing occupies.
+
+    The extent is spec ``0.24``'s (zipline#168): it counts sequence numbers,
+    and runs to the furthest point a record reaches.  Captured payload, strays
+    included since a stray can fill a hole, occupies its range, and a captured
+    FIN its one position, which no record need cover.  A stored pure ACK
+    reaches its own number and occupies nothing, so a lost tail or a lost FIN
+    below one is a hole.  Pure ACKs are stored unless the policy says not
+    (``pure_acks``).
+    """
+    occupied = [(e.offset, e.end) for e in ledger.data(direction)]
+    reach = 0
+    for e in ledger.entries:
+        if e.direction != direction or e.flags & TCP_SYN:
+            continue
+        if e.flags & TCP_FIN:
+            occupied.append((e.end, e.end + 1))
+        elif pure_acks and not e.length and not e.flags & TCP_RST:
+            reach = max(reach, e.offset)
     holes = 0
     edge = 0
-    for start, stop in spans:
+    for start, stop in sorted(occupied):
         if start > edge:
             holes += 1
         edge = max(edge, stop)
-    return holes
+    return holes + (1 if reach > edge else 0)
 
 
 # ── A measurement ───────────────────────────────────────────────────────

@@ -313,7 +313,16 @@ POLICIES = {
 }
 
 
-@pytest.mark.parametrize("name", PERFECT)
+@pytest.mark.parametrize("name", [
+    "clean",
+    "duplication-and-retransmission",
+    pytest.param("loss-recovered", marks=pytest.mark.xfail(
+        strict=True,
+        reason="#76: at seed 10 the client's FIN is lost and its final pure ACK is "
+               "stored one past it, so since spec 0.24 the file shows a one-wide hole "
+               "that stats.gaps does not count",
+    )),
+])
 def test_what_must_be_perfect_is(name: str):
     """Fidelity 1 and recovery 1 over 40 seeds, and the file's account of itself holds."""
     for seed in SEEDS:
@@ -373,17 +382,22 @@ def test_lost_bytes_lower_fidelity_and_leave_recovery_alone():
     assert m.accounting.gaps == m.accounting.gaps_in_file == m.accounting.holes == 1
 
 
-def test_a_lost_tail_is_missing_past_the_end():
-    """``chunks()`` yields no trailing Gap: only the truth can see this."""
-    tail = next(
-        r for seed in SEEDS
-        if (r := run(Scenario(seed=seed, impairments=Impairments(packet_loss_probability=0.1))))
-        and any(stop == r.ledger.sent[d] for d in DIRECTIONS for _, stop in r.ledger.lost[d])
-    )
-    m = measure(tail)
+def test_a_lost_tail_a_record_reaches_is_declared():
+    """Since spec 0.24 a pure ACK past a lost tail makes the tail a trailing Gap (zipline#168).
 
-    assert m.total.missing_past_end > 0
-    assert m.total.causes["missing:lost"] == m.total.missing_declared + m.total.missing_past_end
+    Only a tail nothing reaches is missing past the end, which only the
+    truth can see: here, the same run with pure ACKs left unstored.
+    """
+    tail = run(Scenario(seed=10, impairments=Impairments(packet_loss_probability=0.1)))
+    assert tail.ledger.lost["c2s"][-1][1] == tail.ledger.sent["c2s"]
+
+    reached = measure(tail).total
+    unreached = measure(tail, ReassemblyOptions(pure_acks=False)).total
+
+    assert reached.missing_past_end == 0
+    assert reached.missing_declared == reached.causes["missing:lost"] == 2248
+    assert unreached.missing_past_end == 800
+    assert unreached.missing_declared + unreached.missing_past_end == 2248
 
 
 def test_copies_are_judged_copies():

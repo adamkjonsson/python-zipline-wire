@@ -33,6 +33,33 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+### Changed
+
+- **Breaking: spec `0.24`, through python-zipline `0.8.0`**
+  ([#73](https://github.com/adamkjonsson/python-zipline-wire/issues/73)).
+  Every file is stamped `0.24`. Under the format's `0.x` rule a `0.23`
+  reader refuses it, and this release cannot read a `0.23` file.
+  - **The output does not change**, apart from that stamp: all 198 outputs
+    of the 22 fixtures are byte-identical to `0.8.0`'s when both run on the
+    new library.
+  - python-zipline is distributed as **`python-zipline`** since its `0.8.0`
+    (python-zipline#102), and still imported as `zpf`. So the dependency is
+    now `python-zipline @ git+https://github.com/adamkjonsson/python-zipline.git@v0.8.0`.
+    **In an existing environment, `pip uninstall zpf` before installing**, or
+    the old distribution's metadata stays behind.
+- **Breaking: `zpfwire.fidelity` measures a lost tail as the `0.24` reader
+  shows it.** Since spec `0.24` (zipline#168), a transport stream's extent
+  counts sequence numbers to the furthest point a record reaches. A pure ACK
+  stored past a lost tail, or past a lost FIN, therefore makes the range
+  below it a declared hole, and `StreamView.chunks()` yields it as a
+  trailing `Gap`.
+  - `ByteScore.missing_past_end` now counts only a tail nothing reaches, and
+    such a tail counts under `missing_declared`. The total is unchanged.
+  - `Accounting.holes` counts holes to that extent, a lost FIN included,
+    whether pure ACKs are stored or not.
+  - Over the fidelity sweep's 32,256 TCP runs, 281 directions move from one
+    field to the other, and nothing else does.
+
 ---
 
 ## [0.8.0] - 2026-10-27

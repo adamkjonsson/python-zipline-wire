@@ -23,6 +23,15 @@ python3 -m venv .venv
 `requirements.txt` brings in pytest, ruff, Sphinx, and the build tooling,
 which is everything the project's checks need.
 
+Upgrading a venv made before zpfwire `0.9.0`: python-zipline was distributed
+as `zpf` until its `0.8.0`, and is `python-zipline` since. Remove the old
+distribution first, or its metadata stays behind beside the new one:
+
+```bash
+.venv/bin/pip uninstall zpf
+.venv/bin/pip install -e . -r requirements.txt
+```
+
 Verify the install:
 
 ```bash
@@ -30,13 +39,13 @@ Verify the install:
 ```
 
 ```
-zpfwire 0.8.0 (zipline 0.23)
+zpfwire 0.8.0 (zipline 0.24)
 ```
 
 The test run's header names the build of each sibling it ran against:
 
 ```
-zpf 0.7.0 from …/.venv/lib/python3.14/site-packages/zpf/__init__.py
+python-zipline 0.8.0 from …/.venv/lib/python3.14/site-packages/zpf/__init__.py
 packeteer 0.21.0 from …/.venv/lib/python3.14/site-packages/packeteer/__init__.py
 ```
 
@@ -87,10 +96,12 @@ something else.
 
 The wheel declares each sibling as a direct reference to its release tag,
 `packeteer @ git+https://github.com/adamkjonsson/packeteer.git@vX.Y.Z` and
-the same for `zpf`, so installing it fetches them from GitHub. It never asks
-a package index for either name. Both names belong to unrelated projects on
-PyPI, and anything uploaded there under them would otherwise be installed
-in their place. `CHANGELOG.md` names the releases. The wheel cannot be
+`python-zipline @ git+https://github.com/adamkjonsson/python-zipline.git@vX.Y.Z`,
+so installing it fetches them from GitHub. It never asks a package index for
+either name. `packeteer` belongs to an unrelated project on PyPI, as `zpf`
+does, the name python-zipline was distributed under before `0.8.0`, and
+anything uploaded there under them would otherwise be installed in their
+place. `CHANGELOG.md` names the releases. The wheel cannot be
 uploaded to PyPI, which refuses packages that declare direct references.
 
 ## Running the checks
