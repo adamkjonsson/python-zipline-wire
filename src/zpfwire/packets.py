@@ -269,6 +269,8 @@ class PacketRecordReader:
             ts_ticks=ts,
             payload_offset=self._origins.slot(parts),
             fragment_count=assembled.fragment_count,
+            # The reassembled frame: identical fragments rebuild it identically.
+            frames=[assembled.frame],
         )
 
 

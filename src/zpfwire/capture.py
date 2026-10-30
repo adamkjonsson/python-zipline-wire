@@ -50,11 +50,12 @@ on one clock.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import socket
 import warnings
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import IO
 
@@ -208,6 +209,13 @@ class PacketView:
             header says was sent, as after a capture taken with a snaplen.
             :attr:`payload` is then short of what crossed the wire, and no
             later stage can tell that from a short payload the sender chose.
+        datagram_digest: A digest of the frames the packet was captured as,
+            when its IPv4 identification is non-zero, else ``None``.  Two
+            packets with the same digest are one transmission the capture
+            point saw twice: a mirror port repeats the frames, and a sender
+            that resends gives the datagram a new identification.  With
+            identification 0, or over IPv6, a copy cannot be told from a
+            resend, and it is ``None`` (#77).
 
     """
 
@@ -227,6 +235,7 @@ class PacketView:
     fragment_count: int = 1
     checksum_bad: bool = False
     truncated: bool = False
+    datagram_digest: bytes | None = None
 
     @property
     def src_endpoint(self) -> str:
@@ -407,6 +416,7 @@ class CaptureReader:
             ts_ticks=self._ticks(packet),
             payload_offset=_payload_offset(packet),
             fragment_count=len(packet.source_records) or 1,
+            frames=[record.data for record in packet.source_records],
         )
 
     def _ticks(self, packet: ParsedPacket) -> int:
@@ -430,6 +440,7 @@ def packet_view(
     ts_ticks: int,
     payload_offset: int | None,
     fragment_count: int,
+    frames: Sequence[bytes] = (),
 ) -> PacketView:
     """Reduce a parsed TCP segment or UDP datagram to what reassembly needs.
 
@@ -444,6 +455,8 @@ def packet_view(
         payload_offset: Where the reader says its payload is; see
             :attr:`PacketView.payload_offset`.
         fragment_count: How many input records it was reassembled from.
+        frames: The bytes it was read from, a frame per input record, for
+            :attr:`PacketView.datagram_digest`.
 
     Returns:
         The packet's view.
@@ -469,7 +482,23 @@ def packet_view(
         fragment_count=fragment_count,
         checksum_bad=_checksum_bad(packet),
         truncated=packet.datagram_truncated,
+        datagram_digest=_digest(packet, frames),
     )
+
+
+def _digest(packet: ParsedPacket, frames: Sequence[bytes]) -> bytes | None:
+    """Digest the frames of an IPv4 packet with a non-zero identification (#77).
+
+    A frame's length is digested before it, so that two packets split
+    differently into frames never collide.
+    """
+    if not frames or getattr(packet.ip, "identification", 0) == 0:
+        return None
+    digest = hashlib.blake2b(digest_size=16)
+    for frame in frames:
+        digest.update(len(frame).to_bytes(4, "big"))
+        digest.update(frame)
+    return digest.digest()
 
 
 def skip_reason(packet: ParsedPacket, *, headerless: bool) -> str | None:

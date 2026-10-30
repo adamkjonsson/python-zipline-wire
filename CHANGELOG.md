@@ -44,8 +44,32 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   `zpfwire.flow`, beside the other reasons, and is still importable from
   `zpfwire` and `zpfwire.packets`.
 
+- **A UDP datagram the capture saw twice is marked `copy`**, when zpfwire
+  can tell
+  ([#77](https://github.com/adamkjonsson/python-zipline-wire/issues/77)).
+  Spec `0.24` adds the flag (zipline#169, filed from this project). It says
+  the record repeats its participant's preceding one and the sender sent
+  once. A reader that wants the stream as sent skips it, for instance with
+  python-zipline's `StreamView.datagrams(copies=False)`.
+  - The rule: the datagram repeats its participant's preceding datagram
+    frame for frame, under the same non-zero IP identification. A sender
+    that resends gives the datagram a new identification, and a mirror port
+    does not.
+  - A repeat with identification 0, or over IPv6, cannot be told from a
+    resend, and is written unmarked, as before.
+  - The same verdict is reached on both input paths, a fragmented datagram's
+    included.
+  - **`ConversionStats.copies`** counts the datagrams marked, with a
+    `copies` summary line, and **`PacketView.datagram_digest`** is the
+    evidence.
+
 ### Changed
 
+- **Breaking: a capture holding a capture-point copy of a UDP datagram
+  writes it flagged `copy`**
+  ([#77](https://github.com/adamkjonsson/python-zipline-wire/issues/77)), as
+  *Added* says. Bytes move for such a capture, which no fixture holds: 198
+  of 198 outputs are identical to `0.8.0`.
 - **Breaking: on a `.zpf` of packets, a UDP datagram reassembled from IP
   fragments is written**, as one `message` record citing every fragment
   ([#75](https://github.com/adamkjonsson/python-zipline-wire/issues/75)).

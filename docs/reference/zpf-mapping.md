@@ -111,7 +111,7 @@ One per run of contiguous stream bytes, or one per datagram for UDP.
 | `payload` | The stream bytes |
 | `seq_start` | The absolute wire sequence number of the first payload byte (TCP) |
 | `ack` | The serial **maximum** of the acknowledgement numbers on the packets that contributed bytes (TCP) — acks are cumulative, so it is the strongest statement the run can make that is certainly true |
-| `flags` | `PSH` / `FIN` / `RST` / `URG` as seen; `RETRANSMIT` when the sender resent bytes of the record's range — see below; `MESSAGE` for a UDP datagram |
+| `flags` | `PSH` / `FIN` / `RST` / `URG` as seen; `RETRANSMIT` when the sender resent bytes of the record's range — see below; `MESSAGE` for a UDP datagram; `COPY` for a UDP datagram that repeats its participant's preceding one frame for frame, under the same non-zero IP identification: the capture point saw it twice (since `0.9.0`) |
 | `decoder` | The reassembly decoder |
 
 One record is not a byte run: the **handshake record**, written once per

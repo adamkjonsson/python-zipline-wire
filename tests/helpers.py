@@ -98,16 +98,18 @@ def udp_packet(
     dst_port: int = 53,
     payload: bytes = b"",
     checksum: int | None = None,
+    identification: int = 0,
 ) -> bytes:
     """Build one Ethernet/IPv4/UDP frame.
 
     *checksum* overrides the computed value; ``0`` is the legal IPv4 spelling
-    of *no checksum was computed*.
+    of *no checksum was computed*.  *identification* is the IP header's, ``0``
+    by default, as a sender with DF set may leave it.
     """
     builder = (
         PacketBuilder()
         .ethernet(src_mac="00:00:00:00:00:01", dst_mac="00:00:00:00:00:02")
-        .ip(src=src, dst=dst)
+        .ip(src=src, dst=dst, identification=identification)
         .udp(src_port=src_port, dst_port=dst_port, checksum=checksum)
     )
     if payload:
