@@ -33,8 +33,36 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
 `vX.Y.Z`, and close the release's issues and milestone.
 -->
 
+### Added
+
+- **`CaptureReader.incomplete`**, the datagrams whose fragments never all
+  arrived, each an **`IncompleteDatagram`**: its transport, addresses and IP
+  identification; the capture-file byte range of each fragment that arrived;
+  and why the reassembler gave up
+  ([#74](https://github.com/adamkjonsson/python-zipline-wire/issues/74)).
+  `cite_undecoded` takes a `comment`. `REASON_UNDECODABLE` is defined in
+  `zpfwire.flow`, beside the other reasons, and is still importable from
+  `zpfwire` and `zpfwire.packets`.
+
 ### Changed
 
+- **Breaking: the fragments of a datagram that never completed are cited**
+  ([#74](https://github.com/adamkjonsson/python-zipline-wire/issues/74)).
+  Spec `0.24` says the pieces of a message a reassembler could not complete
+  are not content of the stream, and a reassembler reading a capture
+  **must** cite them against the `capture` source (zipline#170). Without the
+  block, the file would be byte-identical to one that withheld a whole
+  datagram.
+  - Each fragment that arrived gets an `undecodable` Undecoded block naming
+    its whole captured frame, as the `capture-fragment-lost` vector does,
+    with a `comment` saying what arrived and why it was given up.
+  - TCP is cited too. Its stream's offsets already show the hole, but the
+    fragments that arrived would otherwise leave no trace.
+  - Only a transport the conversion was asked for is cited, and a packet
+    filter does not apply, since a fragment past the first has no ports.
+  - The tally under `skipped["incomplete-datagram"]` stays.
+  - Bytes move for a capture holding such a datagram, which no fixture does:
+    198 of 198 outputs are identical to `0.8.0`.
 - **Breaking: spec `0.24`, through python-zipline `0.8.0`**
   ([#73](https://github.com/adamkjonsson/python-zipline-wire/issues/73)).
   Every file is stamped `0.24`. Under the format's `0.x` rule a `0.23`

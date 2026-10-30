@@ -44,7 +44,7 @@ from packeteer.pcap import LINKTYPE_RAW, write_pcap
 
 from zpfwire.capture import PacketView, SkipReason, packet_view, skip_reason
 from zpfwire.convert import _drive, _produced_at
-from zpfwire.flow import FlowKey, RecordSink
+from zpfwire.flow import REASON_UNDECODABLE, FlowKey, RecordSink
 from zpfwire.options import DECODER_NAME, ReassemblyOptions, tool_version
 from zpfwire.stats import ConversionStats
 
@@ -58,16 +58,6 @@ __all__ = [
     "packets_to_pcap",
     "packets_to_zpf",
 ]
-
-REASON_UNDECODABLE = "undecodable"
-"""Undecoded reason for a selected record that did not become a packet.
-
-The specification's canonical word for *the stage tried and failed*: a
-record labelled as a packet whose IP or transport header did not parse, a
-fragment of a datagram that never completed, or a UDP datagram reassembled
-from fragments, which no conformant record can cite (see
-:data:`SKIP_FRAGMENTED_UDP`).  Its ``comment`` says which.
-"""
 
 SKIP_FRAGMENTED_UDP = "fragmented-udp"
 """Skip key for a UDP datagram reassembled from several input records.

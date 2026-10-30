@@ -24,6 +24,7 @@ import zpf
 from zpfwire.capture import CaptureReader, PacketView
 from zpfwire.flow import (
     REASON_CHECKSUM,
+    REASON_UNDECODABLE,
     CaptureSink,
     FlowKey,
     FlowTracker,
@@ -267,6 +268,8 @@ def convert(
         target = _CaptureTarget(writer, source=source, decoder=decoder, stats=stats)
         _drive(reader, target, options=options, wanted=wanted, packet_filter=packet_filter,
                sequenced=sequenced, stats=stats)
+        _cite_incomplete(reader, writer, source=source, decoder=decoder, wanted=wanted,
+                         stats=stats)
 
     return stats
 
@@ -392,6 +395,39 @@ def _drop(pkt: PacketView, target: _Target, *, stats: ConversionStats) -> None:
     stats.skipped[REASON_CHECKSUM] += 1
     stats.checksum_dropped_bytes += len(pkt.payload)
     target.drop(pkt, reason=REASON_CHECKSUM)
+
+
+def _cite_incomplete(
+    reader: CaptureReader,
+    writer: zpf.FileWriter,
+    *,
+    source: zpf.SourceHandle,
+    decoder: zpf.DecoderHandle,
+    wanted: set[str],
+    stats: ConversionStats,
+) -> None:
+    """Cite each fragment that arrived of a datagram that never completed (#74).
+
+    Spec ``0.24`` says the pieces of a message a reassembler could not
+    complete are not content of the stream, so they get no record, and a
+    reassembler reading a capture **MUST** cite them against the ``capture``
+    source: without the block, the file would be byte-identical to one that
+    withheld a whole datagram (zipline#170).  That is UDP's case.  A TCP
+    datagram's hole shows in its stream's sequence numbers, but the fragments
+    that did arrive would still leave no trace, so they are cited too.
+
+    One block per fragment, naming its whole captured frame, as the
+    ``capture-fragment-lost`` vector does.  Only a transport the conversion
+    was asked for is cited, as only its packets reach a flow.  A packet
+    filter is not applied: a fragment past the first carries no ports to
+    filter on.
+    """
+    for lost in reader.incomplete:
+        if lost.protocol not in wanted:
+            continue
+        for start, end in lost.fragments:
+            cite_undecoded(writer, source, start, end - start, reason=REASON_UNDECODABLE,
+                           decoder=decoder, stats=stats, comment=lost.comment)
 
 
 def _close(tracker: FlowTracker, flows: dict[FlowKey, FlowTracker], key: FlowKey) -> None:

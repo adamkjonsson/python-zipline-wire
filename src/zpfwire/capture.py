@@ -62,6 +62,7 @@ from packeteer.generate import ETHERTYPE_IPV4, ETHERTYPE_IPV6, IPv6Header
 from packeteer.generate.loopback import AF_INET, LoopbackHeader
 from packeteer.generate.tcp import TCPHeader, TCPOptions
 from packeteer.generate.udp import UDPHeader
+from packeteer.parse import IncompleteDatagram as _Abandoned
 from packeteer.parse import (
     PacketReader,
     ParsedPacket,
@@ -75,6 +76,7 @@ __all__ = [
     "TICK_HZ_NS",
     "TICK_HZ_US",
     "CaptureReader",
+    "IncompleteDatagram",
     "PacketView",
     "SkipReason",
     "format_endpoint",
@@ -111,6 +113,9 @@ class SkipReason:
             transport header parsed.
         INCOMPLETE_DATAGRAM: A fragmented datagram whose fragments never all
             arrived, counted once per datagram rather than per fragment.
+            Each fragment that did arrive is also cited, as
+            :data:`~zpfwire.flow.REASON_UNDECODABLE`; see
+            :attr:`CaptureReader.incomplete`.
 
     """
 
@@ -120,6 +125,57 @@ class SkipReason:
     NOT_TCP_UDP = "not-tcp-or-udp"
     MALFORMED_TRANSPORT = "malformed-transport-header"
     INCOMPLETE_DATAGRAM = "incomplete-datagram"
+
+
+@dataclass(frozen=True)
+class IncompleteDatagram:
+    """A fragmented datagram whose fragments never all arrived.
+
+    The reassembler abandons it, so it never becomes a packet.  Its pieces
+    are not content of any stream, and spec ``0.24`` has a reassembler
+    reading a capture cite them (zipline#170, #74); :attr:`fragments` is
+    where they are.
+
+    Attributes:
+        protocol: ``"tcp"`` or ``"udp"``, or the IP protocol number as text
+            for any other.
+        src: Source address, as the header gave it.
+        dst: Destination address.
+        identification: The datagram's IP identification field.
+        fragments: Each fragment that arrived, as the ``(start, end)`` byte
+            range of its captured frame in the capture file, in arrival
+            order.
+        bytes_seen: Payload bytes the fragments that arrived carried.
+        expected_bytes: The datagram's payload length, known only once its
+            last fragment arrived; ``None`` otherwise.
+        reason: Why the reassembler gave up: ``"timeout"``, ``"overlap"``,
+            ``"too_large"`` or ``"evicted"``.
+
+    """
+
+    protocol: str
+    src: str
+    dst: str
+    identification: int
+    fragments: tuple[tuple[int, int], ...]
+    bytes_seen: int
+    expected_bytes: int | None
+    reason: str
+
+    @property
+    def comment(self) -> str:
+        """Say what arrived of the datagram, and why it was given up, for its citation."""
+        what = self.protocol.upper() if self.protocol in ("tcp", "udp") else (
+            f"protocol {self.protocol}"
+        )
+        expected = (f" of {self.expected_bytes}" if self.expected_bytes is not None
+                    else ", its last fragment never arriving")
+        count = len(self.fragments)
+        return (
+            f"{count} fragment{'' if count == 1 else 's'} of {what} datagram "
+            f"{self.src} > {self.dst} id 0x{self.identification:04x}: "
+            f"{self.bytes_seen} bytes{expected}; abandoned ({self.reason})"
+        )
 
 
 @dataclass(frozen=True)
@@ -238,6 +294,10 @@ class CaptureReader:
         packet_count: Packets seen during the most recent iteration, including
             skipped ones.  Zero before the first.
         skipped: Tally of skip reasons; keys come from :class:`SkipReason`.
+        incomplete: The datagrams whose fragments never all arrived during
+            the most recent iteration, each also counted in :attr:`skipped`
+            as :attr:`SkipReason.INCOMPLETE_DATAGRAM`.  A conversion cites
+            their fragments (#74).
 
     Example:
         >>> reader = CaptureReader(path="capture.pcap")
@@ -284,6 +344,7 @@ class CaptureReader:
         self.tick_hz: int = tick_hz if tick_hz is not None else self.header.tick_hz
         self.packet_count: int = 0
         self.skipped: Counter[str] = Counter()
+        self.incomplete: list[IncompleteDatagram] = []
 
     @property
     def link_type(self) -> int:
@@ -307,6 +368,7 @@ class CaptureReader:
         """Yield a :class:`PacketView` for every TCP segment and UDP datagram."""
         self.skipped.clear()
         self.packet_count = 0
+        self.incomplete = []
         if not self.link_type_supported:
             # Nothing in the file can be reached, and that was decided at
             # open.  packeteer says the same thing as a warning when it
@@ -331,6 +393,7 @@ class CaptureReader:
             # became packets, so they are not in `packet_count`.
             if reader.incomplete:
                 self.skipped[SkipReason.INCOMPLETE_DATAGRAM] += len(reader.incomplete)
+            self.incomplete = [_incomplete(lost) for lost in reader.incomplete]
 
     def _open(self) -> PacketReader:
         if self._file_object is not None:
@@ -518,3 +581,25 @@ def _payload_offset(packet: ParsedPacket) -> int | None:
     if packet.payload_offset is None or len(packet.source_records) != 1:
         return None
     return packet.source_records[0].data_offset + packet.payload_offset
+
+
+def _incomplete(lost: _Abandoned) -> IncompleteDatagram:
+    """Turn packeteer's report of an abandoned datagram into where its fragments are.
+
+    Each token is the :class:`~packeteer.pcap.PcapRecord` the fragment was
+    read from, whose ``data_offset`` is the first captured byte of its frame
+    in the file: the byte to cite.
+    """
+    protocols = {socket.IPPROTO_TCP: "tcp", socket.IPPROTO_UDP: "udp"}
+    return IncompleteDatagram(
+        protocol=protocols.get(lost.protocol, str(lost.protocol)),
+        src=lost.src,
+        dst=lost.dst,
+        identification=lost.identification,
+        fragments=tuple(
+            (record.data_offset, record.data_offset + len(record.data)) for record in lost.tokens
+        ),
+        bytes_seen=lost.bytes_seen,
+        expected_bytes=lost.expected_bytes,
+        reason=lost.reason,
+    )

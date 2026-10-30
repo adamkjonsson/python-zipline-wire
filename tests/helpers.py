@@ -119,22 +119,35 @@ def fragmented_frames(
     *,
     payload: bytes = b"fragmented-payload" * 80,
     mtu: int = 600,
+    identification: int = 0,
+    tcp: bool = False,
 ) -> list[bytes]:
-    """Build one UDP datagram split across several IPv4 fragments.
+    """Build one UDP datagram, or TCP segment, split across several IPv4 fragments.
+
+    Args:
+        payload: The transport payload.
+        mtu: The largest IP datagram a fragment may be.
+        identification: The IP identification.  ``0`` leaves packeteer to
+            draw one, from the unseeded global ``random`` (packeteer#232), so
+            a test that reads the ID sets it.
+        tcp: Build a TCP segment (PSH, ACK, seq 1) instead of a UDP datagram.
 
     Returns:
         The fragments in wire order; every one is needed to reassemble the
         datagram, so dropping any of them makes it incomplete.
 
     """
-    frames = (
+    builder = (
         PacketBuilder()
         .ethernet(src_mac="00:00:00:00:00:01", dst_mac="00:00:00:00:00:02")
-        .ip(src=CLIENT_IP, dst=SERVER_IP)
-        .udp(src_port=CLIENT_PORT, dst_port=53)
-        .payload(data=payload)
-        .fragment(mtu)
+        .ip(src=CLIENT_IP, dst=SERVER_IP, identification=identification)
     )
+    if tcp:
+        builder = builder.tcp(src_port=CLIENT_PORT, dst_port=80, seq=1, ack=1,
+                              flags=TCP_PSH | TCP_ACK)
+    else:
+        builder = builder.udp(src_port=CLIENT_PORT, dst_port=53)
+    frames = builder.payload(data=payload).fragment(mtu)
     assert len(frames) > 1, "the payload must be large enough to fragment"
     return frames
 

@@ -135,6 +135,19 @@ Declaring it again would be a second account of the same missing bytes with no
 rule for which to believe.  So `Undecoded` covers the opposite case — bytes
 that *are* in the capture and did not reach the output.
 
+### When a datagram never completes
+
+An IP datagram split into fragments, one of which never arrives, is never
+reassembled.  Its pieces are not a packet, so they reach no session, and
+they are counted under `skipped["incomplete-datagram"]`.  Since `0.9.0` each
+fragment that did arrive is also cited, as an `undecodable` block naming its
+whole frame, with a `comment` saying what arrived and why it was given up.
+Spec `0.24` requires this of a reassembler reading a capture.  The pieces are
+not content of the stream, but without the block the file would be
+byte-identical to one that dropped the whole datagram.  It is done for TCP
+too: there the stream's offsets already show the hole, but the fragments
+that arrived would otherwise leave no trace.
+
 ### When a range cannot be named
 
 A datagram reassembled from several IP fragments occupies several

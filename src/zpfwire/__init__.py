@@ -27,6 +27,7 @@ from zpfwire.capture import (
     TICK_HZ_NS,
     TICK_HZ_US,
     CaptureReader,
+    IncompleteDatagram,
     PacketView,
     SkipReason,
     format_endpoint,
@@ -44,6 +45,7 @@ from zpfwire.flow import (
     REASON_OVERLAP,
     REASON_PAWS,
     REASON_TS_MISSING,
+    REASON_UNDECODABLE,
     CaptureSink,
     FlowKey,
     FlowTracker,
@@ -58,7 +60,6 @@ from zpfwire.options import (
     tool_version,
 )
 from zpfwire.packets import (
-    REASON_UNDECODABLE,
     SKIP_FRAGMENTED_UDP,
     PacketRecordReader,
     PacketSink,
@@ -105,6 +106,7 @@ __all__ = [
     "TS_ABSENT",
     "TS_STALE",
     "CaptureReader",
+    "IncompleteDatagram",
     "CaptureSink",
     "ConversionStats",
     "FlowKey",

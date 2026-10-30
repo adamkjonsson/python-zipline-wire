@@ -5,8 +5,10 @@ headers, or pcap framing lives here; the rest of zpfwire sees only
 {class}`~zpfwire.capture.PacketView` objects.
 
 Fragmented datagrams are reassembled before parsing, so a fragment is never
-mistaken for a whole packet, and a datagram whose fragments never all arrived
-is counted rather than dropped silently.
+mistaken for a whole packet.  A datagram whose fragments never all arrived is
+counted rather than dropped silently, and kept as an
+{class}`~zpfwire.capture.IncompleteDatagram`, whose fragments a conversion
+cites.
 
 ---
 
@@ -32,6 +34,11 @@ is counted rather than dropped silently.
 
 ```{eval-rst}
 .. autoclass:: zpfwire.capture.SkipReason
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: zpfwire.capture.IncompleteDatagram
    :members:
 ```
 
