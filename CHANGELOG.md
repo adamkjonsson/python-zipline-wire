@@ -60,6 +60,25 @@ pyproject.toml, update the link definitions at the bottom of this file, tag
   - Over the fidelity sweep's 32,256 TCP runs, 281 directions move from one
     field to the other, and nothing else does.
 
+### Fixed
+
+- **`stats.gaps` counts the hole under the records a direction writes
+  last**, so a lossy conversion no longer reports itself `lossless`
+  ([#76](https://github.com/adamkjonsson/python-zipline-wire/issues/76)).
+  At the end of a session a direction may still write a FIN whose data
+  never all arrived, and pure ACKs held ahead of every placed byte. Each is
+  a record past bytes that never arrived. Since spec `0.24` a reader shows
+  the range below it as a `Gap`, but `stats.gaps` did not count it. Three
+  shapes are affected:
+  - a lost tail with a pure ACK after it;
+  - a lost FIN with the final ACK one past it, which leaves a one-wide hole
+    at the FIN's number;
+  - a FIN captured past lost data.
+
+  The fidelity sweep found 537 conversions whose stats disagreed with
+  their own file, and now finds none. No file byte moves, and no fixture
+  has the shape.
+
 ---
 
 ## [0.8.0] - 2026-10-27

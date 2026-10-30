@@ -313,16 +313,7 @@ POLICIES = {
 }
 
 
-@pytest.mark.parametrize("name", [
-    "clean",
-    "duplication-and-retransmission",
-    pytest.param("loss-recovered", marks=pytest.mark.xfail(
-        strict=True,
-        reason="#76: at seed 10 the client's FIN is lost and its final pure ACK is "
-               "stored one past it, so since spec 0.24 the file shows a one-wide hole "
-               "that stats.gaps does not count",
-    )),
-])
+@pytest.mark.parametrize("name", PERFECT)
 def test_what_must_be_perfect_is(name: str):
     """Fidelity 1 and recovery 1 over 40 seeds, and the file's account of itself holds."""
     for seed in SEEDS:

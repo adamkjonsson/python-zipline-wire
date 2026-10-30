@@ -1738,3 +1738,61 @@ def test_the_written_part_of_a_contested_repeat_is_cited(tmp_path: pathlib.Path)
     assert _reasons(out) == ["overlap-discarded", "overlap-discarded"]
     assert sorted(u.off_end - u.off_start for u in out.undecoded) == [2, 4]
     assert out.stats.overlap_bytes == 6
+
+
+# ── #76: a hole under the records written last is a committed gap ───────
+
+
+def _file_gaps(out: object) -> int:
+    """Count the ``Gap`` chunks a reader of the file sees, both directions."""
+    with zpf.open(out.path) as reader:  # type: ignore[attr-defined]
+        return sum(
+            isinstance(chunk, zpf.Gap)
+            for session in reader.sessions()
+            for view in session.reassemble()
+            # The silent peer stores nothing, so it has no stream to read.
+            if any(r.seq_start is not None
+                   for r in session.stream(view.participant.participant_id))
+            for chunk in view.chunks()
+        )
+
+
+@pytest.mark.parametrize(("segments", "gaps"), [
+    pytest.param([
+        Seg(1, b"aaaa", flags=TCP_PSH | TCP_ACK),
+        # bbbb at 5 is lost, and nothing resends it
+        Seg(9),                                             # a pure ACK past it
+    ], 1, id="lost-tail"),
+    pytest.param([
+        Seg(1, b"aaaa", flags=TCP_PSH | TCP_ACK),
+        # the FIN at 5 is lost
+        Seg(6),                                             # the final ACK, past it
+    ], 1, id="lost-fin"),
+    pytest.param([
+        Seg(1, b"aaaa", flags=TCP_PSH | TCP_ACK),
+        # bbbb at 5 is lost
+        Seg(9, flags=TCP_FIN | TCP_ACK),                    # the FIN, past it
+        Seg(10),
+    ], 1, id="fin-past-a-hole"),
+    pytest.param([
+        Seg(1, b"aaaa", flags=TCP_PSH | TCP_ACK),
+        Seg(5, flags=TCP_FIN | TCP_ACK),
+        Seg(6),                                             # the final ACK, one past the FIN
+    ], 0, id="closed-cleanly"),
+])
+def test_a_hole_under_the_records_written_last_is_counted(
+    tmp_path: pathlib.Path, segments: list[Seg], gaps: int,
+):
+    """``stats.gaps`` counts what the file shows since spec 0.24 (#76, zipline#168).
+
+    A record written past bytes that never arrived leaves a gap.  At the
+    end of a session the last such records are a FIN whose data never all
+    came and pure ACKs held ahead of the frontier, and the hole below them
+    went uncounted, so a lossy conversion reported itself lossless.  A FIN occupies
+    its one number, so a final ACK just past a captured FIN leaves none.
+    """
+    out = to_zpf(tcp_segments(segments), tmp_path)
+
+    assert out.stats.gaps == _file_gaps(out) == gaps
+    assert out.stats.lossless is (gaps == 0)
+    assert out.diagnostics == [] and out.unplaceable == []
